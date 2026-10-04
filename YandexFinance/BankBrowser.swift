@@ -9,6 +9,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published var message = "Войдите в банк, затем откройте историю."
     @Published var host = "bank.yandex.ru"
     @Published var history = SavedHistory()
+    @Published private(set) var storageError: String?
     private let vault = Vault()
     private var readable = true
     private var cancelled = false
@@ -43,7 +44,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         do { history = try vault.load() }
-        catch { readable = false; message = "Хранилище не открыто: \(error.localizedDescription)" }
+        catch {
+            readable = false
+            storageError = error.localizedDescription
+            message = "Хранилище не открыто: \(error.localizedDescription)"
+        }
         // Old UserDefaults completion flags do not prove coverage; legacy records remain intact.
         openHistory()
     }
@@ -83,12 +88,17 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private func incrementalDays(now: Date = Date()) -> Int {
         var start = history.lastCompletedSync?.addingTimeInterval(-7 * 86400)
             ?? now.addingTimeInterval(-183 * 86400)
+        let noStatusCutoff = now.addingTimeInterval(-14 * 86400)
         for operation in history.operations {
-            if operation.status.range(of: "ожида|обработ|в процессе|pending|не указан", options: [.regularExpression, .caseInsensitive]) != nil,
-               let date = Self.operationDate(operation.occurredAt) { start = min(start, date.addingTimeInterval(-86400)) }
+            guard let date = Self.operationDate(operation.occurredAt) else { continue }
+            let open = operation.status.range(of: "ожида|обработ|в процессе|pending|hold|заблок", options: [.regularExpression, .caseInsensitive]) != nil
+            let noStatus = operation.status.localizedCaseInsensitiveContains("не указан")
+            if open || (noStatus && date >= noStatusCutoff) {
+                start = min(start, date.addingTimeInterval(-86400))
+            }
         }
-        // Import issues are retried explicitly from the Issues section. An old issue must
-        // not make every automatic refresh rescan months of already covered history.
+        // Old status-less cards (for example own transfers or interest payouts) are immutable
+        // enough to stop widening every refresh after two weeks. Explicit pending states stay watched.
         return max(7, Int(ceil(now.timeIntervalSince(start) / 86400)))
     }
     private static func operationDate(_ value: String) -> Date? {
@@ -186,26 +196,32 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             }
         }
     }
-    private func apply(_ operations: [BankOperation], to next: inout SavedHistory) -> (Int, Int) {
+    private func apply(_ operations: [BankOperation], to next: inout SavedHistory) -> (added: Int, changed: Int, rejected: Int) {
         var byID: [String: BankOperation] = [:]
         for operation in next.operations { byID[operation.id] = operation }
-        var added = 0, changed = 0
+        var added = 0, changed = 0, rejected = 0
         var resolved = Set<String>()
         for operation in operations {
             guard operation.currency == "RUB", !operation.identity.isEmpty, !operation.description.isEmpty,
-                  !operation.status.isEmpty, Self.operationDate(operation.occurredAt) != nil else { continue }
+                  !operation.status.isEmpty, Self.operationDate(operation.occurredAt) != nil else {
+                rejected += 1
+                continue
+            }
             if let old = byID[operation.id] {
                 if !old.sameFinancialContent(as: operation) { changed += 1 }
             } else { added += 1 }
             byID[operation.id] = operation
             resolved.insert(operation.identity)
         }
-        next.operations = byID.values.sorted { $0.occurredAt > $1.occurredAt }
+        next.operations = byID.values.sorted { lhs, rhs in
+            if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
+            return lhs.identity < rhs.identity
+        }
         next.unresolvedIssues = (next.unresolvedIssues ?? []).filter { issue in
             guard let identity = issue.identity else { return true }
             return !resolved.contains(identity)
         }
-        return (added, changed)
+        return (added: added, changed: changed, rejected: rejected)
     }
     private func addIssues(_ issues: [ImportIssue], to next: inout SavedHistory) {
         var items = next.unresolvedIssues ?? []
@@ -240,7 +256,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         else if boundaryReached && runClean { ending = "Граница выбранного периода достигнута." }
         else if batch.stopReason == "cancelled" { ending = "Остановлено. Прогресс сохранён." }
         else { ending = "Прогресс сохранён. Полнота периода не подтверждена." }
-        message = "Разобрано карточек: \(batch.operations.count), добавлено \(checkpointAdded + counts.0), изменено \(checkpointChanged + counts.1). \(ending)"
+        message = "Разобрано карточек: \(batch.operations.count), добавлено \(checkpointAdded + counts.added), изменено \(checkpointChanged + counts.changed). \(ending)"
+        if counts.rejected > 0 { message += " Не сохранено после проверки: \(counts.rejected) (не RUB или неполные обязательные поля)." }
         if let skipped = batch.skippedCount, skipped > 0 { message += " Пропущено: \(skipped)." }
         if let warning = batch.warning, !warning.isEmpty { message += " \(warning)" }
     }
@@ -266,7 +283,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             if bootstrapRun { next.bootstrapResumeMonth = snapshot.monthOrdinal ?? next.bootstrapResumeMonth }
             if !snapshot.operations.isEmpty { next.lastSync = Date() }
             try vault.save(next); history = next
-            checkpointAdded += counts.0; checkpointChanged += counts.1
+            checkpointAdded += counts.added; checkpointChanged += counts.changed
             if !cancelled, !snapshot.progress.isEmpty { message = snapshot.progress }
             _ = try? await webView.callAsyncJavaScript("""
             if (window.__financeRunID !== expectedRunID) return false;
@@ -275,6 +292,20 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             """, arguments: ["expectedRunID": runID, "throughSequence": snapshot.throughSequence], in: nil, contentWorld: .defaultClient)
         } catch { /* Queue remains available to retry; final batch contains all parsed operations. */ }
     }
+    func resetLocalStorage() {
+        guard !busy else { return }
+        do {
+            try vault.reset()
+            history = SavedHistory()
+            readable = true
+            storageError = nil
+            message = "Локальное хранилище сброшено. Войдите в банк и выполните синхронизацию заново."
+            scheduleAutomaticUpdate()
+        } catch {
+            message = "Не удалось сбросить локальное хранилище: \(error.localizedDescription)"
+        }
+    }
+
     func cancel() {
         guard busy else { return }
         if pendingRetry != nil {

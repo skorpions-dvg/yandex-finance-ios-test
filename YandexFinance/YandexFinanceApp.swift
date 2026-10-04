@@ -20,6 +20,7 @@ struct YandexFinanceApp: App {
 @MainActor
 struct ContentView: View {
     @ObservedObject var browser: BankBrowser
+    @State private var confirmStorageReset = false
     var body: some View {
         TabView(selection: $browser.selectedTab) {
             VStack(spacing: 8) {
@@ -48,6 +49,15 @@ struct ContentView: View {
             }.tabItem { Label("Банк", systemImage: "building.columns") }.tag(0)
             NavigationStack {
                 List {
+                    if let storageError = browser.storageError {
+                        Section("Хранилище недоступно") {
+                            Text(storageError).font(.footnote)
+                            Text("Сброс удалит только локально сохранённую историю и ключ шифрования. После этого историю нужно будет синхронизировать заново.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
+                                .disabled(browser.busy)
+                        }
+                    }
                     Section {
                         Text("Сохранено операций: \(browser.history.operations.count)")
                         if let date = browser.history.lastSync {
@@ -134,6 +144,12 @@ struct ContentView: View {
             FinanceDashboardView(browser: browser)
                 .tabItem { Label("Финансы", systemImage: "chart.pie") }.tag(2)
         }
+        .confirmationDialog("Сбросить локальное хранилище?", isPresented: $confirmStorageReset, titleVisibility: .visible) {
+            Button("Сбросить и удалить локальную историю", role: .destructive) { browser.resetLocalStorage() }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Используйте это только если зашифрованная база больше не открывается. Действие необратимо для локальной копии.")
+        }
     }
 }
 
@@ -141,12 +157,8 @@ struct ContentView: View {
 struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
 
-    private var interval: DateInterval {
+    private var currentInterval: DateInterval {
         Calendar.current.dateInterval(of: .month, for: Date()) ?? DateInterval(start: .distantPast, end: .distantFuture)
-    }
-
-    private var report: FinanceReport {
-        FinancialEngine.report(browser.history.operations.map(\.financialInput), in: interval)
     }
 
     private func rubles(_ kopecks: Int64) -> String {
@@ -159,113 +171,173 @@ struct FinanceDashboardView: View {
     }
 
     var body: some View {
+        let interval = currentInterval
+        let report = FinancialEngine.report(browser.history.operations.map(\.financialInput), in: interval)
         NavigationStack {
             List {
                 Section("Текущий месяц") {
-                    LabeledContent("Операций в периоде", value: String(report.operationCount))
-                    if report.invalidDateCount > 0 {
-                        LabeledContent("Не распознано дат", value: String(report.invalidDateCount))
-                            .foregroundStyle(.orange)
-                    }
-                    LabeledContent("Доходы", value: signed(report.incomeKopecks))
+                    LabeledContent("Доходы", value: rubles(report.incomeKopecks))
                     LabeledContent("Расходы", value: rubles(report.netExpenseKopecks))
                     LabeledContent("Разница", value: signed(report.differenceKopecks))
                     if report.pendingDebitKopecks > 0 {
                         LabeledContent("В обработке", value: rubles(report.pendingDebitKopecks))
                     }
+                    LabeledContent("Операций", value: String(report.operationCount))
+                    if report.invalidDateCount > 0 {
+                        LabeledContent("Не распознано дат", value: String(report.invalidDateCount))
+                            .foregroundStyle(.orange)
+                    }
                     Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                moneySection("Доходы", total: report.incomeKopecks, lines: report.incomeLines, empty: "Доходов за месяц нет.")
-                expenseSection
+                incomeBlock(report)
+                expenseBlock(report)
+
                 if !report.movementLines.isEmpty {
-                    moneySection("Перемещения", total: report.movementKopecks, lines: report.movementLines, empty: "")
+                    movementBlock(report)
                 }
                 if !report.incompleteLines.isEmpty {
-                    Section("Не завершено") {
-                        ForEach(report.incompleteLines) { line in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text(line.title)
-                                    Spacer()
-                                    Text(signed(line.amountKopecks))
-                                }
-                                Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
-                                if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
-                            }
-                        }
-                    }
+                    incompleteBlock(report)
                 }
 
                 Section("Сверка с банком") {
-                    LabeledContent("Завершённые списания", value: rubles(report.grossExpenseKopecks))
-                    LabeledContent("Возвраты", value: rubles(report.refundsKopecks))
-                    LabeledContent("Списания с учётом обработки", value: rubles(report.bankDebitKopecks))
-                    Text("Верхняя цифра списаний в банке обычно включает операции в обработке. Окончательный расход в приложении их не включает.")
+                    LabeledContent("Банковские списания", value: rubles(report.bankDebitKopecks))
+                    LabeledContent("Банковские поступления", value: rubles(report.bankCreditKopecks))
+                    Text("Это банковский оборот за период: все завершённые и находящиеся в обработке движения по знаку суммы, кроме отменённых. Он нужен для сверки с цифрами банка и не равен финансовым доходам/расходам: сюда могут входить свои переводы, снятие наличных, Сплит и возвраты.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Правила") {
-                    Text("Возврат уменьшает расходы и не считается доходом. Перевод между своими счетами и снятие наличных — перемещение, а не трата и не заработок.")
-                    Text("Сплит виден отдельно и не входит в итог, пока покупка и платежи не связаны.")
-                    Text("Старое завершённое списание без современного типа считается расходом. Непонятное поступление доходом не назначается.")
+                    Text("Возвраты уменьшают расходы и не считаются доходом. Подтверждённые переводы между своими счетами и снятие наличных относятся к перемещениям.")
+                    Text("Сплит показывается отдельно и пока не входит в итог расходов, пока исходная покупка и платежи не связаны — так мы не создаём двойной расход.")
+                    Text("Старое завершённое списание без современного типа считается расходом. Непонятное положительное поступление автоматически доходом не назначается.")
                 }.font(.footnote).foregroundStyle(.secondary)
             }
             .navigationTitle("Финансы")
         }
     }
 
-    private var expenseSection: some View {
-        Section("Расходы") {
-            LabeledContent("До возвратов", value: rubles(report.grossExpenseKopecks))
-            LabeledContent("Расходы после возвратов", value: rubles(report.netExpenseKopecks))
-            ForEach(report.expenseLines) { line in
-                DisclosureGroup {
-                    if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
-                    ForEach(line.children) { child in
-                        HStack {
-                            Text(child.title)
-                            Spacer()
-                            Text(rubles(child.amountKopecks))
-                        }.font(.subheadline)
-                    }
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(line.title)
-                            Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text((line.title == "Возвраты" ? "−" : "") + rubles(line.amountKopecks))
+    private func incomeBlock(_ report: FinanceReport) -> some View {
+        Section {
+            DisclosureGroup {
+                if report.incomeLines.isEmpty {
+                    Text("Доходов за месяц нет.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(report.incomeLines) { line in
+                        simpleFinanceRow(line, amount: rubles(line.amountKopecks))
                     }
                 }
+            } label: {
+                blockLabel("Доходы", value: rubles(report.incomeKopecks))
             }
-            if report.expenseLines.isEmpty { Text("Расходов за месяц нет.").foregroundStyle(.secondary) }
         }
     }
 
-    private func moneySection(_ title: String, total: Int64, lines: [FinanceLine], empty: String) -> some View {
-        Section(title) {
-            LabeledContent("Итого", value: rubles(total))
-            ForEach(lines) { line in
-                DisclosureGroup {
-                    if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
-                    ForEach(line.children) { child in
-                        HStack { Text(child.title); Spacer(); Text(rubles(child.amountKopecks)) }.font(.subheadline)
+    private func expenseBlock(_ report: FinanceReport) -> some View {
+        Section {
+            DisclosureGroup {
+                if report.expenseLines.isEmpty {
+                    Text("Расходов за месяц нет.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(report.expenseLines) { line in
+                        expenseLine(line)
                     }
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading) {
+                    Text("Итог расходов уже уменьшен на возвраты.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } label: {
+                blockLabel("Расходы", value: rubles(report.netExpenseKopecks))
+            }
+        }
+    }
+
+    private func movementBlock(_ report: FinanceReport) -> some View {
+        Section {
+            DisclosureGroup {
+                ForEach(report.movementLines) { line in
+                    simpleFinanceRow(line, amount: rubles(line.amountKopecks))
+                }
+                Text("Перемещения не входят ни в доходы, ни в расходы. Показанная сумма — оборот перемещений.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } label: {
+                blockLabel("Перемещения", value: rubles(report.movementKopecks))
+            }
+        }
+    }
+
+    private func incompleteBlock(_ report: FinanceReport) -> some View {
+        Section {
+            DisclosureGroup {
+                ForEach(report.incompleteLines) { line in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
                             Text(line.title)
-                            Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Text(signed(line.amountKopecks))
                         }
-                        Spacer()
-                        Text(rubles(line.amountKopecks))
+                        Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
+                        if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
+            } label: {
+                blockLabel("Не завершено", value: "\(incompleteCount(report)) оп.")
             }
-            if lines.isEmpty, !empty.isEmpty { Text(empty).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func incompleteCount(_ report: FinanceReport) -> Int {
+        report.incompleteLines.reduce(0) { $0 + $1.count }
+    }
+
+    private func expenseAmount(_ line: FinanceLine) -> String {
+        line.title == "Возвраты" ? "−" + rubles(line.amountKopecks) : rubles(line.amountKopecks)
+    }
+
+    @ViewBuilder
+    private func expenseLine(_ line: FinanceLine) -> some View {
+        if line.children.isEmpty {
+            simpleFinanceRow(line, amount: expenseAmount(line))
+        } else {
+            DisclosureGroup {
+                if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
+                ForEach(line.children) { child in
+                    HStack {
+                        Text(child.title)
+                        Spacer()
+                        Text(rubles(child.amountKopecks))
+                    }
+                    .font(.subheadline)
+                }
+            } label: {
+                financeRowLabel(line, amount: expenseAmount(line))
+            }
+        }
+    }
+
+    private func simpleFinanceRow(_ line: FinanceLine, amount: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            financeRowLabel(line, amount: amount)
+            if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func financeRowLabel(_ line: FinanceLine, amount: String) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(line.title)
+                Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(amount)
+        }
+    }
+
+    private func blockLabel(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title).font(.headline)
+            Spacer()
+            Text(value).font(.headline)
         }
     }
 }

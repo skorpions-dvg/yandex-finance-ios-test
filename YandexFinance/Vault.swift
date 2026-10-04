@@ -54,6 +54,21 @@ struct Vault {
         return try JSONDecoder().decode(SavedHistory.self, from: decoded)
     }
 
+
+    func reset() throws {
+        let file = try fileURL()
+        if FileManager.default.fileExists(atPath: file.path) {
+            try FileManager.default.removeItem(at: file)
+        }
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account]
+        let code = SecItemDelete(query as CFDictionary)
+        guard code == errSecSuccess || code == errSecItemNotFound else {
+            throw AppFailure(message: "Не удалось удалить ключ хранилища. Код: \(code).")
+        }
+    }
+
     func save(_ history: SavedHistory) throws {
         let bytes = try JSONEncoder().encode(history)
         let box = try AES.GCM.seal(bytes, using: key(create: true))

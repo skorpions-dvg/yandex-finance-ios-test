@@ -11,7 +11,7 @@ struct FinanceEngineTests {
 
     static func op(_ amount: Int64, kind: String, status: String = "Выполнено", category: String = "Тест",
                    description: String = "Синтетическая операция", purpose: String? = nil,
-                   providers: [String] = [], components: [Int64] = [], date: String = "2026-10-02T10:00:00Z") -> FinancialOperationInput {
+                   providers: [String] = [], components: [Int64] = [], date: String = "2032-06-02T10:00:00Z") -> FinancialOperationInput {
         FinancialOperationInput(occurredAt: date, description: description, amountKopecks: amount,
                                 status: status, category: category, purpose: purpose,
                                 providers: providers, kind: kind, componentAmountsKopecks: components)
@@ -24,22 +24,24 @@ struct FinanceEngineTests {
         require(FinancialEngine.classify(op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами")).type == .internalTransfer, "internal transfer")
         require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")
         require(FinancialEngine.classify(op(-199, kind: "expense", description: "Комиссия банка")).type == .commission, "commission")
+        require(FinancialEngine.classify(op(-50_000, kind: "expense", description: "Снятие наличных в банкомате")).type == .internalTransfer, "cash withdrawal")
+        require(FinancialEngine.classify(op(-250, kind: "expense", description: "Комиссия за снятие наличных в банкомате")).type == .commission, "cash withdrawal fee stays commission")
         require(FinancialEngine.classify(op(-20_000, kind: "installment_payment", providers: ["BNPL"])).type == .split, "split")
         require(FinancialEngine.classify(op(-4_000, kind: "expense", status: "В обработке")).type == .pending, "pending")
         require(FinancialEngine.classify(op(-5_000, kind: "expense", status: "Отменено")).type == .cancelled, "cancelled")
-        require(FinancialEngine.classify(op(-6_000, kind: "new_unknown_kind")).type == .expense, "completed negative unknown kind is an expense")
-        require(FinancialEngine.classify(op(6_000, kind: "new_unknown_kind")).type == .unknown, "positive unknown kind must not be guessed as income")
+        require(FinancialEngine.classify(op(-6_000, kind: "legacy_kind")).type == .expense, "completed negative unknown kind is an expense")
+        require(FinancialEngine.classify(op(6_000, kind: "legacy_kind")).type == .unknown, "positive unknown kind must not be guessed as income")
         require(FinancialEngine.classify(op(-7_000, kind: "transfer")).type == .expense, "external outgoing transfer")
         require(FinancialEngine.classify(op(8_000, kind: "transfer")).type == .income, "external incoming transfer")
 
-        let grouped = op(-163_500, kind: "grouped_operation", components: [-190_000, 26_500])
+        let grouped = op(-146_800, kind: "grouped_operation", components: [-178_000, 31_200])
         let groupedAssessment = FinancialEngine.classify(grouped)
         require(groupedAssessment.type == .expense, "grouped type")
-        require(groupedAssessment.expenseContributionKopecks == 163_500, "grouped parent total only")
+        require(groupedAssessment.expenseContributionKopecks == 146_800, "grouped parent total only")
 
         let formatter = ISO8601DateFormatter()
-        let interval = DateInterval(start: formatter.date(from: "2026-10-01T00:00:00Z")!,
-                                    end: formatter.date(from: "2026-11-01T00:00:00Z")!)
+        let interval = DateInterval(start: formatter.date(from: "2032-06-01T00:00:00Z")!,
+                                    end: formatter.date(from: "2032-07-01T00:00:00Z")!)
         let summary = FinancialEngine.summarize([
             op(-10_000, kind: "expense"),
             op(3_000, kind: "refund", category: "Возврат"),
@@ -51,50 +53,67 @@ struct FinanceEngineTests {
             op(-4_000, kind: "expense", status: "В обработке"),
             op(-5_000, kind: "expense", status: "Отменено"),
             grouped,
-            op(-99_999, kind: "expense", date: "2026-09-30T23:59:59Z")
+            op(-99_999, kind: "expense", date: "2032-05-31T23:59:59Z")
         ], in: interval)
 
         require(summary.operationCount == 10, "period filtering")
-        require(summary.grossExpenseKopecks == 173_699, "gross expenses use parent group once")
+        require(summary.grossExpenseKopecks == 156_999, "gross expenses use parent group once")
         require(summary.refundsKopecks == 3_000, "refund contribution")
-        require(summary.netExpenseKopecks == 170_699, "net expense")
+        require(summary.netExpenseKopecks == 153_999, "net expense")
         require(summary.incomeKopecks == 5_030, "ordinary + interest income")
-        require(summary.netCashFlowKopecks == -165_669, "net cash flow")
+        require(summary.netCashFlowKopecks == -148_969, "net cash flow")
         require(summary.counts[.internalTransfer] == 1, "internal transfer bucket")
         require(summary.counts[.split] == 1, "split bucket")
         require(summary.counts[.pending] == 1, "pending bucket")
         require(summary.counts[.cancelled] == 1, "cancelled bucket")
-        require(summary.signedAmounts[.expense] == -173_500, "component amounts must not be added to type totals")
+        require(summary.signedAmounts[.expense] == -156_800, "component amounts must not be added to type totals")
 
-        let dateFormatter = ISO8601DateFormatter()
-        let february = DateInterval(start: dateFormatter.date(from: "2031-02-01T00:00:00Z")!,
-                                    end: dateFormatter.date(from: "2031-03-01T00:00:00Z")!)
+        let dateInterval = DateInterval(start: formatter.date(from: "2033-02-01T00:00:00Z")!,
+                                        end: formatter.date(from: "2033-03-01T00:00:00Z")!)
         let dateFormats = FinancialEngine.summarize([
-            op(-111, kind: "expense", date: "2031-02-14T12:34:56.789Z"),
-            op(-222, kind: "expense", date: "2031-02-15T12:34:56Z"),
-            op(-333, kind: "expense", date: "2031-02-16T15:34:56.123+03:00"),
-            op(-444, kind: "expense", date: "2031-03-01T00:00:00Z"),
+            op(-111, kind: "expense", date: "2033-02-14T12:34:56.789Z"),
+            op(-222, kind: "expense", date: "2033-02-15T12:34:56Z"),
+            op(-333, kind: "expense", date: "2033-02-16T15:34:56.123+03:00"),
+            op(-444, kind: "expense", date: "2033-03-01T00:00:00Z"),
             op(-555, kind: "expense", date: "not-a-date")
-        ], in: february)
+        ], in: dateInterval)
         require(dateFormats.operationCount == 3, "fractional and plain ISO8601 dates must be included")
         require(dateFormats.grossExpenseKopecks == 666, "period totals must include fractional-second timestamps")
         require(dateFormats.invalidDateCount == 1, "invalid dates must be surfaced instead of silently disappearing")
 
-        let october = FinancialEngine.report([
-            op(-1_783_100, kind: "legacy_purchase", category: "Супермаркеты"),
-            op(188_600, kind: "refund", category: "Возврат"),
-            op(-163_582, kind: "expense", status: "В обработке"),
-            op(9_000, kind: "new_unknown_kind", description: "Непонятное поступление")
+        let report = FinancialEngine.report([
+            op(-123_400, kind: "legacy_purchase", category: "Супермаркеты"),
+            op(12_300, kind: "refund", category: "Возврат"),
+            op(-45_600, kind: "expense", status: "В обработке"),
+            op(-78_900, kind: "internal_transfer", category: "Переводы между своими счетами"),
+            op(-22_200, kind: "installment_payment", providers: ["BNPL"]),
+            op(33_300, kind: "legacy_credit", description: "Непонятное поступление"),
+            op(777, kind: "interest_income", category: "Проценты"),
+            op(-66_600, kind: "expense", status: "Отменено")
         ], in: interval)
-        require(october.operationCount == 4, "october control count")
-        require(october.grossExpenseKopecks == 1_783_100, "legacy debit is an expense")
-        require(october.refundsKopecks == 188_600, "october refund")
-        require(october.netExpenseKopecks == 1_594_500, "expense after refund")
-        require(october.pendingDebitKopecks == 163_582, "pending stays out of final expense")
-        require(october.bankDebitKopecks == 1_946_682, "bank debit is settled plus pending")
-        require(october.incomeKopecks == 0, "unknown credit is not income")
-        require(october.unknownCount == 1, "unknown credit remains visible")
-        require(october.expenseLines.contains { $0.title == "Покупки" && $0.children.contains { $0.title == "Супермаркеты" } }, "purchase category expands")
+        require(report.operationCount == 8, "report count")
+        require(report.grossExpenseKopecks == 123_400, "legacy debit is an expense")
+        require(report.refundsKopecks == 12_300, "refund reduces expense")
+        require(report.netExpenseKopecks == 111_100, "net expense")
+        require(report.pendingDebitKopecks == 45_600, "pending stays out of final expense")
+        require(report.incomeKopecks == 777, "only confirmed income enters income total")
+        require(report.movementKopecks == 78_900, "confirmed own transfer is movement")
+        require(report.bankDebitKopecks == 270_100, "bank debit turnover includes expense, pending, movement and split but excludes cancelled")
+        require(report.bankCreditKopecks == 46_377, "bank credit turnover includes positive bank movements")
+        require(report.unknownCount == 1, "unknown credit remains visible")
+        require(report.expenseLines.contains { $0.title == "Покупки" && $0.children.contains { $0.title == "Супермаркеты" } }, "purchase category expands")
+        require(report.expenseLines.contains { $0.title == "Возвраты" }, "refund is shown inside expenses")
+        require(report.expenseLines.contains { $0.title == "Сплит" }, "split is shown separately")
+        require(report.incomeLines.contains { $0.title == "Проценты" }, "interest subgroup")
+
+
+        let withdrawalReport = FinancialEngine.report([
+            op(-75_000, kind: "expense", description: "Снятие наличных"),
+            op(-300, kind: "expense", description: "Комиссия за снятие наличных")
+        ], in: interval)
+        require(withdrawalReport.movementLines.contains { $0.title == "Снятие наличных" && $0.amountKopecks == 75_000 }, "cash withdrawal is shown as movement")
+        require(withdrawalReport.expenseLines.contains { $0.title == "Комиссии" && $0.amountKopecks == 300 }, "cash withdrawal fee remains expense")
+        require(withdrawalReport.netExpenseKopecks == 300, "cash withdrawal itself is excluded from financial expense")
 
         print("Finance engine tests passed")
     }
