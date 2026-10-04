@@ -36,13 +36,17 @@ async function checkMobile() {
   const run = async (href, pageText) => {
     const body = {innerText: pageText};
     const context = vm.createContext({URL, Date, setTimeout, window: {}, location: new URL(href),
-      document: {body, querySelector: () => null}});
+      document: {body, querySelector: () => null, querySelectorAll: () => [{innerText: 'Список операций'}, {innerText: ''}]}});
     return JSON.parse(await vm.runInContext('(async function(mode) {' + source + '})("card")', context));
   };
   const mobile = await run(url([ref]), 'Назад\n' + purchase);
   assert.equal(mobile.operations[0].amountKopecks, -201384);
   assert.equal(mobile.operations[0].description, 'Тестовый магазин');
   assert.equal(mobile.stopReason, 'single_card');
+  const inline = await run(url([ref]), purchase.replace('Статус\nВыполнено', 'Статус\tВыполнено'));
+  assert.equal(inline.operations[0].status, 'Выполнено');
+  const sameLine = await run(url([ref]), purchase.replace('Статус\nВыполнено', 'Статус: Выполнено'));
+  assert.equal(sameLine.operations[0].status, 'Выполнено');
   const missingID = await run('https://bank.yandex.ru/my/transactions-history/operation', purchase);
   assert.match(missingID.error, /идентификатора/);
   assert.equal(missingID.operations, undefined);

@@ -4,6 +4,32 @@ const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
 const moneyPattern = /[+−–-]\s*[\d\s.,]+\s*₽/;
 const rows = () => controls().filter(el => !el.closest('[role="dialog"]') && moneyPattern.test(text(el)));
+// WebKit can place inline label/value pairs on one line or separate them with tabs.
+function cardLines(value) {
+  const labels = ['Категория', 'MCC', 'Статус', 'Назначение', 'Способ оплаты'];
+  return value.replace(/\u200b/g, '').split(/[\r\n\t]+/).flatMap(raw => {
+    const line = raw.trim();
+    for (const label of labels) {
+      if (line.startsWith(label + ':') || line.startsWith(label + ' ') || line.startsWith(label + '\u00a0')) {
+        const rest = line.slice(label.length).replace(/^[:\s]+/, '').trim();
+        if (rest) return [label, rest];
+      }
+    }
+    return line ? [line] : [];
+  });
+}
+function currentCardText() {
+  // A desktop main/dialog may remain mounted behind a mobile portal.
+  // Check each candidate instead of allowing an empty first match to mask the body.
+  const roots = [...document.querySelectorAll('[role="dialog"],main'), document.body];
+  for (const root of roots) {
+    const value = text(root);
+    const lines = cardLines(value);
+    const statusIndex = lines.indexOf('Статус');
+    if (statusIndex >= 0 && lines[statusIndex + 1] && moneyPattern.test(value)) return value;
+  }
+  return null;
+}
 function assertHistory() {
   if (location.hostname !== 'bank.yandex.ru' || !location.pathname.startsWith('/my/transactions-history'))
     throw Error('Откройте историю и войдите в банк.');
@@ -45,7 +71,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     if (!Number.isFinite(stamp)) throw Error('Не распознана дата.');
     return stamp;
   });
-  const lines = cardText.replace(/\u200b/g, '').split('\n').map(x => x.trim()).filter(Boolean);
+  const lines = cardLines(cardText);
   const amounts = lines.filter(line => /^[+−–-]\s*[\d\s.,]+\s*₽$/.test(line));
   if (amounts.length !== 1) throw Error('Не найдена однозначная сумма.');
   const kopecks = amount(amounts[0]);
@@ -94,11 +120,13 @@ window.__financeCancelled = false;
 if (mode === 'card') {
   if (!location.pathname.endsWith('/operation')) throw Error('Откройте подробности одной операции.');
   // Mobile history opens a full page rather than an ARIA dialog.
-  const card = await waitFor(() => {
-    const root = document.querySelector('[role="dialog"]') || document.querySelector('main') || document.body;
-    return text(root).split('\n').some(line => line.trim() === 'Статус') ? root : null;
-  });
-  return JSON.stringify({operations: [parseCard(location.href, text(card), '')], stopReason: 'single_card'});
+  let cardText;
+  try { cardText = await waitFor(currentCardText, 6000); }
+  catch (error) {
+    if (window.__financeCancelled) throw error;
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 4).');
+  }
+  return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
 if (document.querySelector('[role="dialog"]')) throw Error('Закройте карточку и вернитесь к списку.');
 const filter = controls().find(el => text(el) === 'Какие операции скрывать');
