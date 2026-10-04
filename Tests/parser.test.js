@@ -85,13 +85,14 @@ async function checkHistory() {
   const close = control('Выбрать', () => {screen = 'list'; filtersClosed++;});
   const hiddenClose = {...control('', () => {throw Error('Clicked hidden desktop close');}, 'Закрыть'), getClientRects: () => []};
   const account = control('Все карты и счета', () => {});
+  const month = {...control('Октябрь', () => {}), getClientRects: () => [{}], closest: () => null};
   const switches = [{checked: false, getAttribute: () => 'false'}];
   const doc = {body,
     querySelector: selector => selector.includes('switch') && screen === 'filters' ? switches[0] : null,
     querySelectorAll: selector => {
       if (selector === '[role="dialog"],main') return [{innerText: 'Постоянный диалог оболочки'}, body];
       if (selector.includes('switch')) return screen === 'filters' ? switches : [];
-      if (selector === 'button,[role="button"]') return screen === 'list' ? [filter, account, ...list] : screen === 'filters' ? [hiddenClose, close] : [];
+      if (selector === 'button,[role="button"]') return screen === 'list' ? [filter, month, account, ...list] : screen === 'filters' ? [hiddenClose, close] : [];
       return [];
     }};
   const window = {history: {back() {returned++; screen = 'filters'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
@@ -113,26 +114,37 @@ checkHistory().catch(error => {console.error(error); process.exitCode = 1;});
 
 async function checkFullHistoryNoCutoff() {
   const vm = require('node:vm');
-  let screen = 'list', opened = 0, returned = 0, filtersClosed = 0, clock = 0;
+  let screen = 'list', opened = 0, returned = 0, filtersClosed = 0, clock = 0, picker = false, selectedMonth = 'Октябрь';
   const location = new URL('https://bank.yandex.ru/my/transactions-history');
   const body = {get innerText() { return screen.startsWith('card') ? purchase : 'История'; }};
   const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
   const control = (label, click, aria = '') => ({innerText: label, click, parentElement: root,
     getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
-    querySelector: () => null, getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
-  const go = (index) => { screen = 'card' + index; opened++;
-    location.href = url([{...ref, chainId: 'full-history-' + index,
-      operationTimestamp: index === 0 ? '2026-10-04T00:11:31Z' : '2020-01-01T00:11:31Z'}]); };
-  const list = [control('Новая операция −2 013,84 ₽', () => go(0)), control('Очень старая операция −2 013,84 ₽', () => go(1))];
+    closest: () => null, querySelector: () => null, getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
+  const go = (which) => { screen = 'card-' + which; opened++;
+    const stamp = which === 'oct' ? '2026-10-04T00:11:31Z' : '2026-09-15T00:11:31Z';
+    location.href = url([{...ref, chainId: 'full-history-' + which, operationTimestamp: stamp}]); };
+  const octList = [control('Октябрьская операция −2 013,84 ₽', () => go('oct'))];
+  const sepList = [control('Сентябрьская операция −2 013,84 ₽', () => go('sep'))];
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
   const close = control('Выбрать', () => {screen = 'list'; filtersClosed++;});
   const account = control('Все карты и счета', () => {});
+  const monthButton = () => control(selectedMonth, () => {picker = true;});
+  const sepChoice = control('Сентябрь', () => {selectedMonth = 'Сентябрь'; picker = false; root.scrollTop = 0;});
+  const octChoice = control('Октябрь', () => {selectedMonth = 'Октябрь'; picker = false; root.scrollTop = 0;});
   const switches = [{checked: false, getAttribute: () => 'false', getClientRects: () => [{}], closest: () => null}];
+  const actionables = () => {
+    if (screen === 'filters') return [close];
+    if (screen !== 'list') return [];
+    const base = [filter, monthButton(), account, ...(selectedMonth === 'Октябрь' ? octList : sepList)];
+    if (!picker) return base;
+    return selectedMonth === 'Октябрь' ? [...base, sepChoice, octChoice] : [...base, sepChoice, octChoice];
+  };
   const doc = {body, scrollingElement: root, documentElement: root,
     querySelectorAll(selector) {
       if (selector === '[role="dialog"],main') return [{innerText: 'Оболочка'}, body];
       if (selector.includes('switch')) return screen === 'filters' ? switches : [];
-      if (selector === 'button,[role="button"]') return screen === 'list' ? [filter, account, ...list] : screen === 'filters' ? [close] : [];
+      if (selector === 'button,[role="button"]' || selector.includes('[role="option"]')) return actionables();
       return [];
     }};
   const window = {history: {back() {returned++; screen = 'filters'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
@@ -143,13 +155,64 @@ async function checkFullHistoryNoCutoff() {
   assert.equal(batch.error, undefined);
   assert.equal(batch.operations.length, 2);
   assert.equal(batch.lookbackDays, null);
-  assert.equal(batch.stopReason, 'loaded_rows_exhausted');
+  assert.equal(batch.stopReason, 'full_history_exhausted');
   assert.equal(opened, 2);
   assert.equal(returned, 2);
   assert.ok(filtersClosed >= 3);
-  console.log('Full first sync: no 30-day cutoff and natural history exhaustion passed.');
+  assert.equal(selectedMonth, 'Сентябрь');
+  console.log('Full first sync: October -> September month transition and confirmed history beginning passed.');
 }
 checkFullHistoryNoCutoff().catch(error => {console.error(error); process.exitCode = 1;});
+
+async function checkSevenDayCrossMonth() {
+  const vm = require('node:vm');
+  let screen = 'list', clock = Date.parse('2026-10-04T12:00:00Z'), picker = false, selectedMonth = 'Октябрь';
+  const location = new URL('https://bank.yandex.ru/my/transactions-history');
+  const body = {get innerText() { return screen.startsWith('card') ? purchase : 'История'; }};
+  const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
+  const control = (label, click, aria = '') => ({innerText: label, click, parentElement: root,
+    getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
+    closest: () => null, querySelector: () => null, getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
+  const go = (key, stamp) => { screen = 'card-' + key; location.href = url([{...ref, chainId: key, operationTimestamp: stamp}]); };
+  const octList = [control('Октябрь −2 013,84 ₽', () => go('oct', '2026-10-04T08:00:00Z'))];
+  const sepList = [
+    control('Сентябрь свежий −2 013,84 ₽', () => go('sep-new', '2026-09-29T08:00:00Z')),
+    control('Сентябрь старый −2 013,84 ₽', () => go('sep-old', '2026-09-20T08:00:00Z'))
+  ];
+  const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
+  const close = control('Выбрать', () => {screen = 'list';});
+  const account = control('Все карты и счета', () => {});
+  const monthButton = () => control(selectedMonth, () => {picker = true;});
+  const sepChoice = control('Сентябрь', () => {selectedMonth = 'Сентябрь'; picker = false; root.scrollTop = 0;});
+  const octChoice = control('Октябрь', () => {selectedMonth = 'Октябрь'; picker = false; root.scrollTop = 0;});
+  const switches = [{checked: false, getAttribute: () => 'false', getClientRects: () => [{}], closest: () => null}];
+  const actionables = () => {
+    if (screen === 'filters') return [close];
+    if (screen !== 'list') return [];
+    const base = [filter, monthButton(), account, ...(selectedMonth === 'Октябрь' ? octList : sepList)];
+    return picker ? [...base, sepChoice, octChoice] : base;
+  };
+  const doc = {body, scrollingElement: root, documentElement: root,
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"],main') return [{innerText: 'Оболочка'}, body];
+      if (selector.includes('switch')) return screen === 'filters' ? switches : [];
+      if (selector === 'button,[role="button"]' || selector.includes('[role="option"]')) return actionables();
+      return [];
+    }};
+  const window = {history: {back() {screen = 'filters'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
+  class FakeDate extends Date { static now() { return clock; } }
+  const context = vm.createContext({URL, Date: FakeDate, setTimeout: fn => {clock += 250; fn();}, window, location, document: doc,
+    getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
+  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays) {' + source + '})("history", 7)', context));
+  assert.equal(batch.error, undefined);
+  assert.equal(batch.stopReason, 'lookback_reached');
+  assert.equal(batch.operations.length, 2);
+  assert.equal(selectedMonth, 'Сентябрь');
+  assert.ok(batch.operations.some(x => x.identity.includes('sep-new')));
+  assert.ok(!batch.operations.some(x => x.identity.includes('sep-old')));
+  console.log('7-day refresh crosses October -> September and stops at the 7-day cutoff.');
+}
+checkSevenDayCrossMonth().catch(error => {console.error(error); process.exitCode = 1;});
 
 // A fixed-size virtual list must be detected by contents, not only row count.
 const signature = new Function(source.split('\ntry {\nassertHistory();')[0] + '\nreturn rowSignature;')();

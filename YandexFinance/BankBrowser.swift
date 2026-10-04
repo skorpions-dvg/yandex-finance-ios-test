@@ -15,7 +15,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var automaticTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
     private var lastAttempt: Date?
-    private let fullHistoryKey = "fullHistoryImportedV1"
+    private let fullHistoryKey = "fullHistoryImportedV2"
     private var fullHistoryImported: Bool {
         get { UserDefaults.standard.bool(forKey: fullHistoryKey) }
         set { UserDefaults.standard.set(newValue, forKey: fullHistoryKey) }
@@ -168,7 +168,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         try vault.save(next)
         history = next
         let isFullHistorySync = requestedLookbackDays == nil && batch.stopReason != "single_card"
-        if isFullHistorySync && batch.stopReason == "loaded_rows_exhausted" {
+        if isFullHistorySync && batch.stopReason == "full_history_exhausted" {
             fullHistoryImported = true
         }
         let ending: String
@@ -185,8 +185,16 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             ending = isFullHistorySync
                 ? "Достигнут защитный предел чтения. Полная синхронизация не завершена и будет повторена."
                 : "Достигнут предел чтения; период проверен не полностью."
+        case "full_history_exhausted":
+            ending = "Полная доступная история по месяцам прочитана."
+        case "history_beginning_reached":
+            ending = "Достигнуто начало доступной истории банка."
+        case "month_navigation_unavailable":
+            ending = isFullHistorySync
+                ? "Не удалось подтвердить переход к предыдущему месяцу. Полная синхронизация не отмечена завершённой и будет повторена."
+                : "Не удалось перейти к предыдущему месяцу; период проверен не полностью."
         case "loaded_rows_exhausted":
-            ending = isFullHistorySync ? "Полная доступная история прочитана." : "Доступная история за период прочитана."
+            ending = "Закончились строки текущего месяца; полнота всей истории не подтверждена."
         default:
             ending = "Сайт перестал догружать строки. Полнота периода не подтверждена."
         }

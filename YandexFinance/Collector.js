@@ -107,6 +107,100 @@ async function nextHistoryWindow(list) {
   const next = await waitForHistoryRows();
   return {list: next, changed: rowSignature(next) !== before, movement};
 }
+
+const historyMonthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+const monthLabelPattern = /^(Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь)(?:\s+(\d{4}))?$/;
+const actionables = () => [...document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],[role="gridcell"]')];
+function selectedMonthControl() {
+  return controls().find(el => monthLabelPattern.test(text(el)) && isVisible(el)) || null;
+}
+function parseMonthCursor(now = new Date()) {
+  const control = selectedMonthControl();
+  if (!control) throw Error('Не найден переключатель месяца истории.');
+  const match = text(control).match(monthLabelPattern);
+  const month = historyMonthNames.indexOf(match[1]);
+  let year = match[2] ? Number(match[2]) : now.getFullYear();
+  if (!match[2] && month > now.getMonth()) year -= 1;
+  return {month, year};
+}
+function previousMonth(cursor) {
+  return cursor.month === 0 ? {month: 11, year: cursor.year - 1} : {month: cursor.month - 1, year: cursor.year};
+}
+function visibleMonthChoices(exclude) {
+  return actionables().filter(el => el !== exclude && isVisible(el)).map(el => {
+    const match = text(el).match(monthLabelPattern);
+    return match ? {el, month: historyMonthNames.indexOf(match[1]), year: match[2] ? Number(match[2]) : null} : null;
+  }).filter(Boolean);
+}
+async function openMonthPicker(anchor) {
+  anchor.click();
+  try { return await waitFor(() => {
+    const choices = visibleMonthChoices(anchor);
+    return choices.length ? choices : null;
+  }, 5000); }
+  catch { return []; }
+}
+async function switchPickerYear(targetYear, currentYear, anchor) {
+  if (targetYear === currentYear) return true;
+  let visible = actionables().filter(el => el !== anchor && isVisible(el));
+  let directYear = visible.find(el => text(el) === String(targetYear));
+  if (directYear) { directYear.click(); await sleep(300); return true; }
+  const currentYearControl = visible.find(el => text(el) === String(currentYear));
+  if (currentYearControl) {
+    currentYearControl.click(); await sleep(250);
+    visible = actionables().filter(el => el !== anchor && isVisible(el));
+    directYear = visible.find(el => text(el) === String(targetYear));
+    if (directYear) { directYear.click(); await sleep(300); return true; }
+  }
+  visible = actionables().filter(el => el !== anchor && isVisible(el));
+  const prevYear = visible.find(el => /предыдущ(?:ий|его).*год|год.*назад|previous.*year/i.test(controlName(el)));
+  if (prevYear && targetYear === currentYear - 1) { prevYear.click(); await sleep(300); return true; }
+  return false;
+}
+async function selectPreviousHistoryMonth(cursor, previousRowsSignature) {
+  const target = previousMonth(cursor);
+  const anchor = selectedMonthControl();
+  if (!anchor) return {status: 'unavailable', cursor};
+  let choices = await openMonthPicker(anchor);
+  if (!choices.length) return {status: 'unavailable', cursor};
+  let candidate = choices.find(x => x.month === target.month && (x.year === null || x.year === target.year));
+  if (!candidate && target.year !== cursor.year) {
+    const yearChanged = await switchPickerYear(target.year, cursor.year, anchor);
+    if (yearChanged) {
+      await sleep(250);
+      choices = visibleMonthChoices(anchor);
+      if (!choices.length) {
+        const reopened = selectedMonthControl();
+        if (reopened) choices = await openMonthPicker(reopened);
+      }
+      candidate = choices.find(x => x.month === target.month && (x.year === null || x.year === target.year));
+    }
+  }
+  if (!candidate) {
+    // If a real month picker is open but the immediately previous month is absent,
+    // treat it as the beginning of the bank's available history. Otherwise do not
+    // claim completeness: the site's DOM may have changed.
+    const enoughMonthChoices = choices.length >= 2;
+    return {status: enoughMonthChoices ? 'end' : 'unavailable', cursor};
+  }
+  candidate.el.click();
+  historyScrollContainer = null;
+  await sleep(350);
+  try {
+    await waitFor(() => {
+      const current = selectedMonthControl();
+      if (!current) return false;
+      const match = text(current).match(monthLabelPattern);
+      return match && historyMonthNames.indexOf(match[1]) === target.month;
+    }, 8000);
+    await waitFor(() => {
+      const nextRows = rows();
+      return nextRows.length && (!previousRowsSignature || rowSignature(nextRows) !== previousRowsSignature);
+    }, 15000);
+  } catch { return {status: 'unavailable', cursor}; }
+  return {status: 'moved', cursor: target};
+}
+
 function assertHistory() {
   if (location.hostname !== 'bank.yandex.ru' || !location.pathname.startsWith('/my/transactions-history'))
     throw Error('Откройте историю и войдите в банк.');
@@ -153,11 +247,11 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   // fraction and currency across text lines. Amounts in details are unrelated.
   const header = cardText.replace(/\u200b/g, '').split('Подробнее')[0];
   const headerDates = [...header.matchAll(/(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/g)];
-  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 10).');
+  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 11).');
   const dateMark = headerDates[0];
   const amountArea = header.slice(dateMark.index + dateMark[0].length);
   const amounts = amountArea.match(/[+−–-]\s*\d[\d\s.,]*\s*₽/g) || [];
-  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 10).');
+  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 11).');
   const kopecks = amount(amounts[0]);
   const listed = rowText.match(moneyPattern);
   if (listed && amount(listed[0]) !== kopecks) throw Error('Сумма не совпала со списком.');
@@ -209,7 +303,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 10).');
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 11).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
@@ -241,20 +335,20 @@ if (parsedLookback !== null && (!Number.isFinite(parsedLookback) || parsedLookba
 const effectiveLookbackDays = parsedLookback === null ? null : Math.floor(parsedLookback);
 const cutoff = effectiveLookbackDays === null ? null : Date.now() - effectiveLookbackDays * 86400000;
 const found = new Map();
-let index = 0, stalls = 0, opened = 0, scrollSteps = 0, stopReason = 'loaded_rows_exhausted';
-// Full first import may contain far more than 300 operations. Keep only a very high safety cap
-// to prevent an endless loop if the bank page starts recycling broken rows forever.
+let index = 0, stalls = 0, opened = 0, scrollSteps = 0, monthsVisited = 1, stopReason = 'month_navigation_unavailable';
+let monthCursor = parseMonthCursor();
 const maxOpened = cutoff === null ? 5000 : 300;
-const maxScrollSteps = cutoff === null ? 2000 : 150;
+const maxScrollSteps = cutoff === null ? 2500 : 200;
+const maxMonths = cutoff === null ? 240 : 24;
 window.__financeProgress = cutoff === null
-  ? 'Первая синхронизация: читаю всю доступную историю…'
+  ? 'Первая синхронизация: читаю всю доступную историю по месяцам…'
   : 'Обновляю последние ' + effectiveLookbackDays + ' дн.…';
-while (opened < maxOpened && scrollSteps < maxScrollSteps) {
+mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVisited <= maxMonths) {
   assertHistory();
   if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
   const list = await waitForHistoryRows();
   if (index >= list.length) {
-    window.__financeProgress = 'Прочитано ' + found.size + '. Догружаю более ранние операции…';
+    window.__financeProgress = 'Прочитано ' + found.size + '. Догружаю операции за ' + historyMonthNames[monthCursor.month].toLowerCase() + '…';
     const before = list.map(text);
     let result;
     try { result = await nextHistoryWindow(list); }
@@ -268,31 +362,43 @@ while (opened < maxOpened && scrollSteps < maxScrollSteps) {
       const appended = result.list.length > before.length && before.every((value, i) => value === text(result.list[i]));
       if (!appended) index = 0;
       stalls = 0;
-    } else if (!result.movement.moved && result.movement.atBottom) {
-      if (++stalls >= 2) break;
-    } else {
-      stalls = 0;
+      continue;
     }
-    continue;
+    if (!result.movement.moved && result.movement.atBottom) stalls++; else stalls = 0;
+    if (stalls < 2) continue;
+
+    // The selected month is exhausted. Move to the immediately previous month;
+    // this is required both for the first full import and for a 7-day refresh
+    // that crosses a month boundary.
+    const move = await selectPreviousHistoryMonth(monthCursor, rowSignature(list));
+    if (move.status === 'moved') {
+      monthCursor = move.cursor;
+      monthsVisited++;
+      index = 0; stalls = 0;
+      window.__financeProgress = 'Прочитано ' + found.size + '. Перехожу к ' + historyMonthNames[monthCursor.month].toLowerCase() + ' ' + monthCursor.year + '…';
+      await waitForHistoryRows();
+      continue;
+    }
+    if (move.status === 'end') stopReason = cutoff === null ? 'full_history_exhausted' : 'history_beginning_reached';
+    else stopReason = 'month_navigation_unavailable';
+    break;
   }
   const rowText = text(list[index]);
   list[index].click();
   opened++;
   const cardText = await waitFor(() => onCard() && currentCardText());
   const operation = parseCard(location.href, cardText, rowText);
-  // Reuse the site's navigation, which also preserves its month and account filters.
   const back = controls().find(el => el.getClientRects?.().length !== 0 && /^(Назад|Вернуться)(?: |$)/.test(controlName(el)));
-  if (back) back.click();
-  else window.history.back();
+  if (back) back.click(); else window.history.back();
   await waitFor(() => !onCard());
   await closeHistoryFilters();
   await waitForHistoryRows();
-  if (cutoff !== null && Date.parse(operation.occurredAt) < cutoff) { stopReason = 'lookback_reached'; break; }
+  if (cutoff !== null && Date.parse(operation.occurredAt) < cutoff) { stopReason = 'lookback_reached'; break mainLoop; }
   found.set(operation.identity, operation);
   window.__financeProgress = 'Прочитано ' + found.size + '. Продолжаю чтение истории…';
   index++;
 }
-if (opened >= maxOpened || scrollSteps >= maxScrollSteps) stopReason = 'limit_reached';
+if (opened >= maxOpened || scrollSteps >= maxScrollSteps || monthsVisited > maxMonths) stopReason = 'limit_reached';
 await closeHistoryFilters();
 if (!found.size) throw Error('Не прочитано ни одной операции.');
 return JSON.stringify({operations: [...found.values()], stopReason, lookbackDays: effectiveLookbackDays});
