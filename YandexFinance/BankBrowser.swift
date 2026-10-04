@@ -36,6 +36,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     var bootstrapComplete: Bool { history.bootstrapCompleted == true }
     var canResume: Bool { !bootstrapComplete && history.bootstrapResumeMonth != nil }
     var storageAvailable: Bool { readable }
+    var stalePendingCount: Int { incrementalPolicy().stalePendingCount }
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -202,6 +203,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             resolved.insert(operation.identity)
         }
         next.operations = byID.values.sorted { lhs, rhs in
+            let lhsDate = Self.operationDate(lhs.occurredAt)
+            let rhsDate = Self.operationDate(rhs.occurredAt)
+            if let lhsDate, let rhsDate, lhsDate != rhsDate { return lhsDate > rhsDate }
             if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
             return lhs.identity < rhs.identity
         }
@@ -214,8 +218,17 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private func addIssues(_ issues: [ImportIssue], to next: inout SavedHistory) {
         var items = next.unresolvedIssues ?? []
         for issue in issues {
-            if let identity = issue.identity, let index = items.firstIndex(where: { $0.identity == identity }) { items[index] = issue }
-            else if !items.contains(issue) { items.append(issue) }
+            if let identity = issue.identity, let index = items.firstIndex(where: { $0.identity == identity }) {
+                items[index] = issue
+            } else if issue.identity == nil, let operationURL = issue.operationURL,
+                      let index = items.firstIndex(where: { $0.identity == nil && $0.operationURL == operationURL }) {
+                items[index] = issue
+            } else if issue.identity == nil,
+                      let index = items.firstIndex(where: { $0.identity == nil && $0.monthOrdinal == issue.monthOrdinal && $0.rowSummary == issue.rowSummary && $0.reason == issue.reason }) {
+                items[index] = issue
+            } else if !items.contains(issue) {
+                items.append(issue)
+            }
         }
         next.unresolvedIssues = items
     }

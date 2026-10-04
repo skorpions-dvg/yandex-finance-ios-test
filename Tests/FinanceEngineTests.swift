@@ -19,7 +19,10 @@ struct FinanceEngineTests {
 
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
-        require(FinancialEngine.classify(op(5_000, kind: "unclassified_income")).type == .income, "income")
+        require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
+        require(FinancialEngine.classify(op(5_100, kind: "unclassified_income")).type == .unknown, "technical unclassified income must stay unknown")
+        require(FinancialEngine.classify(op(5_200, kind: "unclassified_income", category: "Зарплата", description: "Зарплата за месяц")).type == .income, "salary text confirms income")
+        require(FinancialEngine.classify(op(5_300, kind: "unclassified_income", description: "Кэшбэк 5 процентов")).type == .income, "cashback with percent text remains cashback income")
         require(FinancialEngine.classify(op(3_000, kind: "refund", category: "Возврат")).type == .refund, "refund")
         require(FinancialEngine.classify(op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами")).type == .internalTransfer, "internal transfer")
         require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")
@@ -32,14 +35,19 @@ struct FinanceEngineTests {
         require(FinancialEngine.classify(op(-6_000, kind: "legacy_kind")).type == .expense, "completed negative unknown kind is an expense")
         require(FinancialEngine.classify(op(-6_100, kind: "unclassified_income")).type == .expense, "legacy negative income kind falls back to expense")
         require(FinancialEngine.classify(op(-6_200, kind: "income")).type == .expense, "legacy negative explicit income kind falls back to expense")
+        require(FinancialEngine.classify(op(-6_300, kind: "refund", category: "Возврат")).type == .expense, "negative stale refund metadata falls back to expense")
+        require(FinancialEngine.classify(op(-6_400, kind: "interest_income", category: "Проценты")).type == .expense, "negative stale interest metadata falls back to expense")
         require(FinancialEngine.classify(op(6_000, kind: "legacy_kind")).type == .unknown, "positive unknown kind must not be guessed as income")
         require(FinancialEngine.classify(op(-7_000, kind: "transfer")).type == .expense, "external outgoing transfer")
         require(FinancialEngine.classify(op(8_000, kind: "transfer")).type == .income, "external incoming transfer")
+        require(FinancialEngine.classify(op(8_100, kind: "grouped_operation", category: "Перевод")).type == .income, "grouped positive transfer category remains income")
+        require(FinancialEngine.classify(op(8_200, kind: "unclassified_income", category: "Проценты", description: "Проценты")).type == .interestIncome, "plain interest category remains interest income")
 
         let grouped = op(-146_800, kind: "grouped_operation", components: [-178_000, 31_200])
         let groupedAssessment = FinancialEngine.classify(grouped)
         require(groupedAssessment.type == .expense, "grouped type")
         require(groupedAssessment.expenseContributionKopecks == 146_800, "grouped parent total only")
+        require(FinancialEngine.classify(op(14_680, kind: "grouped_operation", components: [17_800, -3_120])).type == .unknown, "positive grouped operation is not guessed as income")
 
         let formatter = ISO8601DateFormatter()
         let interval = DateInterval(start: formatter.date(from: "2032-06-01T00:00:00Z")!,
@@ -47,7 +55,7 @@ struct FinanceEngineTests {
         let summary = FinancialEngine.summarize([
             op(-10_000, kind: "expense"),
             op(3_000, kind: "refund", category: "Возврат"),
-            op(5_000, kind: "unclassified_income"),
+            op(5_000, kind: "income"),
             op(30, kind: "interest_income", category: "Проценты"),
             op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами"),
             op(-199, kind: "expense", description: "Комиссия банка"),
@@ -103,10 +111,35 @@ struct FinanceEngineTests {
         require(report.bankDebitKopecks == 270_100, "bank debit turnover includes expense, pending, movement and split but excludes cancelled")
         require(report.bankCreditKopecks == 46_377, "bank credit turnover includes positive bank movements")
         require(report.unknownCount == 1, "unknown credit remains visible")
+        let unknownLine = report.incompleteLines.first { $0.title == "Не определено" }
+        require(unknownLine?.children.count == 1, "unknown operations expose diagnostics")
+        require(unknownLine?.children.first?.title == "Непонятное поступление", "unknown diagnostic shows operation title")
+        require(unknownLine?.children.first?.amountKopecks == 33_300, "unknown diagnostic shows operation amount")
+        require(unknownLine?.children.first?.note?.contains("может быть перевод между своими счетами") == true, "unknown diagnostic shows classification reason")
         require(report.expenseLines.contains { $0.title == "Покупки" && $0.children.contains { $0.title == "Супермаркеты" } }, "purchase category expands")
         require(report.expenseLines.contains { $0.title == "Возвраты" }, "refund is shown inside expenses")
         require(report.expenseLines.contains { $0.title == "Сплит" }, "split is shown separately")
         require(report.incomeLines.contains { $0.title == "Проценты" }, "interest subgroup")
+
+        let positiveSafetyReport = FinancialEngine.report([
+            op(20_000, kind: "unclassified_income", description: "Неизвестное поступление"),
+            op(3_500, kind: "unclassified_income", description: "Кэшбэк 5 процентов")
+        ], in: interval)
+        require(positiveSafetyReport.incomeKopecks == 3_500, "only explicitly recognized cashback enters income")
+        require(positiveSafetyReport.unknownCount == 1, "generic positive fallback remains unknown")
+        require(positiveSafetyReport.incomeLines.contains { $0.title == "Кэшбэк" && $0.amountKopecks == 3_500 }, "cashback has priority over percent wording")
+        let positiveUnknown = positiveSafetyReport.incompleteLines.first { $0.title == "Не определено" }?.children.first
+        require(positiveUnknown?.note?.contains("Тип: unclassified_income") == true, "unknown diagnostic includes raw kind")
+
+        let staleMetadataReport = FinancialEngine.report([
+            op(-21_000, kind: "refund", category: "Возврат"),
+            op(-34_000, kind: "interest_income", category: "Проценты"),
+            op(5_500, kind: "refund", category: "Возврат")
+        ], in: interval)
+        require(staleMetadataReport.grossExpenseKopecks == 55_000, "negative stale refund/interest metadata contributes to expense")
+        require(staleMetadataReport.refundsKopecks == 5_500, "positive refund still reduces expense")
+        require(staleMetadataReport.netExpenseKopecks == 49_500, "stale metadata report net expense")
+        require(staleMetadataReport.unknownCount == 0, "negative stale metadata must not remain unknown")
 
 
         let withdrawalReport = FinancialEngine.report([

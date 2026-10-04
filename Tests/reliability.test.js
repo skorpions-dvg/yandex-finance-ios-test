@@ -376,9 +376,9 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.match(workflow, /swiftc -parse-as-library YandexFinance\/FinanceEngine\.swift Tests\/FinanceEngineTests\.swift/, 'GitHub build must execute the Swift finance tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 31;/g) || []).length, 2, 'Debug and Release build number must both be 31');
-  assert.match(readme, /текущий номер сборки — 31/);
+  assert.match(workflow, /swiftc (?:-warnings-as-errors )?-parse-as-library YandexFinance\/FinanceEngine\.swift Tests\/FinanceEngineTests\.swift/, 'GitHub build must execute the Swift finance tests');
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 33;/g) || []).length, 2, 'Debug and Release build number must both be 33');
+  assert.match(readme, /Текущий номер сборки — 33/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const incrementalBlock = swift.match(/private func incrementalPolicy[\s\S]*?private static func operationDate/)[0];
@@ -607,7 +607,7 @@ const projectV25 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodep
 const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
-assert.match(projectV25, /CURRENT_PROJECT_VERSION = 31;/);
+assert.match(projectV25, /CURRENT_PROJECT_VERSION = 33;/);
 assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Банковские списания/);
 assert.match(appSwift, /DisclosureGroup/);
@@ -624,14 +624,22 @@ assert.match(financeTests, /cash withdrawal/);
 assert.match(appSwift, /let report = FinancialEngine\.report/);
 assert.match(appSwift, /resetLocalStorage/);
 assert.match(swift, /Не сохранено после проверки/);
-assert.match(source, /V30 keeps conservative verification/);
+assert.match(source, /V33 keeps conservative verification/);
 console.log('v25: finance engine handles fractional ISO8601 dates, half-open periods, and surfaces invalid dates.');
 
 
-// v31: storage recovery and bounded incremental refresh must stay wired.
+// v33: storage recovery, bounded incremental refresh, finance safety, and unknown diagnostics must stay wired.
 assert.match(swift, /func retryOpenStorage\(\)/, 'storage failure must offer a non-destructive retry');
 assert.match(swift, /storageRetryFailed/, 'destructive reset must be gated behind a failed retry');
 assert.match(swift, /counts\.rejected == 0 && \(batch\.skippedCount/, 'rejected operations must prevent a run from being marked clean');
 assert.match(swift, /IncrementalSyncPolicy\.calculate/, 'BankBrowser must use the tested incremental sync policy');
 assert.match(appSwift, /Повторить открытие/, 'storage retry must be visible in the UI');
 assert.match(appSwift, /автообновление после сброса будет выключено/i, 'reset warning must explain that automatic bootstrap is suppressed');
+assert.match(financeEngine, /negative movement is an outflow/i, 'negative stale metadata must fall back by direction');
+assert.match(financeEngine, /unknownDetails\.append\(FinanceLine/, 'unknown operations must expose per-operation diagnostics');
+
+assert.match(financeEngine, /technical fallback into financial income|Collector uses .unclassified_income./s, 'unclassified positive movements must not be promoted blindly');
+assert.match(financeTests, /technical unclassified income must stay unknown/, 'Swift tests must cover positive unclassified safety');
+assert.match(financeTests, /cashback with percent text remains cashback income/, 'cashback must beat generic percent wording');
+assert.ok(appSwift.includes('Text("Сборка \\(buildNumber)")'), 'finance screen must expose the installed build number');
+assert.match(swift, /operationURL == operationURL/, 'identity-less issues should be deduplicated by operation URL');

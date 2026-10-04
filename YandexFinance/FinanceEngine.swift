@@ -207,10 +207,7 @@ enum FinancialEngine {
         }
 
         let explicitRefund = kind == "refund" || category.contains("возврат") || description.hasPrefix("возврат") || purpose.contains("возврат")
-        if explicitRefund {
-            guard amount > 0 else {
-                return FinancialAssessment(type: .unknown, reason: "Операция похожа на возврат, но имеет неожиданное направление суммы.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
+        if explicitRefund && amount > 0 {
             return FinancialAssessment(type: .refund, reason: "Возврат уменьшает расходы, а не считается заработком.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: amount)
         }
 
@@ -218,17 +215,21 @@ enum FinancialEngine {
             return FinancialAssessment(type: .internalTransfer, reason: "Подтверждённое перемещение между своими счетами исключено из доходов и расходов.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        let explicitInterest = kind == "interest_income" || category == "проценты" || (amount > 0 && combined.contains("процент"))
-        if explicitInterest {
-            guard amount > 0 else {
-                return FinancialAssessment(type: .unknown, reason: "Операция похожа на начисление процентов, но сумма не является поступлением.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
-            return FinancialAssessment(type: .interestIncome, reason: "Начисленные проценты считаются доходом.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
-        }
-
+        // Cashback wins over generic mentions of percentages (for example, “кэшбэк 5 процентов”).
         let cashback = amount > 0 && containsAny(combined, ["кэшбэк", "кешбэк", "cashback"])
         if cashback {
             return FinancialAssessment(type: .income, reason: "Кэшбэк считается доходом, а не возвратом покупки.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
+
+        let interestText = containsAny(combined, ["проценты", "начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])
+        let explicitInterest = kind == "interest_income" || category == "проценты" || (amount > 0 && interestText)
+        if explicitInterest && amount > 0 {
+            return FinancialAssessment(type: .interestIncome, reason: "Начисленные проценты считаются доходом.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
+
+        let salary = amount > 0 && containsAny(combined, ["зарплат", "заработная плата"])
+        if salary {
+            return FinancialAssessment(type: .income, reason: "Поступление распознано как зарплата или выплата работодателя.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
         let split = kind == "installment_payment" || operation.providers.contains(where: { normalized($0) == "bnpl" }) || category.contains("сплит")
@@ -249,7 +250,8 @@ enum FinancialEngine {
             return FinancialAssessment(type: .internalTransfer, reason: "Снятие наличных — перемещение денег, а не покупка.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        if kind == "transfer" {
+        let explicitTransfer = kind == "transfer" || category == "перевод" || category == "пополнение"
+        if explicitTransfer {
             if amount < 0 {
                 return FinancialAssessment(type: .expense, reason: "Перевод не подтверждён как перевод между своими счетами; отрицательная сумма учитывается как расход.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
             }
@@ -259,30 +261,29 @@ enum FinancialEngine {
         }
 
         // Components are diagnostic detail only. Parent total is the sole financial amount.
-        if kind == "grouped_operation" {
-            if amount < 0 {
-                return FinancialAssessment(type: .expense, reason: "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
-            if amount > 0 {
-                return FinancialAssessment(type: .income, reason: "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
-            }
+        // A negative group is a bank outflow; a positive group is not guessed as income unless
+        // one of the explicit rules above already identified what it is.
+        if kind == "grouped_operation", amount < 0 {
+            return FinancialAssessment(type: .expense, reason: "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        // At this point all special cases have already been handled. Direction is authoritative for
-        // old/stale generic kinds: a completed negative bank movement is an outflow and must not
-        // remain "unknown" merely because an older saved record carries an obsolete income kind.
+        // At this point all cases that are allowed to override the direction of a bank movement
+        // have already been handled. Direction is authoritative for old/stale metadata: a completed
+        // negative movement is an outflow even when an older saved record incorrectly says
+        // "refund", "interest_income" or another generic/obsolete kind.
         if amount < 0 {
             let reason = (kind == "expense")
                 ? "Обычное списание."
-                : "Завершённое списание со старым или неподходящим типом учтено как расход по направлению суммы."
+                : "Завершённое списание со старым или противоречивым типом учтено как расход по направлению суммы."
             return FinancialAssessment(type: .expense, reason: reason, originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        if amount > 0 && (kind == "unclassified_income" || kind == "income") {
-            return FinancialAssessment(type: .income, reason: "Поступление, не отнесённое банком к возврату, процентам или своим переводам.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        if amount > 0 && kind == "income" {
+            return FinancialAssessment(type: .income, reason: "Банк явно сохранил операцию как доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
-        // A finished positive movement is not guessed: it can be an own-account transfer.
+        // Collector uses “unclassified_income” for positive movements whose nature is not proven.
+        // Do not turn that technical fallback into financial income: it can still be an own transfer.
         return FinancialAssessment(type: .unknown, reason: "Положительная операция без подтверждённого типа не считается доходом: это может быть перевод между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
     }
 
@@ -330,6 +331,7 @@ enum FinancialEngine {
         var expenseGroups: [String: (Int, Int64, [String: (Int, Int64)])] = [:]
         var movementGroups: [String: (Int, Int64)] = [:]
         var incompleteGroups: [String: (Int, Int64)] = [:]
+        var unknownDetails: [FinanceLine] = []
 
         func add(_ groups: inout [String: (Int, Int64, [String: (Int, Int64)])], _ title: String, _ child: String?, _ amount: Int64) {
             var group = groups[title] ?? (0, Int64(0), [String: (Int, Int64)]())
@@ -396,6 +398,17 @@ enum FinancialEngine {
                 unknown.0 += 1
                 unknown.1 += assessment.originalAmountKopecks
                 incompleteGroups["Не определено"] = unknown
+                let title = operation.description.isEmpty ? "Операция без названия" : operation.description
+                let rawCategory = operation.category.isEmpty ? "Без категории" : operation.category
+                let rawKind = operation.kind.isEmpty ? "не указан" : operation.kind
+                let rawStatus = operation.status.isEmpty ? "не указан" : operation.status
+                let diagnostic = "\(assessment.reason) Дата: \(operation.occurredAt). Категория: \(rawCategory). Тип: \(rawKind). Статус: \(rawStatus)."
+                unknownDetails.append(FinanceLine(id: "unknown/\(operation.occurredAt)/\(operation.amountKopecks)/\(unknownCount)",
+                                                  title: title,
+                                                  count: 1,
+                                                  amountKopecks: operation.amountKopecks,
+                                                  note: diagnostic,
+                                                  children: []))
             }
         }
 
@@ -405,7 +418,13 @@ enum FinancialEngine {
         let incompleteLines = incompleteOrder.compactMap { title -> FinanceLine? in
             guard let item = incompleteGroups[title], item.0 > 0 else { return nil }
             let note = title == "В обработке" ? "Не входит в окончательный расход." : nil
-            return FinanceLine(id: title, title: title, count: item.0, amountKopecks: item.1, note: note, children: [])
+            let children = title == "Не определено"
+                ? unknownDetails.sorted { lhs, rhs in
+                    if lhs.amountKopecks != rhs.amountKopecks { return lhs.amountKopecks < rhs.amountKopecks }
+                    return lhs.title < rhs.title
+                }
+                : []
+            return FinanceLine(id: title, title: title, count: item.0, amountKopecks: item.1, note: note, children: children)
         }
         return FinanceReport(operationCount: operationCount, invalidDateCount: invalidDateCount,
                              incomeKopecks: income, grossExpenseKopecks: grossExpense, refundsKopecks: refunds,
@@ -418,9 +437,9 @@ enum FinancialEngine {
     }
 
     private static func incomeTitle(_ operation: FinancialOperationInput, _ assessment: FinancialAssessment, _ combined: String) -> String {
-        if assessment.type == .interestIncome || combined.contains("процент") { return "Проценты" }
         if containsAny(combined, ["кэшбэк", "кешбэк", "cashback"]) { return "Кэшбэк" }
-        if combined.contains("зарплат") { return "Зарплата и выплаты" }
+        if assessment.type == .interestIncome { return "Проценты" }
+        if containsAny(combined, ["зарплат", "заработная плата"]) { return "Зарплата и выплаты" }
         if containsAny(combined, ["банкомат", "внесение налич", "пополнение"]) { return "Пополнения" }
         if operation.kind == "transfer" || combined.contains("перевод") { return "Переводы от других" }
         return "Прочие доходы"

@@ -90,6 +90,10 @@ struct ContentView: View {
                         if let date = browser.history.lastCompletedSync {
                             Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
+                        if browser.stalePendingCount > 0 {
+                            Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(browser.stalePendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                         Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
                         if !browser.autoUpdate {
                             Text("Автообновление выключено. После сброса хранилища это делается специально; включите его снова после ручной синхронизации, когда будете готовы.")
@@ -196,6 +200,10 @@ struct FinanceDashboardView: View {
         return prefix + rubles(kopecks)
     }
 
+    private var buildNumber: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    }
+
     var body: some View {
         let interval = currentInterval
         let report = FinancialEngine.report(browser.history.operations.map(\.financialInput), in: interval)
@@ -210,11 +218,13 @@ struct FinanceDashboardView: View {
                     }
                     LabeledContent("Операций", value: String(report.operationCount))
                     if report.invalidDateCount > 0 {
-                        LabeledContent("Не распознано дат", value: String(report.invalidDateCount))
+                        LabeledContent("Не распознано дат в базе", value: String(report.invalidDateCount))
                             .foregroundStyle(.orange)
                     }
                     Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("Сборка \(buildNumber)")
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
 
                 incomeBlock(report)
@@ -232,6 +242,10 @@ struct FinanceDashboardView: View {
                     LabeledContent("Банковские поступления", value: rubles(report.bankCreditKopecks))
                     Text("Это банковский оборот за период: все завершённые и находящиеся в обработке движения по знаку суммы, кроме отменённых. Он нужен для сверки с цифрами банка и не равен финансовым доходам/расходам: сюда могут входить свои переводы, снятие наличных, Сплит и возвраты.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if report.invalidDateCount > 0 {
+                        Text("В базе есть операции с нераспознанной датой. Их нельзя надёжно отнести к этому месяцу, поэтому сверка с банком может быть неполной.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                 }
 
                 Section("Правила") {
@@ -296,14 +310,26 @@ struct FinanceDashboardView: View {
         Section {
             DisclosureGroup {
                 ForEach(report.incompleteLines) { line in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(line.title)
-                            Spacer()
-                            Text(signed(line.amountKopecks))
+                    if line.children.isEmpty {
+                        incompleteRow(line)
+                    } else {
+                        DisclosureGroup {
+                            ForEach(line.children) { child in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(child.title)
+                                        Spacer()
+                                        Text(signed(child.amountKopecks))
+                                    }
+                                    if let note = child.note {
+                                        Text(note).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        } label: {
+                            incompleteRow(line)
                         }
-                        Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
-                        if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             } label: {
@@ -314,6 +340,18 @@ struct FinanceDashboardView: View {
 
     private func incompleteCount(_ report: FinanceReport) -> Int {
         report.incompleteLines.reduce(0) { $0 + $1.count }
+    }
+
+    private func incompleteRow(_ line: FinanceLine) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(line.title)
+                Spacer()
+                Text(signed(line.amountKopecks))
+            }
+            Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
+            if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
+        }
     }
 
     private func expenseAmount(_ line: FinanceLine) -> String {
