@@ -92,6 +92,35 @@ assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сум�
   console.log('Filter safety: enabled hide-switches are disabled and applied automatically.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
+// A stale mobile "Operations for period" sheet must be dismissed instead of
+// blocking automatic startup forever after a failed month-resume attempt.
+(async () => {
+  let sheet = true, closeClicks = 0, clock = 0;
+  const choose = {innerText: 'Выбрать', getClientRects: () => sheet ? [{}] : [], closest: () => null,
+    getAttribute: () => null, querySelector: () => null,
+    getBoundingClientRect: () => ({left: 40, top: 500, width: 300, height: 60}), click() {}};
+  const close = {innerText: '', getClientRects: () => sheet ? [{}] : [], closest: () => null,
+    getAttribute: () => null, querySelector: sel => sel === 'svg' ? {} : null,
+    getBoundingClientRect: () => ({left: 330, top: 110, width: 44, height: 44}),
+    click() { closeClicks++; sheet = false; }};
+  const document = {get body() { return {innerText: sheet ? 'Операции за период\nС этой даты\nПо эту дату' : 'История'}; },
+    querySelectorAll(selector) {
+      if (selector === 'button,[role="button"]') return sheet ? [choose, close] : [];
+      if (selector.includes('switch') || selector.includes('checkbox')) return [];
+      return [];
+    }, dispatchEvent() {}};
+  const window = {innerWidth: 390};
+  class FakeDate extends Date { static now() { return clock; } }
+  class FakeKeyboardEvent { constructor() {} }
+  const fn = new Function('document','window','Date','setTimeout','KeyboardEvent','location', helpers + '\nreturn dismissHistoryPeriodSheet;')(
+    document, window, FakeDate, (cb, ms) => { clock += ms; cb(); }, FakeKeyboardEvent,
+    new URL('https://bank.yandex.ru/my/transactions-history'));
+  assert.equal(await fn(), true);
+  assert.equal(closeClicks, 1, 'the icon-only top-right close button must dismiss the stale period sheet');
+  assert.equal(sheet, false);
+  console.log('v19 startup recovery: stale period sheet is dismissed instead of hanging the app.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
 // A missing immediately previous month must jump to the nearest older visible month,
 // not claim that the bank history ended.
 (async () => {
@@ -177,7 +206,7 @@ assert.ok(!/var\s+byID\s*=\s*Dictionary\(uniqueKeysWithValues:/.test(swift), 'Du
 const inactiveBody = swift.match(/func becameInactive\(\) \{([\s\S]*?)\n    \}/)?.[1] || '';
 assert.ok(!/if\s+busy\s*\{\s*cancel\(\)/.test(inactiveBody) && !/self\.cancel\(\)/.test(inactiveBody), '.inactive must not cancel an active import');
 assert.ok(appSwift.includes('Синхронизировать 6 месяцев'), 'Manual six-month retry button must exist');
-assert.ok(swift.includes('self.fullHistoryImported ? 7 : 183'), 'Automatic bootstrap must use 183 days before switching to 7 days');
+assert.match(swift, /history\.operations\.isEmpty\) \? 183 : 7/, 'Automatic startup must use 183 days only before any operation has been saved, then fall back to 7 days');
 assert.ok(swift.includes('requestedLookbackDays == 183'), 'Swift must recognize the six-month bootstrap as the initial sync');
 assert.ok(source.includes("stopReason === 'running' && (opened >= maxOpened"), 'Limit must not overwrite a more specific stop reason');
 assert.ok(!source.includes('enoughMonthChoices'), 'Picker-size heuristic must not mark full history complete');
@@ -336,7 +365,7 @@ console.log('Swift/static reliability guards passed.');
   console.log('v18 fast path: stable linked history skips card safely; recent/non-terminal rows still require full detail.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
-// v18: regression guards and project consistency.
+// v19: regression guards and project consistency.
 {
   const models = fs.readFileSync(path.join(__dirname, '../YandexFinance/Models.swift'), 'utf8');
   const project = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodeproj/project.pbxproj'), 'utf8');
@@ -353,8 +382,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 18;/g) || []).length, 2, 'Debug and Release build number must both be 18');
-  assert.match(readme, /текущий номер сборки — 18/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 19;/g) || []).length, 2, 'Debug and Release build number must both be 19');
+  assert.match(readme, /текущий номер сборки — 19/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
@@ -371,7 +400,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /fastSkippedCount:\s*Int\?/, 'Batch must expose fast-path metrics');
   assert.match(models, /openedCardCount:\s*Int\?/, 'Batch must expose opened-card metrics');
   assert.match(source, /waitFor\(\(\) => onCard\(\) && currentCardText\(\), 8000\)/, 'Card readiness timeout must be capped at 8 seconds');
-  console.log('v18 static guards: six-month bootstrap, safe fast path, 8-second card timeout, navigation fallback, workflow and docs passed.');
+  assert.match(source, /dismissHistoryPeriodSheet/, 'A failed month restore must be able to close the mobile period sheet');
+  console.log('v19 static guards: startup fallback, period-sheet cleanup, safe fast path, 8-second card timeout, navigation fallback, workflow and docs passed.');
 }
 
 // A resumed full pass starts from the saved oldest month instead of rereading the current month.

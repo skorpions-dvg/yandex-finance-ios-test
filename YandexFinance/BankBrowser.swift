@@ -19,8 +19,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var checkpointAdded = 0
     private var checkpointChanged = 0
 
-    // V18 keeps the same six-month bootstrap marker. Stable already-saved operations
-    // can now be verified from their direct list link without reopening the card.
+    // V19 keeps the six-month bootstrap marker and V18 fast path. After a partial
+    // bootstrap that already saved data, normal app launches only refresh 7 days;
+    // the explicit six-month button is used to retry older months.
     private let fullHistoryKey = "initialSixMonthsImportedV1"
     private let fullHistoryResumeKey = "fullHistoryResumeOrdinalV2"
     private let boundaryOrdinalKey = "fullHistoryBoundaryOrdinalV2"
@@ -116,7 +117,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
                 if ready {
                     self.automaticTask = nil
-                    self.read(mode: "history", lookbackDays: self.fullHistoryImported ? 7 : 183)
+                    let automaticLookback = (!self.fullHistoryImported && self.history.operations.isEmpty) ? 183 : 7
+                    self.read(mode: "history", lookbackDays: automaticLookback)
                     return
                 }
             }

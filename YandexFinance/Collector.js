@@ -1,4 +1,4 @@
-// Runs only on the bank history page. V18 keeps full card detail for new/changed operations, but skips reopening stable known rows when a direct operation link proves identity.
+// Runs only on the bank history page. V19 keeps the V19 fast path and hardens startup recovery from a half-open mobile period sheet.
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
@@ -115,6 +115,39 @@ function isVisible(el) {
 }
 function activeSwitches() {
   return [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].filter(isVisible);
+}
+function historyPeriodSheetOpen() {
+  const bodyText = text(document.body);
+  if (!/Операции за период/i.test(bodyText)) return false;
+  return controls().filter(isVisible).some(el => text(el) === 'Выбрать');
+}
+async function dismissHistoryPeriodSheet() {
+  if (!historyPeriodSheetOpen()) return true;
+  const visible = controls().filter(isVisible);
+  let close = visible.find(el => /^(Закрыть|Отмена|Close)(?:\s|$)/i.test(controlName(el)));
+  if (!close) {
+    const viewportWidth = Math.max(320, Number(window.innerWidth) || 430);
+    const icons = visible.map(el => ({el, rect: el.getBoundingClientRect?.()})).filter(x => {
+      const r = x.rect;
+      return r && !text(x.el) && !!x.el.querySelector?.('svg') && r.width > 0 && r.height > 0 &&
+        r.left >= viewportWidth * 0.62 && r.top <= 360 && r.width <= 100 && r.height <= 100;
+    }).sort((a, b) => a.rect.top - b.rect.top || b.rect.left - a.rect.left);
+    close = icons[0]?.el || null;
+  }
+  if (close) {
+    try { close.click(); } catch { }
+    const deadline = Date.now() + 1800;
+    while (Date.now() < deadline) {
+      if (!historyPeriodSheetOpen()) return true;
+      await sleep(70);
+    }
+  }
+  try {
+    document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', code: 'Escape', bubbles: true}));
+    document.dispatchEvent(new KeyboardEvent('keyup', {key: 'Escape', code: 'Escape', bubbles: true}));
+  } catch { }
+  await sleep(120);
+  return !historyPeriodSheetOpen();
 }
 async function closeHistoryFilters() {
   let switches = activeSwitches();
@@ -292,7 +325,11 @@ async function applyHistoryMonthChoice(candidate, target, previousRowsSignature)
     rowsChanged = true;
   } catch { }
 
-  if (!periodConfirmed && !rowsChanged) return {status: 'unavailable'};
+  if (!periodConfirmed && !rowsChanged) {
+    await dismissHistoryPeriodSheet();
+    return {status: 'unavailable'};
+  }
+  await dismissHistoryPeriodSheet();
   return {status: 'moved', cursor: target};
 }
 async function selectPreviousHistoryMonth(cursor, previousRowsSignature) {
@@ -335,8 +372,9 @@ async function selectPreviousHistoryMonth(cursor, previousRowsSignature) {
   if (!candidate) {
     // Only an explicit bank message may prove that there is no older history.
     // Missing picker items can also mean an empty month or a changed DOM.
-    if (/более ранних операций нет|нет более ранних операций|операций за более ранний период нет|дальше операций нет|вы дошли до начала истории|начало истории|это все операции/i.test(document.body?.innerText || ''))
-      return {status: 'end', cursor};
+    const explicitEnd = /более ранних операций нет|нет более ранних операций|операций за более ранний период нет|дальше операций нет|вы дошли до начала истории|начало истории|это все операции/i.test(document.body?.innerText || '');
+    await dismissHistoryPeriodSheet();
+    if (explicitEnd) return {status: 'end', cursor};
     return {status: 'unavailable', cursor};
   }
 
@@ -348,7 +386,7 @@ async function restoreHistoryMonth(target, cursor) {
   const anchor = selectedMonthControl();
   if (!anchor) return false;
   let choices = await openMonthPicker(anchor);
-  if (!choices.length) return false;
+  if (!choices.length) { await dismissHistoryPeriodSheet(); return false; }
   let assumedYear = cursor.year;
   let candidate = choices.map(x => normalizedChoice(x, assumedYear))
     .find(x => x.month === target.month && x.year === target.year);
@@ -374,9 +412,10 @@ async function restoreHistoryMonth(target, cursor) {
         .find(x => x.month === target.month && x.year === target.year);
     }
   }
-  if (!candidate) return false;
+  if (!candidate) { await dismissHistoryPeriodSheet(); return false; }
   const before = rowSignature(rows());
   const applied = await applyHistoryMonthChoice(candidate, target, before);
+  if (applied.status !== 'moved') await dismissHistoryPeriodSheet();
   return applied.status === 'moved';
 }
 
@@ -479,7 +518,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const normalized = cardText.replace(/\u200b/g, '');
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 18).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 19).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -511,7 +550,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 18).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 19).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -587,6 +626,10 @@ const knownOperationMap = parseKnownOperations(typeof knownOperationsJson === 'u
 
 try {
 assertHistory();
+if (historyPeriodSheetOpen()) {
+  const closed = await dismissHistoryPeriodSheet();
+  if (!closed) throw Error('Не удалось закрыть окно выбора периода. Закройте его крестиком и повторите обновление.');
+}
 window.__financeCancelled = false;
 window.__financeCheckpointQueue = [];
 window.__financeProgress = 'Подготовка истории…';
@@ -596,7 +639,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 18).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 19).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card', skippedCount: 0});
 }
@@ -649,6 +692,7 @@ if (monthCursor.month !== startCursor.month || monthCursor.year !== startCursor.
     : 'Возвращаю историю к текущему месяцу перед синхронизацией…';
   const movedToStart = await restoreHistoryMonth(startCursor, monthCursor);
   if (!movedToStart) {
+    await dismissHistoryPeriodSheet();
     if (parsedResumeOrdinal !== null)
       throw Error('Не удалось продолжить синхронизацию с сохранённого месяца. Запустите «Синхронизировать 6 месяцев», чтобы начать заново.');
     throw Error('Не удалось перейти к текущему месяцу перед синхронизацией.');
@@ -801,6 +845,7 @@ return JSON.stringify({operations: [...found.values()], stopReason,
   fastSkippedCount, openedCardCount});
 
 } catch (error) {
+  try { await dismissHistoryPeriodSheet(); } catch { }
   const detail = String(error?.message || 'Не удалось прочитать страницу.');
   const wasCancelled = !!window.__financeCancelled;
   // Cancellation is a normal partial-success state. Return a batch even when the
