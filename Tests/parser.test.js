@@ -116,7 +116,7 @@ async function checkFullHistoryNoCutoff() {
   const vm = require('node:vm');
   let screen = 'list', opened = 0, returned = 0, filtersClosed = 0, clock = 0, picker = false, selectedMonth = 'Октябрь';
   const location = new URL('https://bank.yandex.ru/my/transactions-history');
-  const body = {get innerText() { return screen.startsWith('card') ? purchase : 'История'; }};
+  const body = {get innerText() { return screen.startsWith('card') ? purchase : (selectedMonth === 'Сентябрь' ? 'История\nНет более ранних операций' : 'История'); }};
   const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
   const control = (label, click, aria = '') => ({innerText: label, click, parentElement: root,
     getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
@@ -159,8 +159,8 @@ async function checkFullHistoryNoCutoff() {
   assert.equal(opened, 2);
   assert.equal(returned, 2);
   assert.ok(filtersClosed >= 3);
-  assert.equal(selectedMonth, 'Сентябрь');
-  console.log('Full first sync: October -> September month transition and confirmed history beginning passed.');
+  assert.equal(selectedMonth, 'Октябрь');
+  console.log('Full first sync: October -> September, explicit history beginning, and period restore passed.');
 }
 checkFullHistoryNoCutoff().catch(error => {console.error(error); process.exitCode = 1;});
 
@@ -207,7 +207,7 @@ async function checkSevenDayCrossMonth() {
   assert.equal(batch.error, undefined);
   assert.equal(batch.stopReason, 'lookback_reached');
   assert.equal(batch.operations.length, 2);
-  assert.equal(selectedMonth, 'Сентябрь');
+  assert.equal(selectedMonth, 'Октябрь');
   assert.ok(batch.operations.some(x => x.identity.includes('sep-new')));
   assert.ok(!batch.operations.some(x => x.identity.includes('sep-old')));
   console.log('7-day refresh crosses October -> September and stops at the 7-day cutoff.');
@@ -278,3 +278,47 @@ async function checkPermanentFooterLoader() {
   console.log('Regression: loaded operations remain readable with a persistent footer loader.');
 }
 checkPermanentFooterLoader().catch(error => {console.error(error); process.exitCode = 1;});
+
+async function checkMobilePeriodSheetRequiresApply() {
+  const vm = require('node:vm');
+  const helpers = source.split('\ntry {\nassertHistory();')[0];
+  let clock = 0, picker = false, periodSheet = false, selectedMonth = 'Октябрь', pendingMonth = null, applied = 0;
+  const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
+  const control = (label, click) => ({innerText: label, click, parentElement: root,
+    getClientRects: () => [{}], getAttribute: () => null, contains: () => false,
+    closest: () => null, querySelector: () => null, getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
+  const octRow = control('Октябрьская операция −100 ₽', () => {});
+  const sepRow = control('Сентябрьская операция −200 ₽', () => {});
+  const monthButton = () => control(selectedMonth, () => {picker = true; periodSheet = true;});
+  const sepChoice = control('Сентябрь', () => {pendingMonth = 'Сентябрь'; picker = false;});
+  const octChoice = control('Октябрь', () => {pendingMonth = 'Октябрь'; picker = false;});
+  const choose = control('Выбрать', () => {
+    if (pendingMonth) selectedMonth = pendingMonth;
+    pendingMonth = null; periodSheet = false; picker = false; applied++;
+  });
+  const actionables = () => {
+    const base = [monthButton(), selectedMonth === 'Октябрь' ? octRow : sepRow];
+    if (picker) return [...base, sepChoice, octChoice];
+    if (periodSheet) return [...base, choose];
+    return base;
+  };
+  const document = {body: {innerText: 'История'}, scrollingElement: root, documentElement: root,
+    querySelectorAll(selector) {
+      if (selector === 'button,[role="button"]' || selector.includes('[role="option"]')) return actionables();
+      if (selector.includes('switch')) return [];
+      return [];
+    }};
+  const window = {};
+  const fn = new Function('document','window','Date','setTimeout','location','getComputedStyle','Event',
+    helpers + '\nreturn selectPreviousHistoryMonth;')(
+      document, window, {now: () => clock}, (cb, ms) => {clock += ms; cb();},
+      new URL('https://bank.yandex.ru/my/transactions-history'), () => ({overflowY: 'auto'}), class {});
+  const before = JSON.stringify([octRow.innerText]);
+  const result = await fn({month: 9, year: 2026}, before);
+  assert.equal(result.status, 'moved');
+  assert.equal(result.cursor.month, 8);
+  assert.equal(selectedMonth, 'Сентябрь');
+  assert.equal(applied, 1, 'Mobile date-range sheet must be confirmed with «Выбрать»');
+  console.log('Mobile period sheet: previous month is applied with the bottom «Выбрать» button.');
+}
+checkMobilePeriodSheetRequiresApply().catch(error => {console.error(error); process.exitCode = 1;});

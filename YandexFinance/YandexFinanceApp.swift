@@ -33,9 +33,13 @@ struct ContentView: View {
                 if browser.busy {
                     HStack { ProgressView(); Button("Остановить") { browser.cancel() } }.padding(.bottom, 8)
                 } else {
-                    HStack {
-                        Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }
-                        Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent)
+                    VStack(spacing: 8) {
+                        HStack {
+                            Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }
+                            Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent)
+                        }
+                        Button("Синхронизировать всю историю") { browser.syncAllHistory() }
+                            .font(.footnote)
                     }.font(.footnote).padding(.bottom, 8)
                 }
             }.tabItem { Label("Банк", systemImage: "building.columns") }
@@ -47,7 +51,7 @@ struct ContentView: View {
                             Text("Обновлено: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
                         Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
-                        Text("При первой синхронизации приложение проходит историю месяц за месяцем назад и читает всю доступную историю. Затем при открытии автоматически перепроверяет последние 7 дней. Кнопка «Обновить 30 дней» запускает ручную перепроверку 30 дней. При закрытом приложении обновление не выполняется.")
+                        Text("При первой синхронизации приложение проходит историю назад и сохраняет уже прочитанные операции даже при остановке. Затем при открытии автоматически перепроверяет последние 7 дней. «Обновить 30 дней» — ручная перепроверка, а «Синхронизировать всю историю» — повтор полного прохода. При закрытом приложении гарантированное обновление не выполняется.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(browser.message).font(.footnote)
                         if browser.busy { ProgressView("Обновление операций…") }

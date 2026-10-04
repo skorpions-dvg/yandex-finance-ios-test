@@ -25,6 +25,14 @@ struct BankOperation: Codable, Equatable, Identifiable {
 struct ImportBatch: Codable {
     let operations: [BankOperation]
     let stopReason: String
+    let skippedCount: Int?
+    let warning: String?
+}
+
+struct ProgressCheckpoint: Codable {
+    let progress: String
+    let operations: [BankOperation]
+    let count: Int
 }
 
 struct SavedHistory: Codable {
