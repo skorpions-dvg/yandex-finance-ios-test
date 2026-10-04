@@ -158,6 +158,10 @@ struct FinanceDashboardView: View {
             List {
                 Section("Текущий месяц") {
                     LabeledContent("Операций в периоде", value: String(summary.operationCount))
+                    if summary.invalidDateCount > 0 {
+                        LabeledContent("Не распознано дат", value: String(summary.invalidDateCount))
+                            .foregroundStyle(.orange)
+                    }
                     LabeledContent("Расходы до возвратов", value: rubles(summary.grossExpenseKopecks))
                     LabeledContent("Возвраты", value: rubles(summary.refundsKopecks))
                     LabeledContent("Расходы после возвратов", value: rubles(summary.netExpenseKopecks))

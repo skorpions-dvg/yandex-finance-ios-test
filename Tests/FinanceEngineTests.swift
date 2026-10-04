@@ -65,6 +65,20 @@ struct FinanceEngineTests {
         require(summary.counts[.cancelled] == 1, "cancelled bucket")
         require(summary.signedAmounts[.expense] == -173_500, "component amounts must not be added to type totals")
 
+        let dateFormatter = ISO8601DateFormatter()
+        let february = DateInterval(start: dateFormatter.date(from: "2031-02-01T00:00:00Z")!,
+                                    end: dateFormatter.date(from: "2031-03-01T00:00:00Z")!)
+        let dateFormats = FinancialEngine.summarize([
+            op(-111, kind: "expense", date: "2031-02-14T12:34:56.789Z"),
+            op(-222, kind: "expense", date: "2031-02-15T12:34:56Z"),
+            op(-333, kind: "expense", date: "2031-02-16T15:34:56.123+03:00"),
+            op(-444, kind: "expense", date: "2031-03-01T00:00:00Z"),
+            op(-555, kind: "expense", date: "not-a-date")
+        ], in: february)
+        require(dateFormats.operationCount == 3, "fractional and plain ISO8601 dates must be included")
+        require(dateFormats.grossExpenseKopecks == 666, "period totals must include fractional-second timestamps")
+        require(dateFormats.invalidDateCount == 1, "invalid dates must be surfaced instead of silently disappearing")
+
         print("Finance engine tests passed")
     }
 }

@@ -60,6 +60,7 @@ struct FinancialBucket: Identifiable {
 
 struct FinancialSummary {
     let operationCount: Int
+    let invalidDateCount: Int
     let counts: [FinancialType: Int]
     let signedAmounts: [FinancialType: Int64]
     let grossExpenseKopecks: Int64
@@ -179,6 +180,19 @@ enum FinancialEngine {
         return FinancialAssessment(type: .unknown, reason: "Недостаточно подтверждённых признаков для автоматической классификации.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
     }
 
+    private static func operationDate(_ value: String) -> Date? {
+        // Collector.js serializes source timestamps with Date.toISOString(), which always
+        // includes fractional seconds (for example 2026-04-02T17:41:00.705Z).
+        // Older/migrated records and synthetic tests may omit them, so support both forms.
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: value)
+    }
+
     static func summarize(_ operations: [FinancialOperationInput], in interval: DateInterval) -> FinancialSummary {
         var counts: [FinancialType: Int] = [:]
         var signedAmounts: [FinancialType: Int64] = [:]
@@ -186,10 +200,17 @@ enum FinancialEngine {
         var refunds: Int64 = 0
         var income: Int64 = 0
         var operationCount = 0
-        let formatter = ISO8601DateFormatter()
+        var invalidDateCount = 0
 
         for operation in operations {
-            guard let date = formatter.date(from: operation.occurredAt), interval.contains(date) else { continue }
+            guard let date = operationDate(operation.occurredAt) else {
+                invalidDateCount += 1
+                continue
+            }
+            // DateInterval.contains includes the end instant. Month/day accounting needs a
+            // half-open interval [start, end), otherwise exactly 00:00 of the next period is
+            // counted twice.
+            guard date >= interval.start && date < interval.end else { continue }
             operationCount += 1
             let assessment = classify(operation)
             counts[assessment.type, default: 0] += 1
@@ -199,7 +220,8 @@ enum FinancialEngine {
             income += assessment.incomeContributionKopecks
         }
 
-        return FinancialSummary(operationCount: operationCount, counts: counts, signedAmounts: signedAmounts,
+        return FinancialSummary(operationCount: operationCount, invalidDateCount: invalidDateCount,
+                                counts: counts, signedAmounts: signedAmounts,
                                 grossExpenseKopecks: grossExpense, refundsKopecks: refunds, incomeKopecks: income)
     }
 }
