@@ -27,6 +27,8 @@ struct ImportBatch: Codable {
     let stopReason: String
     let skippedCount: Int?
     let warning: String?
+    let oldestMonthOrdinal: Int?
+    let monthsVisited: Int?
 }
 
 struct ProgressCheckpoint: Codable {

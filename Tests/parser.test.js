@@ -27,8 +27,49 @@ assert.equal(new Date(split.occurredAt).getHours(), 14);
 assert.throws(() => parse(url([ref]), purchase, '−2 000 ₽'), /Сумма не совпала/);
 assert.throws(() => parse('https://example.com/my/transactions-history/operation', purchase, ''), /Не открылась/);
 assert.throws(() => parse(url([{...ref, operationTimestamp: '2026-10-04T00:11:31'}]), purchase, ''), /часовой пояс/);
-assert.throws(() => parse(url([ref]), purchase.replace('Статус\nВыполнено', ''), ''), /статус/);
+const missingStatusPurchase = parse(url([ref]), purchase.replace('Статус\nВыполнено', ''), '−2 013,84 ₽');
+assert.equal(missingStatusPurchase.status, 'Не указан');
+assert.equal(missingStatusPurchase.kind, 'expense');
 console.log('Parser: purchase, refund, Split, stable identity, exact kopecks, and rejection cases passed.');
+
+// v16: cards from the real mobile UI that have no «Статус» must be ready and
+// classified without a 20-second wait.
+const julyTransferRef = {...ref, chainId: 'savings-to-pay', operationTimestamp: '2026-07-22T11:43:00Z'};
+const savingsToPay = [
+  'Счёт в Сейвах → Карта Пэй',
+  '22 июля, 17:43',
+  '+534 ₽',
+  'Чат с поддержкой',
+  'Получить квитанцию',
+  'Подробнее',
+  'Перевод',
+  'Со счёта в Сейвах',
+  'Куда',
+  'На карту Пэй'
+].join('\n');
+const internal = parse(url([julyTransferRef]), savingsToPay, 'Счёт в Сейвах → Карта Пэй +534 ₽', new Date(2026, 9, 4));
+assert.equal(internal.amountKopecks, 53400);
+assert.equal(internal.status, 'Не указан');
+assert.equal(internal.kind, 'internal_transfer');
+assert.equal(internal.category, 'Переводы между своими счетами');
+
+const julyInterestRef = {...ref, chainId: 'savings-interest', operationTimestamp: '2026-07-22T01:20:00Z'};
+const interestCard = [
+  'Выплата процентов',
+  '22 июля, 07:20',
+  '+0,3 ₽',
+  'Чат с поддержкой',
+  'Подробнее',
+  'Пополнение',
+  'На счёт в Сейвах'
+].join('\n');
+const interest = parse(url([julyInterestRef]), interestCard, 'Выплата процентов +0,3 ₽', new Date(2026, 9, 4));
+assert.equal(interest.amountKopecks, 30);
+assert.equal(interest.status, 'Не указан');
+assert.equal(interest.kind, 'interest_income');
+assert.equal(interest.category, 'Проценты');
+console.log('v16 parser: status-less internal transfer and interest payout classified correctly.');
+
 
 // Exercise the injected script with mobile full-page DOM and structured failures.
 async function checkMobile() {
@@ -57,6 +98,34 @@ async function checkMobile() {
   console.log('Mobile full-page card and structured error cases passed.');
 }
 checkMobile().catch(error => { console.error(error); process.exitCode = 1; });
+
+
+
+async function checkStatuslessCardReadyImmediately() {
+  const vm = require('node:vm');
+  const run = async (cardText, cardRef, expectedKind) => {
+    let clock = 0;
+    const body = {innerText: cardText};
+    const location = new URL(url([cardRef]));
+    class FakeDate extends Date { static now() { return clock; } }
+    const context = vm.createContext({
+      URL, Date: FakeDate,
+      setTimeout: fn => { clock += 250; fn(); },
+      window: {}, location,
+      document: {body, querySelectorAll: () => []}
+    });
+    const batch = JSON.parse(await vm.runInContext('(async function(mode) {' + source + '})("card")', context));
+    assert.equal(batch.error, undefined);
+    assert.equal(batch.operations.length, 1);
+    assert.equal(batch.operations[0].kind, expectedKind);
+    assert.equal(batch.operations[0].status, 'Не указан');
+    assert.equal(clock, 0, 'Status-less card must be accepted on the first readiness check, without polling timeout');
+  };
+  await run(savingsToPay, julyTransferRef, 'internal_transfer');
+  await run(interestCard, julyInterestRef, 'interest_income');
+  console.log('v16 readiness: both status-less card templates are accepted immediately, without waiting for a nonexistent status.');
+}
+checkStatuslessCardReadyImmediately().catch(error => { console.error(error); process.exitCode = 1; });
 
 // WebKit mobile text layout: amount fragments, neighbouring list and detail sums.
 for (const rendered of ['−\n2 013,84\n₽', '−2 013\n,84 ₽', '−\t2\u00a0013,84\t₽']) {

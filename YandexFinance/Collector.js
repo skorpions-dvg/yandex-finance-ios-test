@@ -5,6 +5,68 @@ const controls = () => [...document.querySelectorAll('button,[role="button"]')];
 const moneyPattern = /[+−–-]\s*[\d\s.,]+\s*₽/;
 const onCard = () => location.pathname.replace(/\/$/, '') === '/my/transactions-history/operation';
 const controlName = el => [text(el), el.getAttribute('aria-label'), el.getAttribute('title')].filter(Boolean).join(' ').trim();
+const backActionables = () => [...document.querySelectorAll('button,[role="button"],a[href]')];
+function operationBackCandidates() {
+  const viewportWidth = Math.max(320, Number(window.innerWidth) || 430);
+  return backActionables().filter(isVisible).map(el => {
+    const rect = el.getBoundingClientRect?.() || {left: 9999, top: 9999, width: 0, height: 0};
+    const name = controlName(el);
+    const href = el.getAttribute?.('href') || '';
+    const testID = [el.getAttribute?.('data-testid'), el.getAttribute?.('data-qa'), el.getAttribute?.('data-name')]
+      .filter(Boolean).join(' ');
+    const labelled = /(?:^|\s)(?:Назад|Вернуться|Back)(?:\s|$)/i.test(name + ' ' + testID);
+    const directHistory = /\/my\/transactions-history\/?(?:[?#].*)?$/.test(href);
+    const iconLike = !!el.querySelector?.('svg') && rect.width > 0 && rect.height > 0 &&
+      rect.left <= Math.min(150, viewportWidth * 0.34) && rect.top <= 240 &&
+      rect.width <= 150 && rect.height <= 130;
+    const score = labelled ? 0 : directHistory ? 1 : iconLike ? 2 : 99;
+    return {el, score, left: rect.left, top: rect.top};
+  }).filter(x => x.score < 99)
+    .sort((a, b) => a.score - b.score || a.top - b.top || a.left - b.left)
+    .map(x => x.el);
+}
+function historyScreenReady() {
+  if (onCard()) return false;
+  if (!location.pathname.startsWith('/my/transactions-history')) return false;
+  // Returning from a mobile operation can briefly reopen the history filter sheet.
+  // The route has already left /operation, so accept that state and let the normal
+  // filter cleanup below close the sheet before scanning continues.
+  return activeSwitches().length > 0 || rows().length > 0 || !!selectedMonthControl() ||
+    controls().some(el => /История/i.test(controlName(el))) || /(?:^|\n)История(?:\n|$)/i.test(text(document.body));
+}
+async function waitForHistoryReturn(timeout = 2200) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (window.__financeCancelled) throw Error('Чтение отменено пользователем.');
+    if (historyScreenReady()) return true;
+    await sleep(150);
+  }
+  return historyScreenReady();
+}
+async function leaveOperationCard() {
+  if (!onCard()) return true;
+  const tried = new Set();
+  const candidates = operationBackCandidates();
+  for (const back of candidates) {
+    if (tried.has(back)) continue;
+    tried.add(back);
+    try { back.click(); } catch { continue; }
+    if (await waitForHistoryReturn(1800)) return true;
+  }
+  try { window.history.back(); } catch { }
+  if (await waitForHistoryReturn(2600)) return true;
+
+  // Some bank shells swallow the first History API navigation while keeping the
+  // operation route mounted. Retry any still-visible back control once more after
+  // the failed history.back(), because the shell may have changed its active layer.
+  for (const back of operationBackCandidates()) {
+    try { back.click(); } catch { continue; }
+    if (await waitForHistoryReturn(1800)) return true;
+  }
+  const failure = Error('Не удалось вернуться из карточки операции к списку истории. Уже прочитанные операции сохранены.');
+  failure.code = 'NAVIGATION_FAILED';
+  throw failure;
+}
 const rows = () => {
   if (onCard()) return [];
   const candidates = controls().filter(el => el.getClientRects?.().length !== 0 && moneyPattern.test(text(el)));
@@ -12,7 +74,7 @@ const rows = () => {
 };
 // WebKit can place inline label/value pairs on one line or separate them with tabs.
 function cardLines(value) {
-  const labels = ['Категория', 'MCC', 'Статус', 'Назначение', 'Способ оплаты'];
+  const labels = ['Категория', 'MCC', 'Статус', 'Назначение', 'Способ оплаты', 'Со счёта', 'Куда'];
   return value.replace(/\u200b/g, '').split(/[\r\n\t]+/).flatMap(raw => {
     const line = raw.trim();
     for (const label of labels) {
@@ -25,20 +87,23 @@ function cardLines(value) {
   });
 }
 function currentCardText() {
-  // A desktop shell/dialog can stay mounted behind the real mobile card. Prefer
-  // the smallest visible candidate that actually looks like one operation.
+  // Different bank operation types expose different detail fields. In particular,
+  // internal transfers and interest payouts can have no «Статус» at all. Treat a
+  // card as ready once its core header (date + signed amount) is present.
+  // A desktop shell/dialog can stay mounted behind the real mobile card, so prefer
+  // candidates with operation-specific markers and then the smallest candidate.
   const roots = [...document.querySelectorAll('[role="dialog"],main'), document.body];
   const candidates = [];
   for (const root of roots) {
     if (root !== document.body && !isVisible(root)) continue;
     const value = text(root);
-    const lines = cardLines(value);
-    const statusIndex = lines.indexOf('Статус');
     const hasDate = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/i.test(value);
-    if (statusIndex >= 0 && lines[statusIndex + 1] && moneyPattern.test(value) && hasDate)
-      candidates.push({value, size: value.length});
+    const hasAmount = moneyPattern.test(value);
+    if (!hasDate || !hasAmount) continue;
+    const hasOperationMarker = /(?:^|[\r\n\t])\s*(?:Подробнее|Категория|MCC|Статус|Назначение|Способ оплаты|Перевод|Пополнение|Чат с поддержкой|Получить квитанцию)(?:\s|$)/i.test(value);
+    candidates.push({value, marker: hasOperationMarker ? 0 : 1, size: value.length});
   }
-  candidates.sort((a, b) => a.size - b.size);
+  candidates.sort((a, b) => a.marker - b.marker || a.size - b.size);
   return candidates[0]?.value || null;
 }
 function isVisible(el) {
@@ -91,7 +156,7 @@ async function waitForHistoryRows(timeout = 45000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     assertHistory();
-    if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
+    if (window.__financeCancelled) throw Error('Чтение отменено пользователем.');
     const list = rows();
     // A footer loader may stay mounted alongside usable rows. Only an empty list blocks reading.
     if (list.length) return list;
@@ -107,7 +172,7 @@ async function nextHistoryWindow(list) {
   // At the bottom allow a full network request, rather than stopping on a skeleton.
   const deadline = Date.now() + (movement.atBottom ? 15000 : 1500);
   while (Date.now() < deadline) {
-    if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
+    if (window.__financeCancelled) throw Error('Чтение отменено пользователем.');
     let next = rows();
     if (!next.length) next = await waitForHistoryRows();
     if (rowSignature(next) !== before) return {list: next, changed: true, movement};
@@ -118,18 +183,35 @@ async function nextHistoryWindow(list) {
 }
 
 const historyMonthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-const monthLabelPattern = /^(Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь)(?:\s+(\d{4}))?$/;
+const monthNameSource = '(Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь)';
+const monthLabelPattern = new RegExp(monthNameSource + '(?:[^0-9]{0,8}(\\d{4}))?', 'i');
 const actionables = () => [...document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],[role="gridcell"]')];
+function parseMonthLabel(value) {
+  const match = String(value || '').replace(/\s+/g, ' ').trim().match(monthLabelPattern);
+  if (!match) return null;
+  const canonical = historyMonthNames.find(name => name.toLowerCase() === match[1].toLowerCase());
+  if (!canonical) return null;
+  return {month: historyMonthNames.indexOf(canonical), year: match[2] ? Number(match[2]) : null};
+}
 function selectedMonthControl() {
-  return controls().find(el => monthLabelPattern.test(text(el)) && isVisible(el)) || null;
+  const candidates = controls().filter(isVisible).map(el => {
+    const raw = controlName(el);
+    const parsed = parseMonthLabel(raw);
+    if (!parsed || moneyPattern.test(raw)) return null;
+    // Prefer compact controls: this avoids mistaking a large history row/container for the selector.
+    const score = (text(el).length <= 24 ? 0 : 10) + (raw.length <= 48 ? 0 : 10);
+    return {el, score};
+  }).filter(Boolean).sort((a, b) => a.score - b.score);
+  return candidates[0]?.el || null;
 }
 function parseMonthCursor(now = new Date()) {
   const control = selectedMonthControl();
   if (!control) throw Error('Не найден переключатель месяца истории.');
-  const match = text(control).match(monthLabelPattern);
-  const month = historyMonthNames.indexOf(match[1]);
-  let year = match[2] ? Number(match[2]) : now.getFullYear();
-  if (!match[2] && month > now.getMonth()) year -= 1;
+  const parsed = parseMonthLabel(controlName(control));
+  if (!parsed) throw Error('Не распознана подпись периода истории.');
+  const month = parsed.month;
+  let year = parsed.year ?? now.getFullYear();
+  if (parsed.year === null && month > now.getMonth()) year -= 1;
   return {month, year};
 }
 function previousMonth(cursor) {
@@ -137,8 +219,9 @@ function previousMonth(cursor) {
 }
 function visibleMonthChoices(exclude) {
   return actionables().filter(el => el !== exclude && isVisible(el)).map(el => {
-    const match = text(el).match(monthLabelPattern);
-    return match ? {el, month: historyMonthNames.indexOf(match[1]), year: match[2] ? Number(match[2]) : null} : null;
+    const parsed = parseMonthLabel(controlName(el));
+    if (!parsed || moneyPattern.test(controlName(el))) return null;
+    return {el, month: parsed.month, year: parsed.year};
   }).filter(Boolean);
 }
 async function openMonthPicker(anchor) {
@@ -189,9 +272,9 @@ async function applyHistoryMonthChoice(candidate, target, previousRowsSignature)
     await waitFor(() => {
       const current = selectedMonthControl();
       if (!current) return false;
-      const match = text(current).match(monthLabelPattern);
-      return match && historyMonthNames.indexOf(match[1]) === target.month &&
-        (!match[2] || Number(match[2]) === target.year);
+      const parsed = parseMonthLabel(controlName(current));
+      return parsed && parsed.month === target.month &&
+        (parsed.year === null || parsed.year === target.year);
     }, 8000);
     periodConfirmed = true;
   } catch { }
@@ -248,7 +331,7 @@ async function selectPreviousHistoryMonth(cursor, previousRowsSignature) {
   if (!candidate) {
     // Only an explicit bank message may prove that there is no older history.
     // Missing picker items can also mean an empty month or a changed DOM.
-    if (/более ранних операций нет|нет более ранних операций|начало истории/i.test(document.body?.innerText || ''))
+    if (/более ранних операций нет|нет более ранних операций|операций за более ранний период нет|дальше операций нет|вы дошли до начала истории|начало истории|это все операции/i.test(document.body?.innerText || ''))
       return {status: 'end', cursor};
     return {status: 'unavailable', cursor};
   }
@@ -266,15 +349,23 @@ async function restoreHistoryMonth(target, cursor) {
   let candidate = choices.map(x => normalizedChoice(x, assumedYear))
     .find(x => x.month === target.month && x.year === target.year);
   if (!candidate && target.year !== cursor.year) {
-    const changedYear = await switchPickerYear(target.year, cursor.year, anchor);
-    if (changedYear) {
+    // Resume/restore may span several years. Walk one year at a time when the
+    // picker does not expose the target year directly.
+    let pickerYear = cursor.year;
+    let attempts = 0;
+    while (!candidate && pickerYear !== target.year && attempts++ < 30) {
+      const stepYear = pickerYear + (target.year < pickerYear ? -1 : 1);
+      const currentAnchor = selectedMonthControl() || anchor;
+      const changedYear = await switchPickerYear(stepYear, pickerYear, currentAnchor);
+      if (!changedYear) break;
+      pickerYear = stepYear;
       await sleep(250);
-      choices = visibleMonthChoices(anchor);
+      choices = visibleMonthChoices(currentAnchor);
       if (!choices.length) {
         const reopened = selectedMonthControl();
         if (reopened) choices = await openMonthPicker(reopened);
       }
-      assumedYear = target.year;
+      assumedYear = pickerYear;
       candidate = choices.map(x => normalizedChoice(x, assumedYear))
         .find(x => x.month === target.month && x.year === target.year);
     }
@@ -294,11 +385,11 @@ function assertHistory() {
 async function waitFor(fn, timeout = 20000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
-    if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
+    if (window.__financeCancelled) throw Error('Чтение отменено пользователем.');
     const value = fn(); if (value) return value;
     await sleep(250);
   }
-  throw Error('Страница не загрузилась вовремя. Ничего не сохранено.');
+  throw Error('Страница не загрузилась вовремя.');
 }
 function amount(value) {
   const clean = value.replace(/[\s₽]/g, '').replace(/[−–]/g, '-').replace(',', '.');
@@ -333,7 +424,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const normalized = cardText.replace(/\u200b/g, '');
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 13).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 16).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -365,14 +456,13 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 13).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 16).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
 
   const detail = label => { const index = lines.indexOf(label); return index < 0 ? null : lines[index + 1] || null; };
-  const status = detail('Статус');
-  if (!status) throw Error('Не загрузился статус операции.');
+  const status = detail('Статус') || 'Не указан';
   let occurred;
   if (dates.length) occurred = new Date(Math.min(...dates));
   else {
@@ -392,21 +482,42 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     occurred.setHours(Number(displayed[2]), Number(displayed[3]), 0, 0);
   }
   const providers = [...new Set(identities.map(x => x[0]))].sort();
-  const category = detail('Категория');
+  const rawCategory = detail('Категория');
   const purpose = detail('Назначение');
-  const installment = providers.includes('BNPL') && /Плат[её]ж/i.test(rowText + ' ' + (purpose || ''));
-  const summary = lines.includes('Подробнее') ? lines.slice(0, lines.indexOf('Подробнее')) : lines;
-  const refund = category === 'Возврат' || summary.includes('Возврат');
-  const transfer = ['Перевод','Пополнение','Переводы между своими счетами'].includes(category);
+  const detailsIndex = lines.indexOf('Подробнее');
+  const details = detailsIndex >= 0 ? lines.slice(detailsIndex + 1) : [];
+  const hasDetailHeading = heading => details.some(line => line === heading);
   const dateIndex = lines.findIndex(line => /^(Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}$/.test(line));
   const description = dateIndex > 0 ? lines[dateIndex - 1] : lines[0];
   if (!description) throw Error('Не удалось определить описание операции.');
+
+  const summary = detailsIndex >= 0 ? lines.slice(0, detailsIndex) : lines;
+  const combined = [description, rowText, ...details].filter(Boolean).join(' ');
+  const installment = providers.includes('BNPL') && /Плат[её]ж/i.test(rowText + ' ' + (purpose || ''));
+  const refund = rawCategory === 'Возврат' || summary.includes('Возврат');
+  const interestIncome = kopecks > 0 && /(?:выплат[аы]?|начислени[ея])\s+процент|процент(?:ы|ов|ный доход)/i.test(combined);
+  const sourceAccount = detail('Со счёта');
+  const destinationAccount = detail('Куда');
+  const ownAccountHint = /(?:сейв|карт[ау]\s+п[эе]й|сч[её]т(?:\s+в)?\s+п[эе]й|яндекс\s+п[эе]й)/i;
+  const arrowParts = description.split('→').map(x => x.trim()).filter(Boolean);
+  const internalTransfer = (arrowParts.length === 2 && ownAccountHint.test(arrowParts[0]) && ownAccountHint.test(arrowParts[1])) ||
+    (hasDetailHeading('Перевод') && !!sourceAccount && !!destinationAccount &&
+      ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount));
+  const transfer = internalTransfer || ['Перевод','Пополнение','Переводы между своими счетами'].includes(rawCategory) ||
+    hasDetailHeading('Перевод');
+  const category = rawCategory || (installment ? 'Платежи Сплита'
+    : interestIncome ? 'Проценты'
+    : internalTransfer ? 'Переводы между своими счетами'
+    : hasDetailHeading('Перевод') ? 'Перевод'
+    : hasDetailHeading('Пополнение') ? 'Пополнение'
+    : 'Не определено');
+
   return {identity: JSON.stringify(identities), occurredAt: occurred.toISOString(),
     timePrecision: dates.length ? 'source_timestamp' : 'display_minute',
     description, amountKopecks: kopecks, currency: 'RUB', status,
-    category: category || (installment ? 'Платежи Сплита' : 'Не определено'),
-    mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты'), providers,
-    kind: installment ? 'installment_payment' : refund ? 'refund' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};
+    category, mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты'), providers,
+    kind: installment ? 'installment_payment' : refund ? 'refund' : interestIncome ? 'interest_income'
+      : internalTransfer ? 'internal_transfer' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};
 }
 
 const found = new Map();
@@ -427,7 +538,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 13).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 16).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card', skippedCount: 0});
 }
@@ -436,7 +547,7 @@ if (onCard()) throw Error('Закройте карточку и вернитес
 let filter = controls().find(el => /Какие операции скрывать|Фильтры/i.test(controlName(el)));
 if (!filter) {
   // The mobile filter is the unlabeled icon immediately left of the month selector.
-  const month = controls().find(el => /^(Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь)(?:\s+\d{4})?$/.test(text(el)));
+  const month = selectedMonthControl();
   if (month) {
     const anchor = month.getBoundingClientRect();
     const icons = controls().filter(el => {
@@ -459,17 +570,32 @@ if (parsedLookback !== null && (!Number.isFinite(parsedLookback) || parsedLookba
   throw Error('Некорректный период синхронизации.');
 effectiveLookbackDays = parsedLookback === null ? null : Math.floor(parsedLookback);
 const cutoff = effectiveLookbackDays === null ? null : Date.now() - effectiveLookbackDays * 86400000;
+const rawResumeOrdinal = typeof resumeMonthOrdinal === 'undefined' ? null : resumeMonthOrdinal;
+const parsedResumeOrdinal = rawResumeOrdinal == null ? null : Number(rawResumeOrdinal);
+if (parsedResumeOrdinal !== null && (!Number.isInteger(parsedResumeOrdinal) || parsedResumeOrdinal < 0))
+  throw Error('Некорректная точка продолжения полной синхронизации.');
+function cursorFromOrdinal(value) {
+  const year = Math.floor(value / 12);
+  return {month: value - year * 12, year};
+}
 
 let index = 0, stalls = 0, opened = 0, scrollSteps = 0, monthsVisited = 1, stopReason = 'running';
 monthCursor = parseMonthCursor();
 initialMonthCursor = {...monthCursor};
 const nowForStart = new Date();
 const currentMonthCursor = {month: nowForStart.getMonth(), year: nowForStart.getFullYear()};
-if (monthCursor.month !== currentMonthCursor.month || monthCursor.year !== currentMonthCursor.year) {
-  window.__financeProgress = 'Возвращаю историю к текущему месяцу перед синхронизацией…';
-  const movedToCurrent = await restoreHistoryMonth(currentMonthCursor, monthCursor);
-  if (!movedToCurrent) throw Error('Не удалось перейти к текущему месяцу перед синхронизацией.');
-  monthCursor = currentMonthCursor;
+const startCursor = cutoff === null && parsedResumeOrdinal !== null ? cursorFromOrdinal(parsedResumeOrdinal) : currentMonthCursor;
+if (monthCursor.month !== startCursor.month || monthCursor.year !== startCursor.year) {
+  window.__financeProgress = cutoff === null && parsedResumeOrdinal !== null
+    ? 'Продолжаю полную синхронизацию с ' + historyMonthNames[startCursor.month].toLowerCase() + ' ' + startCursor.year + '…'
+    : 'Возвращаю историю к текущему месяцу перед синхронизацией…';
+  const movedToStart = await restoreHistoryMonth(startCursor, monthCursor);
+  if (!movedToStart) {
+    if (cutoff === null && parsedResumeOrdinal !== null)
+      throw Error('Не удалось продолжить полную синхронизацию с сохранённого месяца. Запустите «Синхронизировать всю историю», чтобы начать заново.');
+    throw Error('Не удалось перейти к текущему месяцу перед синхронизацией.');
+  }
+  monthCursor = startCursor;
 }
 const maxOpened = cutoff === null ? 5000 : 300;
 const maxScrollSteps = cutoff === null ? 2500 : 200;
@@ -561,11 +687,7 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
     window.__financeProgress = 'Прочитано ' + found.size + (skippedCount ? ', пропущено ' + skippedCount : '') + '. Продолжаю чтение истории…';
   }
 
-  if (onCard()) {
-    const back = controls().find(el => el.getClientRects?.().length !== 0 && /^(Назад|Вернуться)(?: |$)/.test(controlName(el)));
-    if (back) back.click(); else window.history.back();
-    await waitFor(() => !onCard());
-  }
+  if (onCard()) await leaveOperationCard();
   // Some mobile builds reopen the history filter sheet after returning from a
   // card. Close it only when it is actually present; failures preserve `found`.
   if (activeSwitches().length) await closeHistoryFilters();
@@ -587,19 +709,21 @@ if (!window.__financeCancelled && initialMonthCursor && monthCursor) {
   try { await restoreHistoryMonth(initialMonthCursor, monthCursor); } catch { }
 }
 
-if (!found.size) {
-  if (skippedCount) throw Error('Не удалось сохранить операции: пропущено карточек ' + skippedCount + '. ' + lastWarning);
-  throw Error('Не прочитано ни одной операции.');
-}
 return JSON.stringify({operations: [...found.values()], stopReason,
-  lookbackDays: effectiveLookbackDays, skippedCount, warning: lastWarning || null});
+  lookbackDays: effectiveLookbackDays, skippedCount, warning: lastWarning || null,
+  oldestMonthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null, monthsVisited});
 
 } catch (error) {
   const detail = String(error?.message || 'Не удалось прочитать страницу.');
-  if (found.size) {
+  const wasCancelled = !!window.__financeCancelled;
+  // Cancellation is a normal partial-success state. Return a batch even when the
+  // current in-memory map is empty: checkpoints may already have been persisted by
+  // Swift, and the UI must never claim that saved work was discarded.
+  if (found.size || wasCancelled) {
     return JSON.stringify({operations: [...found.values()],
-      stopReason: window.__financeCancelled ? 'cancelled' : 'interrupted',
-      lookbackDays: effectiveLookbackDays, skippedCount, warning: detail});
+      stopReason: wasCancelled ? 'cancelled' : 'interrupted',
+      lookbackDays: effectiveLookbackDays, skippedCount, warning: wasCancelled ? null : detail,
+      oldestMonthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null, monthsVisited: typeof monthsVisited === 'number' ? monthsVisited : 0});
   }
   return JSON.stringify({error: detail});
 }

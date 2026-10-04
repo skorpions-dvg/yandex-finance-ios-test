@@ -31,6 +31,47 @@ assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сум�
   assert.equal(fn(), purchase);
 }
 
+// Returning from a full-page operation must survive an unlabeled icon-only back
+// control and a swallowed History API back navigation. The icon is retried after
+// history.back() because the bank shell can change layers without changing route.
+(async () => {
+  let screen = 'card', clock = 0, arrowClicks = 0, historyBacks = 0;
+  const location = new URL('https://bank.yandex.ru/my/transactions-history/operation?id=x');
+  const arrow = {
+    innerText: '',
+    getClientRects: () => [{}],
+    closest: () => null,
+    querySelector: selector => selector === 'svg' ? {} : null,
+    getBoundingClientRect: () => ({left: 24, right: 68, top: 90, width: 44, height: 44}),
+    getAttribute: () => null,
+    click() {
+      arrowClicks++;
+      if (arrowClicks >= 2) {
+        screen = 'list';
+        location.href = 'https://bank.yandex.ru/my/transactions-history';
+      }
+    }
+  };
+  const body = {get innerText() { return screen === 'card' ? purchase : 'История'; }};
+  const document = {body, querySelectorAll(selector) {
+    if (selector === 'button,[role="button"],a[href]') return screen === 'card' ? [arrow] : [];
+    if (selector === 'button,[role="button"]') return [];
+    if (selector.includes('switch') || selector.includes('checkbox')) return [];
+    if (selector.includes('[role="option"]')) return [];
+    return [];
+  }};
+  const window = {innerWidth: 390, history: {back() { historyBacks++; /* intentionally swallowed */ }}};
+  class FakeDate extends Date { static now() { return clock; } }
+  const context = vm.createContext({URL, Date: FakeDate, setTimeout: (fn, ms) => { clock += ms; fn(); },
+    window, location, document});
+  const leave = vm.runInContext('(function(){' + helpers + '; return leaveOperationCard;})()', context);
+  assert.equal(await leave(), true);
+  assert.equal(screen, 'list');
+  assert.equal(historyBacks, 1, 'history.back must be attempted after the first arrow click fails');
+  assert.equal(arrowClicks, 2, 'the unlabeled top-left arrow must be retried after a swallowed history.back');
+  console.log('Card navigation: unlabeled arrow + swallowed history.back recovers without a 20-second stall.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
 // Enabled "hide operation type" switches are automatically disabled before Apply.
 (async () => {
   let enabled = true, closed = false, clock = 0;
@@ -127,7 +168,8 @@ assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сум�
   assert.equal(batch.stopReason, 'cancelled');
   assert.equal(batch.operations.length, 1);
   assert.ok(batch.operations[0].identity.includes('cancel-save'));
-  console.log('Cancellation: already parsed operations are returned for saving.');
+  assert.equal(batch.warning, null, 'Cancellation must not append a contradictory warning');
+  console.log('Cancellation: already parsed operations are returned for saving without contradictory warning text.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
 // Static guards for Swift-side regressions Grok identified.
@@ -235,4 +277,92 @@ console.log('Swift/static reliability guards passed.');
   assert.ok(batch.operations[0].identity.includes('filter-failure'));
   assert.match(batch.warning, /применить фильтр/);
   console.log('Filter close failure: already parsed operations are returned for saving.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
+// v16: regression guards and project consistency.
+{
+  const models = fs.readFileSync(path.join(__dirname, '../YandexFinance/Models.swift'), 'utf8');
+  const project = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodeproj/project.pbxproj'), 'utf8');
+  const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/build-ios.yml'), 'utf8');
+  const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
+  const freeSetup = fs.readFileSync(path.join(__dirname, '../FREE-SETUP.md'), 'utf8');
+
+  assert.ok(!source.includes('Ничего не сохранено'), 'Cancellation/timeout text must not contradict checkpoint saving');
+  const exhaustedCase = swift.match(/case "full_history_exhausted":([\s\S]*?)case "history_beginning_reached":/)?.[1] || '';
+  assert.match(exhaustedCase, /fullHistoryImported\s*=\s*true/, 'A skipped card must not block completion after the history boundary was reached');
+  assert.ok(!/skipped\s*==\s*0[\s\S]*fullHistoryImported\s*=\s*true/.test(swift), 'Full completion must not require zero parser skips');
+  assert.match(swift, /fullHistoryResumeOrdinal/, 'Interrupted full sync must persist a resume month');
+  assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
+  assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
+  assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 16;/g) || []).length, 2, 'Debug and Release build number must both be 16');
+  assert.match(readme, /текущий номер сборки — 16/);
+  assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
+
+  const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
+  assert.deepEqual(monthParser('Октябрь'), {month: 9, year: null});
+  assert.deepEqual(monthParser('Период: Октябрь, 2026'), {month: 9, year: 2026});
+  assert.deepEqual(monthParser('Выбран Сентябрь · 2025'), {month: 8, year: 2025});
+  assert.match(source, /const status = detail\('Статус'\) \|\| 'Не указан'/, 'Status must be optional for operation cards');
+  assert.match(source, /internal_transfer/, 'Internal own-account transfers must have a dedicated kind');
+  assert.match(source, /interest_income/, 'Interest payouts must have a dedicated kind');
+  assert.match(swift, /fullHistoryImportedV5/, 'v15 must invalidate old full-history completion so formerly skipped cards are revisited');
+  assert.match(swift, /fullHistoryResumeOrdinalV2/, 'v15 must also invalidate old resume points so skipped cards in newer months are rescanned');
+  assert.match(swift, /fullHistoryBoundaryOrdinalV2/, 'v15 must not reuse old boundary confirmation evidence');
+  console.log('v16 static guards: completion, resume, cancellation wording, status-less cards, navigation fallback, workflow and docs passed.');
+}
+
+// A resumed full pass starts from the saved oldest month instead of rereading the current month.
+(async () => {
+  let screen = 'list', clock = Date.parse('2026-10-04T12:00:00Z'), picker = false, selectedMonth = 'Октябрь 2026';
+  let openedOctober = 0, openedSeptember = 0;
+  const location = new URL('https://bank.yandex.ru/my/transactions-history');
+  const body = {get innerText() {
+    if (screen === 'card-sep') return purchase;
+    return selectedMonth.startsWith('Сентябрь') ? 'История\nЭто все операции' : 'История';
+  }};
+  const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
+  const control = (label, click, aria = '') => ({innerText: label, click, parentElement: root,
+    getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
+    closest: () => null, querySelector: sel => sel === 'svg' ? {} : null,
+    getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
+  const octRow = control('Октябрьская −2 013,84 ₽', () => {openedOctober++;});
+  const sepRow = control('Сентябрьская −2 013,84 ₽', () => {
+    openedSeptember++; screen = 'card-sep';
+    location.href = url([{...ref, chainId: 'resume-sep', operationTimestamp: '2026-09-20T08:00:00Z'}]);
+  });
+  const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
+  const chooseFilter = control('Выбрать', () => {screen = 'list';});
+  const account = control('Все карты и счета', () => {});
+  const monthButton = () => control('Период: ' + selectedMonth, () => {picker = true;});
+  const sepChoice = control('Сентябрь 2026', () => {selectedMonth = 'Сентябрь 2026'; picker = false; root.scrollTop = 0;});
+  const octChoice = control('Октябрь 2026', () => {selectedMonth = 'Октябрь 2026'; picker = false; root.scrollTop = 0;});
+  const sw = {checked: false, getAttribute: () => 'false', getClientRects: () => [{}], closest: () => null};
+  const actionables = () => {
+    if (screen === 'filters') return [chooseFilter];
+    if (screen !== 'list') return [];
+    const list = selectedMonth.startsWith('Октябрь') ? [octRow] : [sepRow];
+    const base = [filter, monthButton(), account, ...list];
+    return picker ? [...base, sepChoice, octChoice] : base;
+  };
+  const document = {body, scrollingElement: root, documentElement: root, querySelectorAll(selector) {
+    if (selector === '[role="dialog"],main') return [body];
+    if (selector.includes('switch')) return screen === 'filters' ? [sw] : [];
+    if (selector === 'button,[role="button"]' || selector.includes('[role="option"]')) return actionables();
+    return [];
+  }};
+  const window = {history: {back() {screen = 'list'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
+  class FakeDate extends Date { static now() { return clock; } }
+  const context = vm.createContext({URL, Date: FakeDate, setTimeout: fn => {clock += 250; fn();}, window, location, document,
+    getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
+  const septemberOrdinal = 2026 * 12 + 8;
+  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays, resumeMonthOrdinal) {' + source + '})("history", null, ' + septemberOrdinal + ')', context));
+  assert.equal(batch.error, undefined);
+  assert.equal(batch.stopReason, 'full_history_exhausted');
+  assert.equal(openedOctober, 0, 'Resume must not reread October');
+  assert.equal(openedSeptember, 1);
+  assert.ok(batch.operations.some(x => x.identity.includes('resume-sep')));
+  assert.equal(batch.oldestMonthOrdinal, septemberOrdinal);
+  assert.equal(selectedMonth, 'Октябрь 2026', 'Original visible month should be restored after the pass');
+  console.log('v16 resume: incomplete full sync continues from the saved month instead of current month.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

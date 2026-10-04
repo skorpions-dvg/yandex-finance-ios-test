@@ -19,11 +19,52 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var checkpointAdded = 0
     private var checkpointChanged = 0
 
-    // V3 intentionally invalidates the optimistic completion marker from older test builds.
-    private let fullHistoryKey = "fullHistoryImportedV3"
+    // V5 forces one fresh full pass with the parser that supports operations without
+    // a Status field (internal account transfers and interest payouts). Older builds
+    // could finish a full sync while silently skipping those cards.
+    private let fullHistoryKey = "fullHistoryImportedV5"
+    private let fullHistoryResumeKey = "fullHistoryResumeOrdinalV2"
+    private let boundaryOrdinalKey = "fullHistoryBoundaryOrdinalV2"
+    private let boundaryCountKey = "fullHistoryBoundaryCountV2"
     private var fullHistoryImported: Bool {
         get { UserDefaults.standard.bool(forKey: fullHistoryKey) }
         set { UserDefaults.standard.set(newValue, forKey: fullHistoryKey) }
+    }
+
+    private var fullHistoryResumeOrdinal: Int? {
+        get {
+            guard UserDefaults.standard.object(forKey: fullHistoryResumeKey) != nil else { return nil }
+            return UserDefaults.standard.integer(forKey: fullHistoryResumeKey)
+        }
+        set {
+            if let newValue { UserDefaults.standard.set(newValue, forKey: fullHistoryResumeKey) }
+            else { UserDefaults.standard.removeObject(forKey: fullHistoryResumeKey) }
+        }
+    }
+
+    private func clearBoundaryConfirmation() {
+        UserDefaults.standard.removeObject(forKey: boundaryOrdinalKey)
+        UserDefaults.standard.removeObject(forKey: boundaryCountKey)
+    }
+
+    /// Returns true only after the same oldest reachable month has failed to move
+    /// farther back twice, and the first observation came after visiting >= 2 months.
+    /// This prevents an endless full rescan without declaring the current month to be
+    /// the beginning merely because the picker was temporarily unavailable.
+    private func confirmStableHistoryBoundary(ordinal: Int, monthsVisited: Int) -> Bool {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: boundaryOrdinalKey) == nil || defaults.integer(forKey: boundaryOrdinalKey) != ordinal {
+            guard monthsVisited >= 2 else {
+                clearBoundaryConfirmation()
+                return false
+            }
+            defaults.set(ordinal, forKey: boundaryOrdinalKey)
+            defaults.set(1, forKey: boundaryCountKey)
+            return false
+        }
+        let next = defaults.integer(forKey: boundaryCountKey) + 1
+        defaults.set(next, forKey: boundaryCountKey)
+        return next >= 2
     }
 
     @Published var autoUpdate = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true {
@@ -94,7 +135,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         webView.allowsBackForwardNavigationGestures = true
         do {
             history = try vault.load()
-            if history.operations.isEmpty { fullHistoryImported = false }
+            if history.operations.isEmpty {
+                fullHistoryImported = false
+                fullHistoryResumeOrdinal = nil
+                clearBoundaryConfirmation()
+            }
         } catch {
             readable = false
             message = "Хранилище не открыто: \(error.localizedDescription)"
@@ -109,6 +154,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
     func syncAllHistory() {
         fullHistoryImported = false
+        fullHistoryResumeOrdinal = nil
+        clearBoundaryConfirmation()
         read(mode: "history", lookbackDays: nil)
     }
 
@@ -151,9 +198,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
 
         let lookbackArgument: Any = lookbackDays.map { NSNumber(value: $0) } ?? NSNull()
+        let resumeArgument: Any = (mode == "history" && lookbackDays == nil ? fullHistoryResumeOrdinal : nil)
+            .map { NSNumber(value: $0) } ?? NSNull()
         webView.callAsyncJavaScript(
             script,
-            arguments: ["mode": mode, "lookbackDays": lookbackArgument],
+            arguments: ["mode": mode, "lookbackDays": lookbackArgument, "resumeMonthOrdinal": resumeArgument],
             in: nil,
             in: .defaultClient
         ) { [weak self] result in
@@ -191,10 +240,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
 
     private func merge(_ batch: ImportBatch, requestedLookbackDays: Int?) throws {
-        guard !batch.operations.isEmpty else { throw AppFailure(message: "Нет операций для сохранения.") }
-
-        // Do not use Dictionary(uniqueKeysWithValues:): a historical duplicate must
-        // never be able to crash the app. Last stored copy wins and is repaired on save.
+        // An empty successful batch is meaningful: for example there may have been
+        // no operations in the last seven days, or an empty account may have reached
+        // the beginning of history. Do not turn those states into an error.
         var byID: [String: BankOperation] = [:]
         for operation in history.operations { byID[operation.id] = operation }
 
@@ -214,7 +262,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             }
             byID[operation.id] = operation
         }
-        guard added + changed > 0 || batch.operations.count > rejected else {
+        if !batch.operations.isEmpty && added + changed == 0 && batch.operations.count == rejected {
             throw AppFailure(message: "Все полученные операции содержат неполные данные.")
         }
 
@@ -228,8 +276,34 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
         let skipped = (batch.skippedCount ?? 0) + rejected
         let isFullHistorySync = requestedLookbackDays == nil && batch.stopReason != "single_card"
-        if isFullHistorySync && batch.stopReason == "full_history_exhausted" && skipped == 0 {
-            fullHistoryImported = true
+        var acceptedStableBoundary = false
+
+        if isFullHistorySync {
+            if let oldest = batch.oldestMonthOrdinal { fullHistoryResumeOrdinal = oldest }
+
+            switch batch.stopReason {
+            case "full_history_exhausted":
+                // Reaching the beginning and parsing every single card are separate
+                // facts. One malformed card must not force a complete rescan forever.
+                fullHistoryImported = true
+                fullHistoryResumeOrdinal = nil
+                clearBoundaryConfirmation()
+            case "month_navigation_unavailable":
+                if let oldest = batch.oldestMonthOrdinal,
+                   confirmStableHistoryBoundary(ordinal: oldest, monthsVisited: batch.monthsVisited ?? 0) {
+                    // The site did not expose a textual "beginning" marker, but the
+                    // same oldest reachable month was observed twice. Treat traversal
+                    // as complete while keeping any skipped-card warning visible.
+                    acceptedStableBoundary = true
+                    fullHistoryImported = true
+                    fullHistoryResumeOrdinal = nil
+                    clearBoundaryConfirmation()
+                }
+            case "cancelled", "interrupted", "loading_timeout", "limit_reached":
+                clearBoundaryConfirmation()
+            default:
+                clearBoundaryConfirmation()
+            }
         }
 
         let ending: String
@@ -238,24 +312,28 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             ending = "Достигнута граница \(requestedLookbackDays ?? 0) дней."
         case "loading_timeout":
             ending = isFullHistorySync
-                ? "Сохранено всё, что удалось прочитать. Полная синхронизация не завершена и будет повторена."
+                ? "Сохранено всё, что удалось прочитать. Полная синхронизация продолжится с последнего достигнутого месяца."
                 : "Сохранено всё, что удалось прочитать. Период проверен не полностью."
         case "single_card":
             ending = "Прочитана одна карточка."
         case "limit_reached":
             ending = isFullHistorySync
-                ? "Достигнут защитный предел. Прогресс сохранён, полная синхронизация будет повторена."
+                ? "Достигнут защитный предел. Прогресс сохранён; следующий полный проход продолжится с последнего месяца."
                 : "Достигнут предел чтения; прогресс сохранён, период проверен не полностью."
         case "full_history_exhausted":
             ending = skipped == 0
                 ? "Полная доступная история прочитана."
-                : "Дошёл до начала истории, но \(skipped) карточок пропущено. Полная синхронизация не отмечена завершённой."
+                : "Полная доступная история пройдена. Не удалось разобрать карточек: \(skipped); автоматические обновления всё равно переключены на последние 7 дней."
         case "history_beginning_reached":
             ending = "Достигнуто начало доступной истории банка."
         case "month_navigation_unavailable":
-            ending = isFullHistorySync
-                ? "Переход к более старому периоду не подтверждён. Прогресс сохранён, полная синхронизация будет повторена."
-                : "Не удалось перейти к предыдущему периоду; прогресс сохранён, период проверен не полностью."
+            if acceptedStableBoundary {
+                ending = "Одинаковая нижняя граница истории подтверждена повторно. Полный проход завершён; дальше будут проверяться последние 7 дней."
+            } else {
+                ending = isFullHistorySync
+                    ? "Переход к более старому периоду не подтверждён. Прогресс сохранён; следующая попытка продолжится с этого месяца, а не с начала."
+                    : "Не удалось перейти к предыдущему периоду; прогресс сохранён, период проверен не полностью."
+            }
         case "cancelled":
             ending = "Остановлено пользователем. Уже прочитанные операции сохранены."
         case "interrupted":
