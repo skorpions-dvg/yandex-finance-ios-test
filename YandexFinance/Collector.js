@@ -3,7 +3,13 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
 const moneyPattern = /[+−–-]\s*[\d\s.,]+\s*₽/;
-const rows = () => controls().filter(el => !el.closest('[role="dialog"]') && moneyPattern.test(text(el)));
+const onCard = () => location.pathname.replace(/\/$/, '') === '/my/transactions-history/operation';
+const controlName = el => [text(el), el.getAttribute('aria-label'), el.getAttribute('title')].filter(Boolean).join(' ').trim();
+const rows = () => {
+  if (onCard()) return [];
+  const candidates = controls().filter(el => el.getClientRects?.().length !== 0 && moneyPattern.test(text(el)));
+  return candidates.filter(el => !candidates.some(other => other !== el && el.contains(other)));
+};
 // WebKit can place inline label/value pairs on one line or separate them with tabs.
 function cardLines(value) {
   const labels = ['Категория', 'MCC', 'Статус', 'Назначение', 'Способ оплаты'];
@@ -76,11 +82,11 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   // fraction and currency across text lines. Amounts in details are unrelated.
   const header = cardText.replace(/\u200b/g, '').split('Подробнее')[0];
   const headerDates = [...header.matchAll(/(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/g)];
-  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 5).');
+  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 6).');
   const dateMark = headerDates[0];
   const amountArea = header.slice(dateMark.index + dateMark[0].length);
   const amounts = amountArea.match(/[+−–-]\s*\d[\d\s.,]*\s*₽/g) || [];
-  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 5).');
+  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 6).');
   const kopecks = amount(amounts[0]);
   const listed = rowText.match(moneyPattern);
   if (listed && amount(listed[0]) !== kopecks) throw Error('Сумма не совпала со списком.');
@@ -131,19 +137,32 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 5).');
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 6).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
-if (document.querySelector('[role="dialog"]')) throw Error('Закройте карточку и вернитесь к списку.');
-const filter = controls().find(el => text(el) === 'Какие операции скрывать');
+if (onCard()) throw Error('Закройте карточку и вернитесь к списку.');
+let filter = controls().find(el => /Какие операции скрывать|Фильтры/i.test(controlName(el)));
+if (!filter) {
+  // The mobile filter is the unlabeled icon immediately left of the month selector.
+  const month = controls().find(el => /^(Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь)(?:\s+\d{4})?$/.test(text(el)));
+  if (month) {
+    const anchor = month.getBoundingClientRect();
+    const icons = controls().filter(el => {
+      const rect = el.getBoundingClientRect();
+      return !text(el) && el.querySelector('svg') && rect.width > 0 && rect.height > 0 &&
+        rect.right <= anchor.left + 2 && anchor.left - rect.right < 40 && Math.abs(rect.top - anchor.top) < 15;
+    });
+    if (icons.length === 1) filter = icons[0];
+  }
+}
 if (!filter) throw Error('Не найдены фильтры истории. Мобильный вид требует проверки.');
 filter.click();
 await waitFor(() => document.querySelector('[role="switch"],input[type="checkbox"]'));
 const switches = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')];
 if (switches.some(el => el.getAttribute('aria-checked') === 'true' || el.checked))
   throw Error('Выключите скрытие типов операций и повторите чтение.');
-const closeFilter = controls().find(el => (el.getAttribute('aria-label') || text(el)) === 'Закрыть');
+const closeFilter = controls().find(el => /^(Закрыть|Готово)(?: |$)/.test(controlName(el)));
 if (!closeFilter) throw Error('Не найдена кнопка закрытия фильтров.');
 closeFilter.click();
 await sleep(400);
@@ -177,15 +196,13 @@ while (index < 300) {
   }
   const rowText = text(list[index]);
   list[index].click();
-  const dialog = await waitFor(() => {
-    const el = document.querySelector('[role="dialog"]');
-    return el && text(el).split('\n').some(x => x.trim() === 'Статус') && location.pathname.endsWith('/operation') ? el : null;
-  });
-  const operation = parseCard(location.href, text(dialog), rowText);
-  const back = [...dialog.querySelectorAll('button,[role="button"]')].find(el => (el.getAttribute('aria-label') || text(el)) === 'Назад');
-  if (!back) throw Error('Не найдена кнопка возврата к истории.');
-  back.click();
-  await waitFor(() => !document.querySelector('[role="dialog"]'));
+  const cardText = await waitFor(() => onCard() && currentCardText());
+  const operation = parseCard(location.href, cardText, rowText);
+  // Reuse the site's navigation, which also preserves its month and account filters.
+  const back = controls().find(el => el.getClientRects?.().length !== 0 && /^(Назад|Вернуться)(?: |$)/.test(controlName(el)));
+  if (back) back.click();
+  else window.history.back();
+  await waitFor(() => !onCard() && rows().length);
   if (Date.parse(operation.occurredAt) < cutoff) { stopReason = 'lookback_reached'; break; }
   found.set(operation.identity, operation);
   index++;

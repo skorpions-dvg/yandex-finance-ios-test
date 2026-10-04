@@ -69,3 +69,39 @@ assert.equal(surrounding.description, 'Тестовый магазин');
 assert.throws(() => parse(url([ref]), purchase.replace('−2 013,84 ₽', '−2 013,84 ₽\n−500 ₽'), ''), /найдено сумм: 2/);
 assert.throws(() => parse(url([ref]), purchase.replace('−2 013,84 ₽', '2 013,84 ₽'), ''), /найдено сумм: 0/);
 console.log('Mobile amount fragments, surrounding amounts, and ambiguous amount rejection passed.');
+
+async function checkHistory() {
+  const vm = require('node:vm');
+  let screen = 'list', opened = 0, returned = 0;
+  const location = new URL('https://bank.yandex.ru/my/transactions-history');
+  const body = {get innerText() { return screen.startsWith('card') ? purchase.replace('−2 013,84 ₽', '−\n2 013,84\n₽') : 'История'; }};
+  const control = (label, click, aria = '') => ({innerText: label, click,
+    getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false});
+  const go = (index) => { screen = 'card' + index; opened++;
+    location.href = url([{...ref, chainId: 'history-' + index,
+      operationTimestamp: index === 0 ? new Date().toISOString() : '2000-01-01T00:00:00Z'}]); };
+  const list = [control('Тестовый магазин −2 013,84 ₽', () => go(0)), control('Старый магазин −2 013,84 ₽', () => go(1))];
+  const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
+  const close = control('', () => {screen = 'list';}, 'Закрыть');
+  const account = control('Все карты и счета', () => {});
+  const switches = [{checked: false, getAttribute: () => 'false'}];
+  const doc = {body,
+    querySelector: selector => selector.includes('switch') && screen === 'filters' ? switches[0] : null,
+    querySelectorAll: selector => {
+      if (selector === '[role="dialog"],main') return [{innerText: 'Постоянный диалог оболочки'}, body];
+      if (selector.includes('switch')) return screen === 'filters' ? switches : [];
+      if (selector === 'button,[role="button"]') return screen === 'list' ? [filter, account, ...list] : screen === 'filters' ? [close] : [];
+      return [];
+    }};
+  const window = {history: {back() {returned++; screen = 'list'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
+  const context = vm.createContext({URL, Date, setTimeout: fn => {fn();}, window, location, document: doc});
+  const batch = JSON.parse(await vm.runInContext('(async function(mode) {' + source + '})("history")', context));
+  assert.equal(batch.error, undefined);
+  assert.equal(batch.operations.length, 1);
+  assert.equal(batch.operations[0].amountKopecks, -201384);
+  assert.equal(batch.stopReason, 'lookback_reached');
+  assert.equal(opened, 2);
+  assert.equal(returned, 2);
+  console.log('History integration: persistent dialog, icon filter, mobile cards, back navigation, and date cutoff passed.');
+}
+checkHistory().catch(error => {console.error(error); process.exitCode = 1;});
