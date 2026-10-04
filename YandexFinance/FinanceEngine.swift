@@ -249,27 +249,6 @@ enum FinancialEngine {
             return FinancialAssessment(type: .internalTransfer, reason: "Снятие наличных — перемещение денег, а не покупка.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        if kind == "expense" || (kind == "grouped_operation" && amount < 0) {
-            guard amount < 0 else {
-                return FinancialAssessment(type: .unknown, reason: "Расход имеет неожиданно положительную сумму.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
-            let reason = kind == "grouped_operation"
-                ? "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются."
-                : "Обычное списание."
-            // Components are diagnostic detail only. Parent total is the sole financial amount.
-            return FinancialAssessment(type: .expense, reason: reason, originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-        }
-
-        if kind == "unclassified_income" || kind == "income" || (kind == "grouped_operation" && amount > 0) {
-            guard amount > 0 else {
-                return FinancialAssessment(type: .unknown, reason: "Доход имеет неожиданно отрицательную сумму.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
-            let reason = kind == "grouped_operation"
-                ? "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются."
-                : "Поступление, не отнесённое банком к возврату, процентам или своим переводам."
-            return FinancialAssessment(type: .income, reason: reason, originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
-        }
-
         if kind == "transfer" {
             if amount < 0 {
                 return FinancialAssessment(type: .expense, reason: "Перевод не подтверждён как перевод между своими счетами; отрицательная сумма учитывается как расход.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
@@ -279,12 +258,31 @@ enum FinancialEngine {
             }
         }
 
-        // Old saved records may not have the current kind. A finished debit is still a debit.
-        // A finished credit is not guessed: it can be an own-account transfer.
-        if amount < 0 {
-            return FinancialAssessment(type: .expense, reason: "Завершённое списание без специального типа учтено как расход.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        // Components are diagnostic detail only. Parent total is the sole financial amount.
+        if kind == "grouped_operation" {
+            if amount < 0 {
+                return FinancialAssessment(type: .expense, reason: "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+            }
+            if amount > 0 {
+                return FinancialAssessment(type: .income, reason: "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+            }
         }
 
+        // At this point all special cases have already been handled. Direction is authoritative for
+        // old/stale generic kinds: a completed negative bank movement is an outflow and must not
+        // remain "unknown" merely because an older saved record carries an obsolete income kind.
+        if amount < 0 {
+            let reason = (kind == "expense")
+                ? "Обычное списание."
+                : "Завершённое списание со старым или неподходящим типом учтено как расход по направлению суммы."
+            return FinancialAssessment(type: .expense, reason: reason, originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
+
+        if amount > 0 && (kind == "unclassified_income" || kind == "income") {
+            return FinancialAssessment(type: .income, reason: "Поступление, не отнесённое банком к возврату, процентам или своим переводам.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
+
+        // A finished positive movement is not guessed: it can be an own-account transfer.
         return FinancialAssessment(type: .unknown, reason: "Положительная операция без подтверждённого типа не считается доходом: это может быть перевод между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
     }
 
