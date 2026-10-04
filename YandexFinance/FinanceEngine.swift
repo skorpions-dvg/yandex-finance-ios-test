@@ -79,6 +79,34 @@ struct FinancialSummary {
     }
 }
 
+struct FinanceLine: Identifiable {
+    let id: String
+    let title: String
+    let count: Int
+    let amountKopecks: Int64
+    let note: String?
+    let children: [FinanceLine]
+}
+
+struct FinanceReport {
+    let operationCount: Int
+    let invalidDateCount: Int
+    let incomeKopecks: Int64
+    let grossExpenseKopecks: Int64
+    let refundsKopecks: Int64
+    let movementKopecks: Int64
+    let pendingDebitKopecks: Int64
+    let unknownCount: Int
+    let incomeLines: [FinanceLine]
+    let expenseLines: [FinanceLine]
+    let movementLines: [FinanceLine]
+    let incompleteLines: [FinanceLine]
+
+    var netExpenseKopecks: Int64 { grossExpenseKopecks - refundsKopecks }
+    var differenceKopecks: Int64 { incomeKopecks - netExpenseKopecks }
+    var bankDebitKopecks: Int64 { grossExpenseKopecks + pendingDebitKopecks }
+}
+
 enum FinancialEngine {
     private static func normalized(_ value: String?) -> String {
         (value ?? "")
@@ -130,6 +158,11 @@ enum FinancialEngine {
             return FinancialAssessment(type: .interestIncome, reason: "Начисленные проценты считаются доходом.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
+        let cashback = amount > 0 && containsAny(combined, ["кэшбэк", "кешбэк", "cashback"])
+        if cashback {
+            return FinancialAssessment(type: .income, reason: "Кэшбэк считается доходом, а не возвратом покупки.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
+
         let split = kind == "installment_payment" || operation.providers.contains(where: { normalized($0) == "bnpl" }) || category.contains("сплит")
         if split {
             return FinancialAssessment(type: .split, reason: "Сплит учитывается отдельно до связывания покупки и платежей, чтобы не задвоить расходы.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
@@ -143,18 +176,25 @@ enum FinancialEngine {
             return FinancialAssessment(type: .commission, reason: "Комиссия является расходом.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        if kind == "expense" {
+        if kind == "expense" || kind == "grouped_operation" && amount < 0 {
             guard amount < 0 else {
                 return FinancialAssessment(type: .unknown, reason: "Расход имеет неожиданно положительную сумму.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
             }
-            return FinancialAssessment(type: .expense, reason: "Обычное списание.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+            let reason = kind == "grouped_operation"
+                ? "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются."
+                : "Обычное списание."
+            // Components are diagnostic detail only. Parent total is the sole financial amount.
+            return FinancialAssessment(type: .expense, reason: reason, originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        if kind == "unclassified_income" || kind == "income" {
+        if kind == "unclassified_income" || kind == "income" || (kind == "grouped_operation" && amount > 0) {
             guard amount > 0 else {
                 return FinancialAssessment(type: .unknown, reason: "Доход имеет неожиданно отрицательную сумму.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
             }
-            return FinancialAssessment(type: .income, reason: "Поступление, не отнесённое банком к возврату, процентам или своим переводам.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+            let reason = kind == "grouped_operation"
+                ? "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются."
+                : "Поступление, не отнесённое банком к возврату, процентам или своим переводам."
+            return FinancialAssessment(type: .income, reason: reason, originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
         if kind == "transfer" {
@@ -166,28 +206,24 @@ enum FinancialEngine {
             }
         }
 
-        if kind == "grouped_operation" {
-            // Components are diagnostic detail only. The bank-provided parent amount is already
-            // the reconciled group total and is the only value included in financial totals.
-            if amount < 0 {
-                return FinancialAssessment(type: .expense, reason: "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
-            if amount > 0 {
-                return FinancialAssessment(type: .income, reason: "Сводная операция учтена только по итогу группы; составляющие повторно не суммируются.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
-            }
+        let cashWithdrawal = amount < 0 && containsAny(combined, ["снятие налич", "выдача налич", "банкомат"])
+        if cashWithdrawal {
+            return FinancialAssessment(type: .internalTransfer, reason: "Снятие наличных — перемещение денег, а не покупка.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        return FinancialAssessment(type: .unknown, reason: "Недостаточно подтверждённых признаков для автоматической классификации.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        // Old saved records may not have the current kind. A finished debit is still a debit.
+        // A finished credit is not guessed: it can be an own-account transfer.
+        if amount < 0 {
+            return FinancialAssessment(type: .expense, reason: "Завершённое списание без специального типа учтено как расход.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
+
+        return FinancialAssessment(type: .unknown, reason: "Положительная операция без подтверждённого типа не считается доходом: это может быть перевод между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
     }
 
     private static func operationDate(_ value: String) -> Date? {
-        // Collector.js serializes source timestamps with Date.toISOString(), which always
-        // includes fractional seconds (for example 2026-04-02T17:41:00.705Z).
-        // Older/migrated records and synthetic tests may omit them, so support both forms.
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = fractional.date(from: value) { return date }
-
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
         return plain.date(from: value)
@@ -207,9 +243,6 @@ enum FinancialEngine {
                 invalidDateCount += 1
                 continue
             }
-            // DateInterval.contains includes the end instant. Month/day accounting needs a
-            // half-open interval [start, end), otherwise exactly 00:00 of the next period is
-            // counted twice.
             guard date >= interval.start && date < interval.end else { continue }
             operationCount += 1
             let assessment = classify(operation)
@@ -223,5 +256,126 @@ enum FinancialEngine {
         return FinancialSummary(operationCount: operationCount, invalidDateCount: invalidDateCount,
                                 counts: counts, signedAmounts: signedAmounts,
                                 grossExpenseKopecks: grossExpense, refundsKopecks: refunds, incomeKopecks: income)
+    }
+
+    static func report(_ operations: [FinancialOperationInput], in interval: DateInterval) -> FinanceReport {
+        var invalidDateCount = 0
+        var operationCount = 0
+        var income: Int64 = 0
+        var grossExpense: Int64 = 0
+        var refunds: Int64 = 0
+        var movement: Int64 = 0
+        var pendingDebit: Int64 = 0
+        var unknownCount = 0
+        var incomeGroups: [String: (Int, Int64, [String: (Int, Int64)])] = [:]
+        var expenseGroups: [String: (Int, Int64, [String: (Int, Int64)])] = [:]
+        var movementGroups: [String: (Int, Int64)] = [:]
+        var incompleteGroups: [String: (Int, Int64)] = [:]
+
+        func add(_ groups: inout [String: (Int, Int64, [String: (Int, Int64)])], _ title: String, _ child: String?, _ amount: Int64) {
+            var group = groups[title] ?? (0, 0, [:])
+            group.0 += 1
+            group.1 += amount
+            if let child {
+                var item = group.2[child] ?? (0, 0)
+                item.0 += 1
+                item.1 += amount
+                group.2[child] = item
+            }
+            groups[title] = group
+        }
+
+        for operation in operations {
+            guard let date = operationDate(operation.occurredAt) else {
+                invalidDateCount += 1
+                continue
+            }
+            guard date >= interval.start && date < interval.end else { continue }
+            operationCount += 1
+            let assessment = classify(operation)
+            let combined = normalized([operation.description, operation.category, operation.purpose].joined(separator: " "))
+            let category = operation.category.isEmpty ? "Без категории" : operation.category
+            switch assessment.type {
+            case .income, .interestIncome:
+                income += assessment.incomeContributionKopecks
+                add(&incomeGroups, incomeTitle(operation, assessment, combined), nil, assessment.incomeContributionKopecks)
+            case .expense, .commission:
+                grossExpense += assessment.expenseContributionKopecks
+                let title = expenseTitle(operation, assessment, combined)
+                let child = title == "Покупки" ? category : nil
+                add(&expenseGroups, title, child, assessment.expenseContributionKopecks)
+            case .refund:
+                refunds += assessment.refundContributionKopecks
+                add(&expenseGroups, "Возвраты", nil, assessment.refundContributionKopecks)
+            case .split:
+                add(&expenseGroups, "Сплит", nil, abs(assessment.originalAmountKopecks))
+            case .internalTransfer:
+                movement += abs(assessment.originalAmountKopecks)
+                let title = movementTitle(combined)
+                var item = movementGroups[title] ?? (0, 0)
+                item.0 += 1
+                item.1 += abs(assessment.originalAmountKopecks)
+                movementGroups[title] = item
+            case .pending:
+                if assessment.originalAmountKopecks < 0 { pendingDebit += -assessment.originalAmountKopecks }
+                var pending = incompleteGroups["В обработке"] ?? (0, 0)
+                pending.0 += 1
+                pending.1 += assessment.originalAmountKopecks
+                incompleteGroups["В обработке"] = pending
+            case .cancelled:
+                var cancelled = incompleteGroups["Отменено"] ?? (0, 0)
+                cancelled.0 += 1
+                cancelled.1 += assessment.originalAmountKopecks
+                incompleteGroups["Отменено"] = cancelled
+            case .unknown:
+                unknownCount += 1
+                var unknown = incompleteGroups["Не определено"] ?? (0, 0)
+                unknown.0 += 1
+                unknown.1 += assessment.originalAmountKopecks
+                incompleteGroups["Не определено"] = unknown
+            }
+        }
+
+        let incomeOrder = ["Переводы от других", "Пополнения", "Зарплата и выплаты", "Кэшбэк", "Проценты", "Прочие доходы"]
+        let expenseOrder = ["Покупки", "Переводы другим", "Комиссии", "Сплит", "Прочие расходы", "Возвраты"]
+        return FinanceReport(operationCount: operationCount, invalidDateCount: invalidDateCount,
+                             incomeKopecks: income, grossExpenseKopecks: grossExpense, refundsKopecks: refunds,
+                             movementKopecks: movement, pendingDebitKopecks: pendingDebit, unknownCount: unknownCount,
+                             incomeLines: lines(incomeGroups, order: incomeOrder),
+                             expenseLines: lines(expenseGroups, order: expenseOrder),
+                             movementLines: movementGroups.map { FinanceLine(id: $0.key, title: $0.key, count: $0.value.0, amountKopecks: $0.value.1, note: nil, children: []) }.sorted { $0.title < $1.title },
+                             incompleteLines: incompleteGroups.map { FinanceLine(id: $0.key, title: $0.key, count: $0.value.0, amountKopecks: $0.value.1, note: $0.key == "В обработке" ? "Не входит в окончательный расход." : nil, children: []) })
+    }
+
+    private static func incomeTitle(_ operation: FinancialOperationInput, _ assessment: FinancialAssessment, _ combined: String) -> String {
+        if assessment.type == .interestIncome || combined.contains("процент") { return "Проценты" }
+        if containsAny(combined, ["кэшбэк", "кешбэк", "cashback"]) { return "Кэшбэк" }
+        if combined.contains("зарплат") { return "Зарплата и выплаты" }
+        if containsAny(combined, ["банкомат", "внесение налич", "пополнение"]) { return "Пополнения" }
+        if operation.kind == "transfer" || combined.contains("перевод") { return "Переводы от других" }
+        return "Прочие доходы"
+    }
+
+    private static func expenseTitle(_ operation: FinancialOperationInput, _ assessment: FinancialAssessment, _ combined: String) -> String {
+        if assessment.type == .commission || combined.contains("комисси") { return "Комиссии" }
+        if operation.kind == "transfer" || combined.contains("перевод") { return "Переводы другим" }
+        if operation.category == "Не определено" || operation.category.isEmpty { return "Прочие расходы" }
+        return "Покупки"
+    }
+
+    private static func movementTitle(_ combined: String) -> String {
+        if containsAny(combined, ["снятие налич", "выдача налич", "банкомат"]) { return "Снятие наличных" }
+        if containsAny(combined, ["сейв", "накопитель"]) { return "Накопительные счета" }
+        return "Между своими счетами"
+    }
+
+    private static func lines(_ groups: [String: (Int, Int64, [String: (Int, Int64)])], order: [String]) -> [FinanceLine] {
+        order.compactMap { title in
+            guard let group = groups[title], group.0 > 0 else { return nil }
+            let children = group.2.map { FinanceLine(id: title + "/" + $0.key, title: $0.key, count: $0.value.0, amountKopecks: $0.value.1, note: nil, children: []) }
+                .sorted { $0.amountKopecks > $1.amountKopecks }
+            let note = title == "Сплит" ? "Пока не входит в итог расходов, чтобы не задвоить покупку." : (title == "Возвраты" ? "Уменьшает расходы, это не заработок." : nil)
+            return FinanceLine(id: title, title: title, count: group.0, amountKopecks: group.1, note: note, children: children)
+        }
     }
 }

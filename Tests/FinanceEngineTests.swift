@@ -27,7 +27,8 @@ struct FinanceEngineTests {
         require(FinancialEngine.classify(op(-20_000, kind: "installment_payment", providers: ["BNPL"])).type == .split, "split")
         require(FinancialEngine.classify(op(-4_000, kind: "expense", status: "В обработке")).type == .pending, "pending")
         require(FinancialEngine.classify(op(-5_000, kind: "expense", status: "Отменено")).type == .cancelled, "cancelled")
-        require(FinancialEngine.classify(op(-6_000, kind: "new_unknown_kind")).type == .unknown, "unknown kind must not be guessed")
+        require(FinancialEngine.classify(op(-6_000, kind: "new_unknown_kind")).type == .expense, "completed negative unknown kind is an expense")
+        require(FinancialEngine.classify(op(6_000, kind: "new_unknown_kind")).type == .unknown, "positive unknown kind must not be guessed as income")
         require(FinancialEngine.classify(op(-7_000, kind: "transfer")).type == .expense, "external outgoing transfer")
         require(FinancialEngine.classify(op(8_000, kind: "transfer")).type == .income, "external incoming transfer")
 
@@ -78,6 +79,22 @@ struct FinanceEngineTests {
         require(dateFormats.operationCount == 3, "fractional and plain ISO8601 dates must be included")
         require(dateFormats.grossExpenseKopecks == 666, "period totals must include fractional-second timestamps")
         require(dateFormats.invalidDateCount == 1, "invalid dates must be surfaced instead of silently disappearing")
+
+        let october = FinancialEngine.report([
+            op(-1_783_100, kind: "legacy_purchase", category: "Супермаркеты"),
+            op(188_600, kind: "refund", category: "Возврат"),
+            op(-163_582, kind: "expense", status: "В обработке"),
+            op(9_000, kind: "new_unknown_kind", description: "Непонятное поступление")
+        ], in: interval)
+        require(october.operationCount == 4, "october control count")
+        require(october.grossExpenseKopecks == 1_783_100, "legacy debit is an expense")
+        require(october.refundsKopecks == 188_600, "october refund")
+        require(october.netExpenseKopecks == 1_594_500, "expense after refund")
+        require(october.pendingDebitKopecks == 163_582, "pending stays out of final expense")
+        require(october.bankDebitKopecks == 1_946_682, "bank debit is settled plus pending")
+        require(october.incomeKopecks == 0, "unknown credit is not income")
+        require(october.unknownCount == 1, "unknown credit remains visible")
+        require(october.expenseLines.contains { $0.title == "Покупки" && $0.children.contains { $0.title == "Супермаркеты" } }, "purchase category expands")
 
         print("Finance engine tests passed")
     }

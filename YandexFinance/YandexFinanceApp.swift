@@ -63,7 +63,7 @@ struct ContentView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(browser.message).font(.footnote)
                         if browser.busy { ProgressView("Обновление операций…") }
-                        Text("Возвраты, переводы и Сплит пока не объединены в итог расходов.")
+                        Text("Итоги, возвраты и категории считаются на вкладке «Финансы». Здесь полный список операций.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
@@ -145,66 +145,127 @@ struct FinanceDashboardView: View {
         Calendar.current.dateInterval(of: .month, for: Date()) ?? DateInterval(start: .distantPast, end: .distantFuture)
     }
 
-    private var summary: FinancialSummary {
-        FinancialEngine.summarize(browser.history.operations.map(\.financialInput), in: interval)
+    private var report: FinanceReport {
+        FinancialEngine.report(browser.history.operations.map(\.financialInput), in: interval)
     }
 
     private func rubles(_ kopecks: Int64) -> String {
         (Decimal(kopecks) / 100).formatted(.currency(code: "RUB"))
     }
 
+    private func signed(_ kopecks: Int64) -> String {
+        let prefix = kopecks > 0 ? "+" : ""
+        return prefix + rubles(kopecks)
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 Section("Текущий месяц") {
-                    LabeledContent("Операций в периоде", value: String(summary.operationCount))
-                    if summary.invalidDateCount > 0 {
-                        LabeledContent("Не распознано дат", value: String(summary.invalidDateCount))
+                    LabeledContent("Операций в периоде", value: String(report.operationCount))
+                    if report.invalidDateCount > 0 {
+                        LabeledContent("Не распознано дат", value: String(report.invalidDateCount))
                             .foregroundStyle(.orange)
                     }
-                    LabeledContent("Расходы до возвратов", value: rubles(summary.grossExpenseKopecks))
-                    LabeledContent("Возвраты", value: rubles(summary.refundsKopecks))
-                    LabeledContent("Расходы после возвратов", value: rubles(summary.netExpenseKopecks))
-                    LabeledContent("Доходы", value: rubles(summary.incomeKopecks))
-                    LabeledContent("Чистый поток", value: rubles(summary.netCashFlowKopecks))
+                    LabeledContent("Доходы", value: signed(report.incomeKopecks))
+                    LabeledContent("Расходы", value: rubles(report.netExpenseKopecks))
+                    LabeledContent("Разница", value: signed(report.differenceKopecks))
+                    if report.pendingDebitKopecks > 0 {
+                        LabeledContent("В обработке", value: rubles(report.pendingDebitKopecks))
+                    }
                     Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                Section("Классификация") {
-                    ForEach(summary.buckets) { bucket in
-                        HStack {
+                moneySection("Доходы", total: report.incomeKopecks, lines: report.incomeLines, empty: "Доходов за месяц нет.")
+                expenseSection
+                if !report.movementLines.isEmpty {
+                    moneySection("Перемещения", total: report.movementKopecks, lines: report.movementLines, empty: "")
+                }
+                if !report.incompleteLines.isEmpty {
+                    Section("Не завершено") {
+                        ForEach(report.incompleteLines) { line in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(bucket.type.title)
-                                Text("Операций: \(bucket.count)").font(.caption).foregroundStyle(.secondary)
+                                HStack {
+                                    Text(line.title)
+                                    Spacer()
+                                    Text(signed(line.amountKopecks))
+                                }
+                                Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
+                                if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
                             }
-                            Spacer()
-                            Text(rubles(bucket.signedAmountKopecks))
                         }
-                    }
-                    if summary.operationCount == 0 {
-                        Text("За текущий месяц сохранённых операций пока нет.").foregroundStyle(.secondary)
                     }
                 }
 
-                Section("Правила расчёта") {
-                    Text("Возвраты уменьшают расходы. Проценты увеличивают доход. Подтверждённые переводы между своими счетами, ожидающие и отменённые операции не входят в окончательные итоги.")
-                    Text("Сплит пока показывается отдельно и не входит в расходы до связывания исходной покупки и платежей — так мы не создаём двойной расход.")
-                    Text("Сводная банковская карточка учитывается только по её итоговой сумме. Вложенные составляющие служат расшифровкой и повторно не суммируются.")
-                    Text("Неизвестные типы не угадываются и остаются в категории «Не определено» до проверки.")
-                }.font(.footnote).foregroundStyle(.secondary)
+                Section("Сверка с банком") {
+                    LabeledContent("Завершённые списания", value: rubles(report.grossExpenseKopecks))
+                    LabeledContent("Возвраты", value: rubles(report.refundsKopecks))
+                    LabeledContent("Списания с учётом обработки", value: rubles(report.bankDebitKopecks))
+                    Text("Верхняя цифра списаний в банке обычно включает операции в обработке. Окончательный расход в приложении их не включает.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
 
-                if (summary.counts[.unknown] ?? 0) > 0 || (summary.counts[.pending] ?? 0) > 0 || (summary.counts[.split] ?? 0) > 0 {
-                    Section("Требуют внимания") {
-                        if let count = summary.counts[.unknown], count > 0 { Text("Не определено: \(count)") }
-                        if let count = summary.counts[.pending], count > 0 { Text("В обработке: \(count)") }
-                        if let count = summary.counts[.split], count > 0 { Text("Сплит: \(count)") }
-                        Text("Эти операции вынесены отдельно, чтобы итог не выглядел точнее, чем позволяют данные банка.")
-                            .font(.caption).foregroundStyle(.secondary)
+                Section("Правила") {
+                    Text("Возврат уменьшает расходы и не считается доходом. Перевод между своими счетами и снятие наличных — перемещение, а не трата и не заработок.")
+                    Text("Сплит виден отдельно и не входит в итог, пока покупка и платежи не связаны.")
+                    Text("Старое завершённое списание без современного типа считается расходом. Непонятное поступление доходом не назначается.")
+                }.font(.footnote).foregroundStyle(.secondary)
+            }
+            .navigationTitle("Финансы")
+        }
+    }
+
+    private var expenseSection: some View {
+        Section("Расходы") {
+            LabeledContent("До возвратов", value: rubles(report.grossExpenseKopecks))
+            LabeledContent("Расходы после возвратов", value: rubles(report.netExpenseKopecks))
+            ForEach(report.expenseLines) { line in
+                DisclosureGroup {
+                    if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
+                    ForEach(line.children) { child in
+                        HStack {
+                            Text(child.title)
+                            Spacer()
+                            Text(rubles(child.amountKopecks))
+                        }.font(.subheadline)
+                    }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(line.title)
+                            Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text((line.title == "Возвраты" ? "−" : "") + rubles(line.amountKopecks))
                     }
                 }
             }
-            .navigationTitle("Финансы")
+            if report.expenseLines.isEmpty { Text("Расходов за месяц нет.").foregroundStyle(.secondary) }
+        }
+    }
+
+    private func moneySection(_ title: String, total: Int64, lines: [FinanceLine], empty: String) -> some View {
+        Section(title) {
+            LabeledContent("Итого", value: rubles(total))
+            ForEach(lines) { line in
+                DisclosureGroup {
+                    if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
+                    ForEach(line.children) { child in
+                        HStack { Text(child.title); Spacer(); Text(rubles(child.amountKopecks)) }.font(.subheadline)
+                    }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(line.title)
+                            Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(rubles(line.amountKopecks))
+                    }
+                }
+            }
+            if lines.isEmpty, !empty.isEmpty { Text(empty).foregroundStyle(.secondary) }
         }
     }
 }

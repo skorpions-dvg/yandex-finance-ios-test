@@ -375,8 +375,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 25;/g) || []).length, 2, 'Debug and Release build number must both be 25');
-  assert.match(readme, /текущий номер сборки — 25/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 26;/g) || []).length, 2, 'Debug and Release build number must both be 26');
+  assert.match(readme, /текущий номер сборки — 26/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const incrementalBlock = swift.match(/private func incrementalDays[\s\S]*?private static func operationDate/)[0];
@@ -596,14 +596,14 @@ const projectV25 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodep
 const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
-assert.match(projectV25, /CURRENT_PROJECT_VERSION = 25;/);
+assert.match(projectV25, /CURRENT_PROJECT_VERSION = 26;/);
 assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Расходы после возвратов/);
 assert.match(financeEngine, /case internalTransfer = "internal_transfer"/);
 assert.match(financeEngine, /case interestIncome = "interest_income"/);
 assert.match(financeEngine, /kind == "grouped_operation"/);
 assert.match(financeEngine, /components are diagnostic detail only/i);
-assert.match(financeTests, /unknown kind must not be guessed/);
+assert.match(financeTests, /positive unknown kind must not be guessed as income/);
 assert.match(financeEngine, /withFractionalSeconds/);
 assert.match(financeEngine, /date >= interval\.start && date < interval\.end/);
 assert.match(appSwift, /Не распознано дат/);
