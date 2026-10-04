@@ -19,10 +19,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var checkpointAdded = 0
     private var checkpointChanged = 0
 
-    // V5 forces one fresh full pass with the parser that supports operations without
-    // a Status field (internal account transfers and interest payouts). Older builds
-    // could finish a full sync while silently skipping those cards.
-    private let fullHistoryKey = "fullHistoryImportedV5"
+    // V18 keeps the same six-month bootstrap marker. Stable already-saved operations
+    // can now be verified from their direct list link without reopening the card.
+    private let fullHistoryKey = "initialSixMonthsImportedV1"
     private let fullHistoryResumeKey = "fullHistoryResumeOrdinalV2"
     private let boundaryOrdinalKey = "fullHistoryBoundaryOrdinalV2"
     private let boundaryCountKey = "fullHistoryBoundaryCountV2"
@@ -117,7 +116,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
                 if ready {
                     self.automaticTask = nil
-                    self.read(mode: "history", lookbackDays: self.fullHistoryImported ? 7 : nil)
+                    self.read(mode: "history", lookbackDays: self.fullHistoryImported ? 7 : 183)
                     return
                 }
             }
@@ -152,11 +151,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
     }
 
-    func syncAllHistory() {
+    func syncSixMonthsHistory() {
         fullHistoryImported = false
         fullHistoryResumeOrdinal = nil
         clearBoundaryConfirmation()
-        read(mode: "history", lookbackDays: nil)
+        read(mode: "history", lookbackDays: 183)
     }
 
     func read(mode: String, lookbackDays: Int? = 30) {
@@ -184,7 +183,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         } else if let lookbackDays {
             message = "Читаю последние \(lookbackDays) дней. Не переключайте страницу…"
         } else {
-            message = "Полная синхронизация: читаю всю доступную историю. Не переключайте страницу…"
+            message = "Синхронизация: читаю последние 6 месяцев. Не переключайте страницу…"
         }
 
         webView.isUserInteractionEnabled = false
@@ -198,11 +197,20 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
 
         let lookbackArgument: Any = lookbackDays.map { NSNumber(value: $0) } ?? NSNull()
-        let resumeArgument: Any = (mode == "history" && lookbackDays == nil ? fullHistoryResumeOrdinal : nil)
+        let shouldResumeInitialImport = mode == "history" && !fullHistoryImported && (lookbackDays == 183 || lookbackDays == nil)
+        let resumeArgument: Any = (shouldResumeInitialImport ? fullHistoryResumeOrdinal : nil)
             .map { NSNumber(value: $0) } ?? NSNull()
+        let knownOperationsJSON: String
+        do {
+            let data = try JSONEncoder().encode(history.operations)
+            knownOperationsJSON = String(data: data, encoding: .utf8) ?? "[]"
+        } catch {
+            knownOperationsJSON = "[]"
+        }
         webView.callAsyncJavaScript(
             script,
-            arguments: ["mode": mode, "lookbackDays": lookbackArgument, "resumeMonthOrdinal": resumeArgument],
+            arguments: ["mode": mode, "lookbackDays": lookbackArgument, "resumeMonthOrdinal": resumeArgument,
+                        "knownOperationsJson": knownOperationsJSON],
             in: nil,
             in: .defaultClient
         ) { [weak self] result in
@@ -275,14 +283,12 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         history = next
 
         let skipped = (batch.skippedCount ?? 0) + rejected
-        let isFullHistorySync = requestedLookbackDays == nil && batch.stopReason != "single_card"
+        let isFullHistorySync = requestedLookbackDays == 183 && batch.stopReason != "single_card"
         var acceptedStableBoundary = false
 
         if isFullHistorySync {
-            if let oldest = batch.oldestMonthOrdinal { fullHistoryResumeOrdinal = oldest }
-
             switch batch.stopReason {
-            case "full_history_exhausted":
+            case "lookback_reached", "history_beginning_reached", "full_history_exhausted":
                 // Reaching the beginning and parsing every single card are separate
                 // facts. One malformed card must not force a complete rescan forever.
                 fullHistoryImported = true
@@ -298,8 +304,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                     fullHistoryImported = true
                     fullHistoryResumeOrdinal = nil
                     clearBoundaryConfirmation()
+                } else {
+                    fullHistoryResumeOrdinal = batch.oldestMonthOrdinal
                 }
             case "cancelled", "interrupted", "loading_timeout", "limit_reached":
+                fullHistoryResumeOrdinal = batch.oldestMonthOrdinal
                 clearBoundaryConfirmation()
             default:
                 clearBoundaryConfirmation()
@@ -309,7 +318,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let ending: String
         switch batch.stopReason {
         case "lookback_reached":
-            ending = "Достигнута граница \(requestedLookbackDays ?? 0) дней."
+            ending = requestedLookbackDays == 183 ? "Первичная синхронизация последних 6 месяцев завершена; дальше автоматически проверяются последние 7 дней." : "Достигнута граница \(requestedLookbackDays ?? 0) дней."
         case "loading_timeout":
             ending = isFullHistorySync
                 ? "Сохранено всё, что удалось прочитать. Полная синхронизация продолжится с последнего достигнутого месяца."
@@ -325,7 +334,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 ? "Полная доступная история прочитана."
                 : "Полная доступная история пройдена. Не удалось разобрать карточек: \(skipped); автоматические обновления всё равно переключены на последние 7 дней."
         case "history_beginning_reached":
-            ending = "Достигнуто начало доступной истории банка."
+            ending = isFullHistorySync ? "Доступная история короче 6 месяцев; первичная синхронизация завершена." : "Достигнуто начало доступной истории банка."
         case "month_navigation_unavailable":
             if acceptedStableBoundary {
                 ending = "Одинаковая нижняя граница истории подтверждена повторно. Полный проход завершён; дальше будут проверяться последние 7 дней."
@@ -342,7 +351,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             ending = "Прогресс сохранён, но полнота периода не подтверждена."
         }
 
-        var parts = ["Прочитано \(batch.operations.count), добавлено \(added), изменено \(changed).", ending]
+        let fast = batch.fastSkippedCount ?? 0
+        let openedCards = batch.openedCardCount ?? 0
+        var parts = ["Прочитано новых/изменённых \(batch.operations.count), добавлено \(added), изменено \(changed).", ending]
+        if fast > 0 || openedCards > 0 { parts.append("Быстро проверено: \(fast), открыто карточек: \(openedCards).") }
         if skipped > 0 { parts.append("Пропущено: \(skipped).") }
         if let warning = batch.warning, !warning.isEmpty { parts.append("Причина: \(warning)") }
         message = parts.joined(separator: " ")

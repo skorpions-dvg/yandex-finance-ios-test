@@ -29,6 +29,8 @@ struct ImportBatch: Codable {
     let warning: String?
     let oldestMonthOrdinal: Int?
     let monthsVisited: Int?
+    let fastSkippedCount: Int?
+    let openedCardCount: Int?
 }
 
 struct ProgressCheckpoint: Codable {

@@ -176,7 +176,9 @@ assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сум�
 assert.ok(!/var\s+byID\s*=\s*Dictionary\(uniqueKeysWithValues:/.test(swift), 'Duplicate IDs must not crash Dictionary initialization');
 const inactiveBody = swift.match(/func becameInactive\(\) \{([\s\S]*?)\n    \}/)?.[1] || '';
 assert.ok(!/if\s+busy\s*\{\s*cancel\(\)/.test(inactiveBody) && !/self\.cancel\(\)/.test(inactiveBody), '.inactive must not cancel an active import');
-assert.ok(appSwift.includes('Синхронизировать всю историю'), 'Manual full-history retry button must exist');
+assert.ok(appSwift.includes('Синхронизировать 6 месяцев'), 'Manual six-month retry button must exist');
+assert.ok(swift.includes('self.fullHistoryImported ? 7 : 183'), 'Automatic bootstrap must use 183 days before switching to 7 days');
+assert.ok(swift.includes('requestedLookbackDays == 183'), 'Swift must recognize the six-month bootstrap as the initial sync');
 assert.ok(source.includes("stopReason === 'running' && (opened >= maxOpened"), 'Limit must not overwrite a more specific stop reason');
 assert.ok(!source.includes('enoughMonthChoices'), 'Picker-size heuristic must not mark full history complete');
 assert.ok(source.includes('window.__financeCheckpointQueue.push(operation)'), 'Parsed operations must enter the checkpoint queue');
@@ -279,7 +281,62 @@ console.log('Swift/static reliability guards passed.');
   console.log('Filter close failure: already parsed operations are returned for saving.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
-// v16: regression guards and project consistency.
+
+// V18 fast path: an old, terminal, already-saved operation with a direct list
+// link and unchanged description+amount must not reopen the card. A recent
+// operation remains on the full-card path so status changes are still detected.
+(async () => {
+  let screen = 'list', clock = Date.parse('2026-10-04T12:00:00Z'), rowClicks = 0, filters = false;
+  const knownRef = {...ref, chainId: 'known-fast', operationTimestamp: '2026-09-29T08:00:00Z'};
+  const knownURL = url([knownRef]);
+  const location = new URL('https://bank.yandex.ru/my/transactions-history');
+  const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
+  const control = (label, click, aria = '') => ({innerText: label, click, parentElement: root,
+    getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
+    closest: () => null, querySelector: () => null,
+    getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
+  const filter = control('', () => { filters = true; }, 'Какие операции скрывать');
+  const choose = control('Выбрать', () => { filters = false; });
+  const month = control('Октябрь 2026', () => {});
+  const account = control('Все карты и счета', () => {});
+  const row = {
+    innerText: 'Тестовый магазин −2 013,84 ₽', href: knownURL, parentElement: root,
+    click() { rowClicks++; screen = 'card'; location.href = knownURL; },
+    matches(sel) { return sel.includes('a[href'); },
+    getAttribute(key) { return key === 'href' ? knownURL : null; },
+    getClientRects: () => [{}], contains: () => false, closest: () => null, querySelector: () => null
+  };
+  const sw = {checked: false, getAttribute: () => 'false', getClientRects: () => [{}], closest: () => null};
+  const body = {get innerText() { return screen === 'card' ? purchase : 'История\nНет более ранних операций'; }};
+  const document = {body, scrollingElement: root, documentElement: root, querySelectorAll(selector) {
+    if (selector === '[role="dialog"],main') return [body];
+    if (selector.includes('switch')) return filters ? [sw] : [];
+    if (selector === 'button,[role="button"]') return filters ? [choose] : [filter, month, account];
+    if (selector === 'a[href*="/my/transactions-history/operation"]') return filters ? [] : [row];
+    if (selector.includes('[role="option"]')) return [];
+    return [];
+  }};
+  const window = {history: {back() { screen = 'list'; location.href = 'https://bank.yandex.ru/my/transactions-history'; }}};
+  class FakeDate extends Date { static now() { return clock; } }
+  const known = [{identity: JSON.stringify([['DEPOT','known-fast']]), occurredAt: '2026-09-29T08:00:00.000Z',
+    description: 'Тестовый магазин', amountKopecks: -201384, status: 'Выполнено'}];
+  const context = vm.createContext({URL, Date: FakeDate, setTimeout: fn => {clock += 100; fn();}, window, location, document,
+    getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
+  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays, resumeMonthOrdinal, knownOperationsJson) {' + source + '})("history", 7, null, ' + JSON.stringify(JSON.stringify(known)) + ')', context));
+  assert.equal(batch.error, undefined);
+  assert.equal(rowClicks, 0, 'Stable known linked operation must not reopen its card');
+  assert.equal(batch.fastSkippedCount, 1);
+  assert.equal(batch.openedCardCount, 0);
+
+  const stable = new Function('URL', 'Date', helpers + '\nreturn stableKnownRow;')(URL, Date);
+  assert.equal(stable('Тестовый магазин −2 013,84 ₽', {...known[0], occurredAt: new Date(Date.now() - 3600000).toISOString()}), false,
+    'Recent operation must not use the fast skip path');
+  assert.equal(stable('Тестовый магазин −2 013,84 ₽', {...known[0], status: 'Не указан'}), false,
+    'Unknown/non-terminal status must not use the fast skip path');
+  console.log('v18 fast path: stable linked history skips card safely; recent/non-terminal rows still require full detail.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
+// v18: regression guards and project consistency.
 {
   const models = fs.readFileSync(path.join(__dirname, '../YandexFinance/Models.swift'), 'utf8');
   const project = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodeproj/project.pbxproj'), 'utf8');
@@ -288,15 +345,16 @@ console.log('Swift/static reliability guards passed.');
   const freeSetup = fs.readFileSync(path.join(__dirname, '../FREE-SETUP.md'), 'utf8');
 
   assert.ok(!source.includes('Ничего не сохранено'), 'Cancellation/timeout text must not contradict checkpoint saving');
-  const exhaustedCase = swift.match(/case "full_history_exhausted":([\s\S]*?)case "history_beginning_reached":/)?.[1] || '';
-  assert.match(exhaustedCase, /fullHistoryImported\s*=\s*true/, 'A skipped card must not block completion after the history boundary was reached');
+  const initialCompletionCase = swift.match(/case "lookback_reached", "history_beginning_reached", "full_history_exhausted":([\s\S]*?)case "month_navigation_unavailable":/)?.[1] || '';
+  assert.match(initialCompletionCase, /fullHistoryImported\s*=\s*true/, 'A skipped card must not block completion of the six-month bootstrap');
   assert.ok(!/skipped\s*==\s*0[\s\S]*fullHistoryImported\s*=\s*true/.test(swift), 'Full completion must not require zero parser skips');
   assert.match(swift, /fullHistoryResumeOrdinal/, 'Interrupted full sync must persist a resume month');
+  assert.match(swift, /lookbackDays == 183 \|\| lookbackDays == nil/, 'The 183-day bootstrap must actually pass its saved resume month back to JavaScript');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 16;/g) || []).length, 2, 'Debug and Release build number must both be 16');
-  assert.match(readme, /текущий номер сборки — 16/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 18;/g) || []).length, 2, 'Debug and Release build number must both be 18');
+  assert.match(readme, /текущий номер сборки — 18/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
@@ -306,10 +364,14 @@ console.log('Swift/static reliability guards passed.');
   assert.match(source, /const status = detail\('Статус'\) \|\| 'Не указан'/, 'Status must be optional for operation cards');
   assert.match(source, /internal_transfer/, 'Internal own-account transfers must have a dedicated kind');
   assert.match(source, /interest_income/, 'Interest payouts must have a dedicated kind');
-  assert.match(swift, /fullHistoryImportedV5/, 'v15 must invalidate old full-history completion so formerly skipped cards are revisited');
+  assert.match(swift, /initialSixMonthsImportedV1/, 'v18 must preserve the six-month bootstrap completion marker');
   assert.match(swift, /fullHistoryResumeOrdinalV2/, 'v15 must also invalidate old resume points so skipped cards in newer months are rescanned');
   assert.match(swift, /fullHistoryBoundaryOrdinalV2/, 'v15 must not reuse old boundary confirmation evidence');
-  console.log('v16 static guards: completion, resume, cancellation wording, status-less cards, navigation fallback, workflow and docs passed.');
+  assert.match(swift, /knownOperationsJson/, 'Swift must pass saved operations to the fast-path verifier');
+  assert.match(models, /fastSkippedCount:\s*Int\?/, 'Batch must expose fast-path metrics');
+  assert.match(models, /openedCardCount:\s*Int\?/, 'Batch must expose opened-card metrics');
+  assert.match(source, /waitFor\(\(\) => onCard\(\) && currentCardText\(\), 8000\)/, 'Card readiness timeout must be capped at 8 seconds');
+  console.log('v18 static guards: six-month bootstrap, safe fast path, 8-second card timeout, navigation fallback, workflow and docs passed.');
 }
 
 // A resumed full pass starts from the saved oldest month instead of rereading the current month.
@@ -356,13 +418,13 @@ console.log('Swift/static reliability guards passed.');
   const context = vm.createContext({URL, Date: FakeDate, setTimeout: fn => {clock += 250; fn();}, window, location, document,
     getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
   const septemberOrdinal = 2026 * 12 + 8;
-  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays, resumeMonthOrdinal) {' + source + '})("history", null, ' + septemberOrdinal + ')', context));
+  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays, resumeMonthOrdinal) {' + source + '})("history", 183, ' + septemberOrdinal + ')', context));
   assert.equal(batch.error, undefined);
-  assert.equal(batch.stopReason, 'full_history_exhausted');
+  assert.ok(['history_beginning_reached','full_history_exhausted'].includes(batch.stopReason));
   assert.equal(openedOctober, 0, 'Resume must not reread October');
   assert.equal(openedSeptember, 1);
   assert.ok(batch.operations.some(x => x.identity.includes('resume-sep')));
   assert.equal(batch.oldestMonthOrdinal, septemberOrdinal);
   assert.equal(selectedMonth, 'Октябрь 2026', 'Original visible month should be restored after the pass');
-  console.log('v16 resume: incomplete full sync continues from the saved month instead of current month.');
+  console.log('v18 resume: incomplete six-month sync continues from the saved month instead of current month.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

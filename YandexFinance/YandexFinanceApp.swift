@@ -38,7 +38,7 @@ struct ContentView: View {
                             Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }
                             Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent)
                         }
-                        Button("Синхронизировать всю историю") { browser.syncAllHistory() }
+                        Button("Синхронизировать 6 месяцев") { browser.syncSixMonthsHistory() }
                             .font(.footnote)
                     }.font(.footnote).padding(.bottom, 8)
                 }
@@ -51,7 +51,7 @@ struct ContentView: View {
                             Text("Обновлено: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
                         Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
-                        Text("При первой синхронизации приложение проходит историю назад и сохраняет уже прочитанные операции даже при остановке. Затем при открытии автоматически перепроверяет последние 7 дней. «Обновить 30 дней» — ручная перепроверка, а «Синхронизировать всю историю» — повтор полного прохода. При закрытом приложении гарантированное обновление не выполняется.")
+                        Text("При первой синхронизации приложение читает последние 6 месяцев и сохраняет уже прочитанные операции даже при остановке. Затем при открытии автоматически перепроверяет последние 7 дней. «Обновить 30 дней» — ручная перепроверка, а «Синхронизировать 6 месяцев» — повтор первичного периода. При закрытом приложении гарантированное обновление не выполняется.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(browser.message).font(.footnote)
                         if browser.busy { ProgressView("Обновление операций…") }
