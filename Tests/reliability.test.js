@@ -13,12 +13,12 @@ const helpers = source.split('\nconst found = new Map();')[0];
 const parse = new Function(helpers + '\nreturn parseCard;')();
 const url = refs => 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify(refs));
 const ref = {type: 'DEPOT', chainId: 'test-chain', operationTimestamp: '2026-10-04T00:11:31.705Z'};
-const purchase = 'Тестовый магазин\nСегодня, 06:11\n−2 013,84 ₽\nПодробнее\nКатегория\nРазвлечения\nСтатус\nВыполнено';
+const purchase = 'Тестовый магазин\nСегодня, 06:11\n−1 234,56 ₽\nПодробнее\nКатегория\nРазвлечения\nСтатус\nВыполнено';
 
 // Extra signed values in a card no longer poison history import when the list row
 // gives an exact authoritative amount.
-const withCashback = purchase.replace('−2 013,84 ₽', '−2 013,84 ₽\nКэшбэк +100 ₽');
-assert.equal(parse(url([ref]), withCashback, 'Тестовый магазин −2 013,84 ₽').amountKopecks, -201384);
+const withCashback = purchase.replace('−1 234,56 ₽', '−1 234,56 ₽\nКэшбэк +100 ₽');
+assert.equal(parse(url([ref]), withCashback, 'Тестовый магазин −1 234,56 ₽').amountKopecks, -123456);
 assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сумм: 2/);
 
 // currentCardText must prefer the actual small visible card over a persistent shell.
@@ -165,7 +165,7 @@ assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сум�
     getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
     closest: () => null, querySelector: sel => sel === 'svg' ? {} : null,
     getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
-  const row = control('Тестовый магазин −2 013,84 ₽', () => {
+  const row = control('Тестовый магазин −1 234,56 ₽', () => {
     screen = 'card'; location.href = url([{...ref, chainId: 'cancel-save'}]);
   });
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
@@ -224,7 +224,7 @@ console.log('Swift/static reliability guards passed.');
   let currentKey = '';
   const go = key => { currentKey = key; screen = 'card'; location.href = url([{...ref, chainId: key}]); };
   const rows = [
-    control('Хорошая −2 013,84 ₽', () => go('good')),
+    control('Хорошая −1 234,56 ₽', () => go('good')),
     control('Кривая −999 ₽', () => go('bad'))
   ];
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
@@ -274,7 +274,7 @@ console.log('Swift/static reliability guards passed.');
     getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
     closest: () => null, querySelector: sel => sel === 'svg' ? {} : null,
     getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
-  const row = control('Тестовый магазин −2 013,84 ₽', () => {screen = 'card'; location.href = url([{...ref, chainId: 'filter-failure'}]);});
+  const row = control('Тестовый магазин −1 234,56 ₽', () => {screen = 'card'; location.href = url([{...ref, chainId: 'filter-failure'}]);});
   const filter = control('', () => {screen = 'filters-start';}, 'Какие операции скрывать');
   const month = control('Октябрь', () => {});
   const account = control('Все карты и счета', () => {});
@@ -327,7 +327,7 @@ console.log('Swift/static reliability guards passed.');
   const month = control('Октябрь 2026', () => {});
   const account = control('Все карты и счета', () => {});
   const row = {
-    innerText: 'Тестовый магазин −2 013,84 ₽', href: knownURL, parentElement: root,
+    innerText: 'Тестовый магазин −1 234,56 ₽', href: knownURL, parentElement: root,
     click() { rowClicks++; screen = 'card'; location.href = knownURL; },
     matches(sel) { return sel.includes('a[href'); },
     getAttribute(key) { return key === 'href' ? knownURL : null; },
@@ -346,7 +346,7 @@ console.log('Swift/static reliability guards passed.');
   const window = {history: {back() { screen = 'list'; location.href = 'https://bank.yandex.ru/my/transactions-history'; }}};
   class FakeDate extends Date { static now() { return clock; } }
   const known = [{identity: JSON.stringify([['DEPOT','known-fast']]), occurredAt: '2026-09-29T08:00:00.000Z',
-    description: 'Тестовый магазин', amountKopecks: -201384, status: 'Выполнено'}];
+    description: 'Тестовый магазин', amountKopecks: -123456, status: 'Выполнено'}];
   const context = vm.createContext({URL, Date: FakeDate, setTimeout: fn => {clock += 100; fn();}, window, location, document,
     getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
   const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays, resumeMonthOrdinal, knownOperationsJson) {' + source + '})("history", 7, null, ' + JSON.stringify(JSON.stringify(known)) + ')', context));
@@ -356,9 +356,9 @@ console.log('Swift/static reliability guards passed.');
   assert.equal(batch.openedCardCount, 1);
 
   const stable = new Function('URL', 'Date', helpers + '\nreturn stableKnownRow;')(URL, Date);
-  assert.equal(stable('Тестовый магазин −2 013,84 ₽', {...known[0], occurredAt: new Date(Date.now() - 3600000).toISOString()}), false,
+  assert.equal(stable('Тестовый магазин −1 234,56 ₽', {...known[0], occurredAt: new Date(Date.now() - 3600000).toISOString()}), false,
     'Recent operation must not use the fast skip path');
-  assert.equal(stable('Тестовый магазин −2 013,84 ₽', {...known[0], status: 'Не указан'}), false,
+  assert.equal(stable('Тестовый магазин −1 234,56 ₽', {...known[0], status: 'Не указан'}), false,
     'Unknown/non-terminal status must not use the fast skip path');
   console.log('v20: saved linked operations reopen; no status change is hidden by the old fast path.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
@@ -375,9 +375,14 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 22;/g) || []).length, 2, 'Debug and Release build number must both be 22');
-  assert.match(readme, /текущий номер сборки — 22/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 23;/g) || []).length, 2, 'Debug and Release build number must both be 23');
+  assert.match(readme, /текущий номер сборки — 23/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
+
+  const incrementalBlock = swift.match(/private func incrementalDays[\s\S]*?private static func operationDate/)[0];
+  assert.ok(!/unresolvedIssues/.test(incrementalBlock), 'Old import issues must not expand every automatic refresh');
+  assert.match(swift, /let runClean = \(batch\.skippedCount \?\? 0\) == 0 && \(batch\.issues \?\? \[\]\)\.isEmpty/);
+  assert.match(swift, /boundaryReached, runClean, !resumed/, 'Fresh coverage may advance when the current pass is clean even if an older retry issue remains');
 
   const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
   assert.deepEqual(monthParser('Октябрь'), {month: 9, year: null});
@@ -408,8 +413,8 @@ console.log('Swift/static reliability guards passed.');
     getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
     closest: () => null, querySelector: sel => sel === 'svg' ? {} : null,
     getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
-  const octRow = control('Октябрьская −2 013,84 ₽', () => {openedOctober++;});
-  const sepRow = control('Сентябрьская −2 013,84 ₽', () => {
+  const octRow = control('Октябрьская −1 234,56 ₽', () => {openedOctober++;});
+  const sepRow = control('Сентябрьская −1 234,56 ₽', () => {
     openedSeptember++; screen = 'card-sep';
     location.href = url([{...ref, chainId: 'resume-sep', operationTimestamp: '2026-09-20T08:00:00Z'}]);
   });
@@ -451,14 +456,14 @@ console.log('Swift/static reliability guards passed.');
 
 // v20: two simultaneously rendered cards with equal amounts must not mix details.
 assert.throws(() => parse(url([ref]), purchase + '\n' + purchase.replace('Тестовый магазин', 'Другой магазин'),
-  'Другой магазин −2 013,84 ₽'), /несколько карточек/);
+  'Другой магазин −1 234,56 ₽'), /несколько карточек/);
 const stable20 = new Function(helpers + '\nreturn stableKnownRow;')();
 assert.equal(stable20('Магазин −100 ₽ Отменено', {description: 'Магазин', amountKopecks: -10000,
   occurredAt: '2026-09-01T00:00:00Z', status: 'Выполнено'}), false);
 assert.match(swift, /checkpointInFlight/);
 assert.match(swift, /activeRunID == runID/);
 assert.match(swift, /sequence > throughSequence/);
-assert.match(swift, /boundaryReached && clean/);
+assert.match(swift, /boundaryReached && runClean/);
 assert.match(appSwift, /Продолжить загрузку истории/);
 // Execute the actual acknowledgment JS, including a delayed acknowledgment after a new run.
 const ack = swift.match(/if \(window.__financeRunID !== expectedRunID\) return false;[\s\S]*?return true;/)[0];
@@ -505,8 +510,8 @@ console.log('v20: ambiguous cards rejected; changed status rechecked; repeated/s
     getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
     closest: () => null, querySelector: sel => sel === 'svg' ? {} : null,
     getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
-  const octRow = control('Октябрьская −2 013,84 ₽', () => {openedOctober++;});
-  const sepRow = control('Сентябрьская −2 013,84 ₽', () => {
+  const octRow = control('Октябрьская −1 234,56 ₽', () => {openedOctober++;});
+  const sepRow = control('Сентябрьская −1 234,56 ₽', () => {
     openedSeptember++; screen = 'card-sep';
     location.href = url([{...ref, chainId: 'resume-sep', operationTimestamp: '2026-09-20T08:00:00Z'}]);
   });
@@ -547,27 +552,27 @@ console.log('v20: ambiguous cards rejected; changed status rechecked; repeated/s
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
 
-// v22: grouped bank card fixture, anonymized merchant/identity, no account data.
-const groupCard = 'Тестовый платёж\n2 апреля, 20:41\n−1773 ₽\n2 операции\n2 апреля, 21:18\n+257 ₽\n2 апреля, 20:41\n−2030 ₽\nПодробнее\nСтатус\nВыполнено';
-const groupRef = {type:'OHIO_LINKED_TXNS', chainId:'synthetic-group', operationTimestamp:'2026-04-02T14:41:00Z'};
+// v23: fully synthetic grouped-card fixture; no user bank data.
+const groupCard = 'Тестовый платёж\n17 марта, 12:02\n−1468 ₽\n2 операции\n17 марта, 12:34\n+312 ₽\n17 марта, 12:02\n−1780 ₽\nПодробнее\nСтатус\nВыполнено';
+const groupRef = {type:'OHIO_LINKED_TXNS', chainId:'synthetic-group', operationTimestamp:'2026-03-17T06:02:00Z'};
 const groupURL = url([groupRef]);
-const parsedGroup = parse(groupURL, groupCard, 'Тестовый платёж −1773 ₽', new Date('2026-10-04T12:00:00Z'));
+const parsedGroup = parse(groupURL, groupCard, 'Тестовый платёж −1468 ₽', new Date('2026-10-04T12:00:00Z'));
 assert.equal(parsedGroup.kind, 'grouped_operation');
-assert.equal(parsedGroup.amountKopecks, -177300);
+assert.equal(parsedGroup.amountKopecks, -146800);
 assert.deepEqual(parsedGroup.components, [
-  {displayDate:'2 апреля, 21:18', amountKopecks:25700},
-  {displayDate:'2 апреля, 20:41', amountKopecks:-203000}
+  {displayDate:'17 марта, 12:34', amountKopecks:31200},
+  {displayDate:'17 марта, 12:02', amountKopecks:-178000}
 ]);
 assert.equal(parsedGroup.components.reduce((n,x) => n+x.amountKopecks,0), parsedGroup.amountKopecks);
 assert.equal(parsedGroup.components.length, 2, 'Net total must not become a third component');
 assert.equal(parse(groupURL, groupCard, '').identity, parsedGroup.identity, 'Reread keeps the bank group identity');
-const sameAmounts = groupCard.replace('−1773 ₽','−4060 ₽').replace('+257 ₽','−2030 ₽');
+const sameAmounts = groupCard.replace('−1468 ₽','−3560 ₽').replace('+312 ₽','−1780 ₽');
 assert.equal(parse(groupURL, sameAmounts, '').components.length, 2, 'Equal amounts are separate component occurrences');
 const nextGroup = parse(url([{...groupRef, chainId:'synthetic-other-group'}]), groupCard, '');
 assert.notEqual(nextGroup.identity, parsedGroup.identity, 'Equal amounts never merge distinct bank identities');
-assert.throws(() => parse(groupURL, groupCard.replace('+257 ₽','+258 ₽'), ''), /не совпала/);
+assert.throws(() => parse(groupURL, groupCard.replace('+312 ₽','+313 ₽'), ''), /не совпала/);
 assert.throws(() => parse(groupURL, groupCard.replace('2 операции','3 операции'), ''), /все составляющие/);
-assert.throws(() => parse(groupURL, groupCard.replace('2 апреля, 21:18\n+257 ₽','Не загружено'), ''), /все составляющие/);
+assert.throws(() => parse(groupURL, groupCard.replace('17 марта, 12:34\n+312 ₽','Не загружено'), ''), /все составляющие/);
 assert.throws(() => parse(groupURL, groupCard + '\n' + purchase, ''), /несколько карточек/);
 assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Несколько разделов/);
 assert.match(appSwift, /TabView\(selection: \$browser.selectedTab\)/);
@@ -582,5 +587,5 @@ assert.match(appSwift, /Месяц сканера \(не дата платежа
   assert.equal(result.operations.length,1);
   assert.equal(result.operations[0].components.length,2);
   assert.equal(result.operations[0].identity, parsedGroup.identity);
-  console.log('v22: grouped retry returns one bank identity with two reconciled components; duplicates, partial groups and mismatched totals tested.');
+  console.log('v23: grouped retry returns one bank identity with two reconciled components; duplicates, partial groups and mismatched totals tested.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

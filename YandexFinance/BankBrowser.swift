@@ -87,10 +87,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             if operation.status.range(of: "ожида|обработ|в процессе|pending|не указан", options: [.regularExpression, .caseInsensitive]) != nil,
                let date = Self.operationDate(operation.occurredAt) { start = min(start, date.addingTimeInterval(-86400)) }
         }
-        for issue in history.unresolvedIssues ?? [] {
-            if let ordinal = issue.monthOrdinal,
-               let date = Calendar.current.date(from: DateComponents(year: ordinal / 12, month: ordinal % 12 + 1, day: 1)) { start = min(start, date) }
-        }
+        // Import issues are retried explicitly from the Issues section. An old issue must
+        // not make every automatic refresh rescan months of already covered history.
         return max(7, Int(ceil(now.timeIntervalSince(start) / 86400)))
     }
     private static func operationDate(_ value: String) -> Date? {
@@ -221,22 +219,25 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         var next = history
         let counts = apply(batch.operations, to: &next)
         addIssues(batch.issues ?? [], to: &next)
-        let clean = (batch.skippedCount ?? 0) == 0 && (next.unresolvedIssues ?? []).isEmpty
+        let runClean = (batch.skippedCount ?? 0) == 0 && (batch.issues ?? []).isEmpty
+        let bootstrapClean = runClean && (next.unresolvedIssues ?? []).isEmpty
         let boundaryReached = ["lookback_reached", "history_beginning_reached", "full_history_exhausted"].contains(batch.stopReason)
         if initialImport {
             next.bootstrapResumeMonth = batch.oldestMonthOrdinal ?? next.bootstrapResumeMonth
-            next.bootstrapCompleted = boundaryReached && clean
+            next.bootstrapCompleted = boundaryReached && bootstrapClean
             if next.bootstrapCompleted == true { next.bootstrapResumeMonth = nil }
         }
         // A resumed pass covers old months only; it must not advance the fresh-data watermark.
-        if mode == "history", boundaryReached, clean, !resumed, (requestedDays == nil || requestedDays! >= incrementalDays(now: startedAt)) { next.lastCompletedSync = startedAt }
+        // Old unresolved issues are independent retry work and must not freeze fresh coverage.
+        if mode == "history", boundaryReached, runClean, !resumed, (requestedDays == nil || requestedDays! >= incrementalDays(now: startedAt)) { next.lastCompletedSync = startedAt }
         next.lastSync = Date(); next.lastStopReason = batch.stopReason
         try vault.save(next); history = next
         let ending: String
         if batch.stopReason == "issue_retry_completed" { ending = "Пропущенная операция прочитана." }
         else if batch.stopReason == "issue_not_found" { ending = "Операция не найдена в сохранённом месяце. Ошибка остаётся в списке." }
         else if batch.stopReason == "single_card" { ending = "Карточка прочитана." }
-        else if boundaryReached && clean { ending = "Граница выбранного периода достигнута." }
+        else if initialImport && boundaryReached && !bootstrapClean { ending = "Граница периода достигнута, но остаются непрочитанные операции." }
+        else if boundaryReached && runClean { ending = "Граница выбранного периода достигнута." }
         else if batch.stopReason == "cancelled" { ending = "Остановлено. Прогресс сохранён." }
         else { ending = "Прогресс сохранён. Полнота периода не подтверждена." }
         message = "Разобрано карточек: \(batch.operations.count), добавлено \(checkpointAdded + counts.0), изменено \(checkpointChanged + counts.1). \(ending)"

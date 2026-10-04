@@ -7,38 +7,38 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('mode', source); // Validate the entire injected async function.
 const parse = new Function(source.split('\nconst found = new Map();')[0] + '\nreturn parseCard;')();
 const url = refs => 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify(refs));
-const ref = {type: 'DEPOT', chainId: 'test-chain', operationId: 'test-operation', operationTimestamp: '2026-10-04T00:11:31.705Z', chainVersionIds: ['v1']};
-const purchase = 'Тестовый магазин\nСегодня, 06:11\n−2 013,84 ₽\nПодробнее\nКатегория\nРазвлечения\nMCC\n5816\nСтатус\nВыполнено';
-const first = parse(url([ref]), purchase, 'Тестовый магазин −2 013,84 ₽');
-assert.equal(first.amountKopecks, -201384);
+const ref = {type: 'DEPOT', chainId: 'test-chain', operationId: 'test-operation', operationTimestamp: '2026-09-18T08:15:31.705Z', chainVersionIds: ['v1']};
+const purchase = 'Тестовый магазин\nСегодня, 06:11\n−1 234,56 ₽\nПодробнее\nКатегория\nРазвлечения\nMCC\n5816\nСтатус\nВыполнено';
+const first = parse(url([ref]), purchase, 'Тестовый магазин −1 234,56 ₽');
+assert.equal(first.amountKopecks, -123456);
 assert.equal(first.occurredAt, ref.operationTimestamp);
 assert.equal(first.mcc, '5816');
 assert.equal(first.kind, 'expense');
-const changedVersion = parse(url([{...ref, chainVersionIds: ['v2'], operationId: 'another-version'}]), purchase, '−2 013,84 ₽');
+const changedVersion = parse(url([{...ref, chainVersionIds: ['v2'], operationId: 'another-version'}]), purchase, '−1 234,56 ₽');
 assert.equal(first.identity, changedVersion.identity);
-const refund = parse(url([ref]), 'Тестовый магазин\nСегодня, 06:11\n+1 886 ₽\nВозврат\nПодробнее\nКатегория\nСупермаркеты\nСтатус\nВыполнено', '+1 886 ₽');
+const refund = parse(url([ref]), 'Тестовый магазин\nСегодня, 06:11\n+789,10 ₽\nВозврат\nПодробнее\nКатегория\nСупермаркеты\nСтатус\nВыполнено', '+789,10 ₽');
 assert.equal(refund.kind, 'refund');
 assert.equal(refund.category, 'Супермаркеты');
-const split = parse(url([{type: 'BNPL', operationId: 'test-split'}]), 'Тест Сплита\n29 сентября, 14:32\n+15 299 ₽\nПодробнее\nНазначение\nПлатёж 3 из 4\nСтатус\nВыполнено', 'Платёж +15 299 ₽', new Date(2026, 9, 4, 12));
+const split = parse(url([{type: 'BNPL', operationId: 'test-split'}]), 'Тест Сплита\n18 сентября, 14:32\n+4 321 ₽\nПодробнее\nНазначение\nПлатёж 3 из 4\nСтатус\nВыполнено', 'Платёж +4 321 ₽', new Date(2026, 9, 20, 12));
 assert.equal(split.kind, 'installment_payment');
 assert.equal(split.timePrecision, 'display_minute');
-assert.equal(new Date(split.occurredAt).getDate(), 29);
+assert.equal(new Date(split.occurredAt).getDate(), 18);
 assert.equal(new Date(split.occurredAt).getHours(), 14);
 assert.throws(() => parse(url([ref]), purchase, '−2 000 ₽'), /Сумма не совпала/);
 assert.throws(() => parse('https://example.com/my/transactions-history/operation', purchase, ''), /Не открылась/);
-assert.throws(() => parse(url([{...ref, operationTimestamp: '2026-10-04T00:11:31'}]), purchase, ''), /часовой пояс/);
-const missingStatusPurchase = parse(url([ref]), purchase.replace('Статус\nВыполнено', ''), '−2 013,84 ₽');
+assert.throws(() => parse(url([{...ref, operationTimestamp: '2026-09-18T08:15:31'}]), purchase, ''), /часовой пояс/);
+const missingStatusPurchase = parse(url([ref]), purchase.replace('Статус\nВыполнено', ''), '−1 234,56 ₽');
 assert.equal(missingStatusPurchase.status, 'Не указан');
 assert.equal(missingStatusPurchase.kind, 'expense');
 console.log('Parser: purchase, refund, Split, stable identity, exact kopecks, and rejection cases passed.');
 
-// v16: cards from the real mobile UI that have no «Статус» must be ready and
+// v16 regression shape: status-less mobile cards must be ready and
 // classified without a 20-second wait.
-const julyTransferRef = {...ref, chainId: 'savings-to-pay', operationTimestamp: '2026-07-22T11:43:00Z'};
+const demoTransferRef = {...ref, chainId: 'demo-savings-to-pay', operationTimestamp: '2026-08-14T06:34:00Z'};
 const savingsToPay = [
   'Счёт в Сейвах → Карта Пэй',
-  '22 июля, 17:43',
-  '+534 ₽',
+  '14 августа, 12:34',
+  '+321 ₽',
   'Чат с поддержкой',
   'Получить квитанцию',
   'Подробнее',
@@ -47,24 +47,24 @@ const savingsToPay = [
   'Куда',
   'На карту Пэй'
 ].join('\n');
-const internal = parse(url([julyTransferRef]), savingsToPay, 'Счёт в Сейвах → Карта Пэй +534 ₽', new Date(2026, 9, 4));
-assert.equal(internal.amountKopecks, 53400);
+const internal = parse(url([demoTransferRef]), savingsToPay, 'Счёт в Сейвах → Карта Пэй +321 ₽', new Date(2026, 9, 4));
+assert.equal(internal.amountKopecks, 32100);
 assert.equal(internal.status, 'Не указан');
 assert.equal(internal.kind, 'internal_transfer');
 assert.equal(internal.category, 'Переводы между своими счетами');
 
-const julyInterestRef = {...ref, chainId: 'savings-interest', operationTimestamp: '2026-07-22T01:20:00Z'};
+const demoInterestRef = {...ref, chainId: 'demo-savings-interest', operationTimestamp: '2026-08-14T02:15:00Z'};
 const interestCard = [
   'Выплата процентов',
-  '22 июля, 07:20',
-  '+0,3 ₽',
+  '14 августа, 08:15',
+  '+1,23 ₽',
   'Чат с поддержкой',
   'Подробнее',
   'Пополнение',
   'На счёт в Сейвах'
 ].join('\n');
-const interest = parse(url([julyInterestRef]), interestCard, 'Выплата процентов +0,3 ₽', new Date(2026, 9, 4));
-assert.equal(interest.amountKopecks, 30);
+const interest = parse(url([demoInterestRef]), interestCard, 'Выплата процентов +1,23 ₽', new Date(2026, 9, 4));
+assert.equal(interest.amountKopecks, 123);
 assert.equal(interest.status, 'Не указан');
 assert.equal(interest.kind, 'interest_income');
 assert.equal(interest.category, 'Проценты');
@@ -81,7 +81,7 @@ async function checkMobile() {
     return JSON.parse(await vm.runInContext('(async function(mode) {' + source + '})("card")', context));
   };
   const mobile = await run(url([ref]), 'Назад\n' + purchase);
-  assert.equal(mobile.operations[0].amountKopecks, -201384);
+  assert.equal(mobile.operations[0].amountKopecks, -123456);
   assert.equal(mobile.operations[0].description, 'Тестовый магазин');
   assert.equal(mobile.stopReason, 'single_card');
   const inline = await run(url([ref]), purchase.replace('Статус\nВыполнено', 'Статус\tВыполнено'));
@@ -121,35 +121,35 @@ async function checkStatuslessCardReadyImmediately() {
     assert.equal(batch.operations[0].status, 'Не указан');
     assert.equal(clock, 0, 'Status-less card must be accepted on the first readiness check, without polling timeout');
   };
-  await run(savingsToPay, julyTransferRef, 'internal_transfer');
-  await run(interestCard, julyInterestRef, 'interest_income');
+  await run(savingsToPay, demoTransferRef, 'internal_transfer');
+  await run(interestCard, demoInterestRef, 'interest_income');
   console.log('v16 readiness: both status-less card templates are accepted immediately, without waiting for a nonexistent status.');
 }
 checkStatuslessCardReadyImmediately().catch(error => { console.error(error); process.exitCode = 1; });
 
 // WebKit mobile text layout: amount fragments, neighbouring list and detail sums.
-for (const rendered of ['−\n2 013,84\n₽', '−2 013\n,84 ₽', '−\t2\u00a0013,84\t₽']) {
-  const result = parse(url([ref]), purchase.replace('−2 013,84 ₽', rendered), '');
-  assert.equal(result.amountKopecks, -201384);
+for (const rendered of ['−\n1 234,56\n₽', '−1 234\n,56 ₽', '−\t1\u00a0234,56\t₽']) {
+  const result = parse(url([ref]), purchase.replace('−1 234,56 ₽', rendered), '');
+  assert.equal(result.amountKopecks, -123456);
 }
 const surrounding = parse(url([ref]), 'История\nДругая покупка −500 ₽\n' + purchase + '\nКомиссия\n−10 ₽', '');
-assert.equal(surrounding.amountKopecks, -201384);
+assert.equal(surrounding.amountKopecks, -123456);
 assert.equal(surrounding.description, 'Тестовый магазин');
-assert.throws(() => parse(url([ref]), purchase.replace('−2 013,84 ₽', '−2 013,84 ₽\n−500 ₽'), ''), /найдено сумм: 2/);
-assert.throws(() => parse(url([ref]), purchase.replace('−2 013,84 ₽', '2 013,84 ₽'), ''), /найдено сумм: 0/);
+assert.throws(() => parse(url([ref]), purchase.replace('−1 234,56 ₽', '−1 234,56 ₽\n−500 ₽'), ''), /найдено сумм: 2/);
+assert.throws(() => parse(url([ref]), purchase.replace('−1 234,56 ₽', '1 234,56 ₽'), ''), /найдено сумм: 0/);
 console.log('Mobile amount fragments, surrounding amounts, and ambiguous amount rejection passed.');
 
 async function checkHistory() {
   const vm = require('node:vm');
   let screen = 'list', opened = 0, returned = 0, filtersClosed = 0;
   const location = new URL('https://bank.yandex.ru/my/transactions-history');
-  const body = {get innerText() { return screen.startsWith('card') ? purchase.replace('−2 013,84 ₽', '−\n2 013,84\n₽') : 'История'; }};
+  const body = {get innerText() { return screen.startsWith('card') ? purchase.replace('−1 234,56 ₽', '−\n1 234,56\n₽') : 'История'; }};
   const control = (label, click, aria = '') => ({innerText: label, click,
     getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false});
   const go = (index) => { screen = 'card' + index; opened++;
     location.href = url([{...ref, chainId: 'history-' + index,
       operationTimestamp: index === 0 ? new Date().toISOString() : new Date(Date.now() - 8 * 86400000).toISOString()}]); };
-  const list = [control('Тестовый магазин −2 013,84 ₽', () => go(0)), control('Старый магазин −2 013,84 ₽', () => go(1))];
+  const list = [control('Тестовый магазин −1 234,56 ₽', () => go(0)), control('Старый магазин −1 234,56 ₽', () => go(1))];
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
   const close = control('Выбрать', () => {screen = 'list'; filtersClosed++;});
   const hiddenClose = {...control('', () => {throw Error('Clicked hidden desktop close');}, 'Закрыть'), getClientRects: () => []};
@@ -169,7 +169,7 @@ async function checkHistory() {
   const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays) {' + source + '})("history", 7)', context));
   assert.equal(batch.error, undefined);
   assert.equal(batch.operations.length, 1);
-  assert.equal(batch.operations[0].amountKopecks, -201384);
+  assert.equal(batch.operations[0].amountKopecks, -123456);
   assert.equal(batch.stopReason, 'lookback_reached');
   assert.equal(batch.lookbackDays, 7);
   assert.equal(opened, 2);
@@ -193,8 +193,8 @@ async function checkFullHistoryNoCutoff() {
   const go = (which) => { screen = 'card-' + which; opened++;
     const stamp = which === 'oct' ? '2026-10-04T00:11:31Z' : '2026-09-15T00:11:31Z';
     location.href = url([{...ref, chainId: 'full-history-' + which, operationTimestamp: stamp}]); };
-  const octList = [control('Октябрьская операция −2 013,84 ₽', () => go('oct'))];
-  const sepList = [control('Сентябрьская операция −2 013,84 ₽', () => go('sep'))];
+  const octList = [control('Октябрьская операция −1 234,56 ₽', () => go('oct'))];
+  const sepList = [control('Сентябрьская операция −1 234,56 ₽', () => go('sep'))];
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
   const close = control('Выбрать', () => {screen = 'list'; filtersClosed++;});
   const account = control('Все карты и счета', () => {});
@@ -243,10 +243,10 @@ async function checkSevenDayCrossMonth() {
     getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
     closest: () => null, querySelector: () => null, getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
   const go = (key, stamp) => { screen = 'card-' + key; location.href = url([{...ref, chainId: key, operationTimestamp: stamp}]); };
-  const octList = [control('Октябрь −2 013,84 ₽', () => go('oct', '2026-10-04T08:00:00Z'))];
+  const octList = [control('Октябрь −1 234,56 ₽', () => go('oct', '2026-10-04T08:00:00Z'))];
   const sepList = [
-    control('Сентябрь свежий −2 013,84 ₽', () => go('sep-new', '2026-09-29T08:00:00Z')),
-    control('Сентябрь старый −2 013,84 ₽', () => go('sep-old', '2026-09-20T08:00:00Z'))
+    control('Сентябрь свежий −1 234,56 ₽', () => go('sep-new', '2026-09-29T08:00:00Z')),
+    control('Сентябрь старый −1 234,56 ₽', () => go('sep-old', '2026-09-20T08:00:00Z'))
   ];
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
   const close = control('Выбрать', () => {screen = 'list';});
