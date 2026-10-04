@@ -1,0 +1,32 @@
+name: Сборка приложения для iPhone
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Проверка парсера
+        run: node Tests/parser.test.js
+
+      - name: Сборка приложения
+        run: bash scripts/build-ipa.sh
+
+      - name: Сохранение IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: YandexFinance-unsigned-IPA
+          path: dist/YandexFinance-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
