@@ -35,6 +35,18 @@ struct BankOperation: Codable, Equatable, Identifiable {
     }
 }
 
+
+
+extension BankOperation {
+    var financialInput: FinancialOperationInput {
+        FinancialOperationInput(occurredAt: occurredAt, description: description, amountKopecks: amountKopecks,
+                                status: status, category: category, purpose: purpose, providers: providers, kind: kind,
+                                componentAmountsKopecks: components?.map(\.amountKopecks) ?? [])
+    }
+
+    var financialAssessment: FinancialAssessment { FinancialEngine.classify(financialInput) }
+}
+
 struct ImportIssue: Codable, Equatable {
     let identity: String?
     let monthOrdinal: Int?

@@ -375,8 +375,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 23;/g) || []).length, 2, 'Debug and Release build number must both be 23');
-  assert.match(readme, /текущий номер сборки — 23/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 24;/g) || []).length, 2, 'Debug and Release build number must both be 24');
+  assert.match(readme, /текущий номер сборки — 24/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const incrementalBlock = swift.match(/private func incrementalDays[\s\S]*?private static func operationDate/)[0];
@@ -589,3 +589,19 @@ assert.match(appSwift, /Месяц сканера \(не дата платежа
   assert.equal(result.operations[0].identity, parsedGroup.identity);
   console.log('v23: grouped retry returns one bank identity with two reconciled components; duplicates, partial groups and mismatched totals tested.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
+
+
+// v24: finance engine is part of the app target and diagnostics are visible.
+const projectV24 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodeproj/project.pbxproj'), 'utf8');
+const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
+const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
+assert.match(projectV24, /FinanceEngine\.swift/);
+assert.match(projectV24, /CURRENT_PROJECT_VERSION = 24;/);
+assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
+assert.match(appSwift, /Расходы после возвратов/);
+assert.match(financeEngine, /case internalTransfer = "internal_transfer"/);
+assert.match(financeEngine, /case interestIncome = "interest_income"/);
+assert.match(financeEngine, /kind == "grouped_operation"/);
+assert.match(financeEngine, /components are diagnostic detail only/i);
+assert.match(financeTests, /unknown kind must not be guessed/);
+console.log('v24: finance engine is wired into the target and diagnostic UI; detailed financial rules run as Swift tests in CI.');

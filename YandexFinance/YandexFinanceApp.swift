@@ -110,6 +110,8 @@ struct ContentView: View {
                                     }
                                 }
                                 LabeledContent("Категория", value: operation.category)
+                                LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
+                                Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)
                                 LabeledContent("Статус", value: operation.status)
                                 LabeledContent("Дата UTC", value: operation.occurredAt)
                                 LabeledContent("Точность", value: operation.timePrecision == "source_timestamp" ? "Время банка" : "До минуты")
@@ -129,6 +131,76 @@ struct ContentView: View {
                     }
                 }.navigationTitle("Мои операции")
             }.tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
+            FinanceDashboardView(browser: browser)
+                .tabItem { Label("Финансы", systemImage: "chart.pie") }.tag(2)
+        }
+    }
+}
+
+@MainActor
+struct FinanceDashboardView: View {
+    @ObservedObject var browser: BankBrowser
+
+    private var interval: DateInterval {
+        Calendar.current.dateInterval(of: .month, for: Date()) ?? DateInterval(start: .distantPast, end: .distantFuture)
+    }
+
+    private var summary: FinancialSummary {
+        FinancialEngine.summarize(browser.history.operations.map(\.financialInput), in: interval)
+    }
+
+    private func rubles(_ kopecks: Int64) -> String {
+        (Decimal(kopecks) / 100).formatted(.currency(code: "RUB"))
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Текущий месяц") {
+                    LabeledContent("Операций в периоде", value: String(summary.operationCount))
+                    LabeledContent("Расходы до возвратов", value: rubles(summary.grossExpenseKopecks))
+                    LabeledContent("Возвраты", value: rubles(summary.refundsKopecks))
+                    LabeledContent("Расходы после возвратов", value: rubles(summary.netExpenseKopecks))
+                    LabeledContent("Доходы", value: rubles(summary.incomeKopecks))
+                    LabeledContent("Чистый поток", value: rubles(summary.netCashFlowKopecks))
+                    Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section("Классификация") {
+                    ForEach(summary.buckets) { bucket in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(bucket.type.title)
+                                Text("Операций: \(bucket.count)").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(rubles(bucket.signedAmountKopecks))
+                        }
+                    }
+                    if summary.operationCount == 0 {
+                        Text("За текущий месяц сохранённых операций пока нет.").foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Правила расчёта") {
+                    Text("Возвраты уменьшают расходы. Проценты увеличивают доход. Подтверждённые переводы между своими счетами, ожидающие и отменённые операции не входят в окончательные итоги.")
+                    Text("Сплит пока показывается отдельно и не входит в расходы до связывания исходной покупки и платежей — так мы не создаём двойной расход.")
+                    Text("Сводная банковская карточка учитывается только по её итоговой сумме. Вложенные составляющие служат расшифровкой и повторно не суммируются.")
+                    Text("Неизвестные типы не угадываются и остаются в категории «Не определено» до проверки.")
+                }.font(.footnote).foregroundStyle(.secondary)
+
+                if (summary.counts[.unknown] ?? 0) > 0 || (summary.counts[.pending] ?? 0) > 0 || (summary.counts[.split] ?? 0) > 0 {
+                    Section("Требуют внимания") {
+                        if let count = summary.counts[.unknown], count > 0 { Text("Не определено: \(count)") }
+                        if let count = summary.counts[.pending], count > 0 { Text("В обработке: \(count)") }
+                        if let count = summary.counts[.split], count > 0 { Text("Сплит: \(count)") }
+                        Text("Эти операции вынесены отдельно, чтобы итог не выглядел точнее, чем позволяют данные банка.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Финансы")
         }
     }
 }
