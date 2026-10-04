@@ -56,20 +56,56 @@ async function closeHistoryFilters() {
   await waitFor(() => activeSwitches().length === 0, 5000);
 }
 function rowSignature(list) { return JSON.stringify(list.map(text)); }
-function scrollHistory(list) {
-  const last = list[list.length - 1];
-  let parent = last?.parentElement;
+let historyScrollContainer = null;
+function historyContainer(list) {
+  let parent = list[list.length - 1]?.parentElement;
   while (parent && parent !== document.body) {
     if (parent.scrollHeight > parent.clientHeight + 20 && /(auto|scroll)/.test(getComputedStyle(parent).overflowY)) {
-      parent.scrollTop = Math.min(parent.scrollHeight, parent.scrollTop + Math.max(200, parent.clientHeight * 0.8));
-      parent.dispatchEvent(new Event('scroll', {bubbles: true}));
-      return;
+      historyScrollContainer = parent;
+      return parent;
     }
     parent = parent.parentElement;
   }
-  const root = document.scrollingElement || document.documentElement;
-  window.scrollBy(0, Math.max(200, window.innerHeight * 0.8));
+  if (historyScrollContainer && historyScrollContainer.isConnected !== false) return historyScrollContainer;
+  return document.scrollingElement || document.documentElement;
+}
+function scrollHistory(list) {
+  const root = historyContainer(list);
+  const before = root.scrollTop;
+  const step = Math.max(200, root.clientHeight * 0.8);
+  root.scrollTop = Math.min(root.scrollHeight - root.clientHeight, before + step);
   root.dispatchEvent(new Event('scroll', {bubbles: true}));
+  return {moved: root.scrollTop > before + 1,
+    atBottom: root.scrollTop + root.clientHeight >= root.scrollHeight - 2};
+}
+function historyLoading() {
+  return [...document.querySelectorAll('[aria-busy="true"],[role="progressbar"],[class*="skeleton" i]')].some(isVisible);
+}
+async function waitForHistoryRows(timeout = 45000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    assertHistory();
+    if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
+    const list = rows();
+    if (list.length && !historyLoading()) return list;
+    await sleep(250);
+  }
+  throw Error('Банк не завершил загрузку списка за 45 секунд. Повторите обновление позже.');
+}
+async function nextHistoryWindow(list) {
+  const before = rowSignature(list);
+  const movement = scrollHistory(list);
+  // At the bottom allow a full network request, rather than stopping on a skeleton.
+  const deadline = Date.now() + (movement.atBottom ? 15000 : 1500);
+  while (Date.now() < deadline) {
+    if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
+    let next = rows();
+    if (!next.length || historyLoading()) next = await waitForHistoryRows();
+    if (rowSignature(next) !== before) return {list: next, changed: true, movement};
+    await sleep(250);
+  }
+  const next = await waitForHistoryRows();
+  return {list: next, changed: rowSignature(next) !== before, movement};
 }
 function assertHistory() {
   if (location.hostname !== 'bank.yandex.ru' || !location.pathname.startsWith('/my/transactions-history'))
@@ -117,11 +153,11 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   // fraction and currency across text lines. Amounts in details are unrelated.
   const header = cardText.replace(/\u200b/g, '').split('Подробнее')[0];
   const headerDates = [...header.matchAll(/(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/g)];
-  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 7).');
+  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 8).');
   const dateMark = headerDates[0];
   const amountArea = header.slice(dateMark.index + dateMark[0].length);
   const amounts = amountArea.match(/[+−–-]\s*\d[\d\s.,]*\s*₽/g) || [];
-  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 7).');
+  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 8).');
   const kopecks = amount(amounts[0]);
   const listed = rowText.match(moneyPattern);
   if (listed && amount(listed[0]) !== kopecks) throw Error('Сумма не совпала со списком.');
@@ -165,6 +201,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
 try {
 assertHistory();
 window.__financeCancelled = false;
+window.__financeProgress = 'Подготовка истории…';
 if (mode === 'card') {
   if (!location.pathname.endsWith('/operation')) throw Error('Откройте подробности одной операции.');
   // Mobile history opens a full page rather than an ARIA dialog.
@@ -172,7 +209,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 7).');
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 8).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
@@ -196,40 +233,27 @@ if (!activeSwitches().length) filter.click();
 await waitFor(() => activeSwitches().length);
 await closeHistoryFilters();
 if (!controls().some(el => text(el) === 'Все карты и счета')) throw Error('Выберите Все карты и счета.');
-await waitFor(() => rows().length);
+await waitForHistoryRows();
 const cutoff = Date.now() - 30 * 86400000;
 const found = new Map();
 let index = 0, stalls = 0, opened = 0, scrollSteps = 0, stopReason = 'loaded_rows_exhausted';
 while (opened < 300 && scrollSteps < 150) {
   assertHistory();
   if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
-  const list = rows();
+  const list = await waitForHistoryRows();
   if (index >= list.length) {
-    const before = rowSignature(list);
-    const root = document.scrollingElement || document.documentElement;
-    const beforeScroll = root.scrollTop;
-    scrollHistory(list);
+    window.__financeProgress = 'Прочитано ' + found.size + '. Догружаю более ранние операции…';
+    const before = list.map(text);
+    const result = await nextHistoryWindow(list);
     scrollSteps++;
-    const deadline = Date.now() + 2500;
-    while (Date.now() < deadline && rowSignature(rows()) === before) {
-      if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
-      await sleep(250);
-    }
-    const next = rows();
-    if (rowSignature(next) !== before) {
-      // A virtualized list can replace rows without increasing their count.
-      const appended = next.length > list.length && JSON.parse(before).every((value, i) => value === text(next[i]));
+    if (result.changed) {
+      const appended = result.list.length > before.length && before.every((value, i) => value === text(result.list[i]));
       if (!appended) index = 0;
       stalls = 0;
+    } else if (!result.movement.moved && result.movement.atBottom) {
+      if (++stalls >= 2) break;
     } else {
-      // Allow repeated small scrolls through a long list before declaring its end.
-      let canScroll = root.scrollTop > beforeScroll;
-      let parent = next[next.length - 1]?.parentElement;
-      while (parent && parent !== document.body) {
-        if (parent.scrollTop + parent.clientHeight < parent.scrollHeight - 2 && /(auto|scroll)/.test(getComputedStyle(parent).overflowY)) canScroll = true;
-        parent = parent.parentElement;
-      }
-      if (!canScroll && ++stalls >= 3) break;
+      stalls = 0;
     }
     continue;
   }
@@ -244,9 +268,10 @@ while (opened < 300 && scrollSteps < 150) {
   else window.history.back();
   await waitFor(() => !onCard());
   await closeHistoryFilters();
-  await waitFor(() => rows().length);
+  await waitForHistoryRows();
   if (Date.parse(operation.occurredAt) < cutoff) { stopReason = 'lookback_reached'; break; }
   found.set(operation.identity, operation);
+  window.__financeProgress = 'Прочитано ' + found.size + '. Продолжаю чтение истории…';
   index++;
 }
 if (opened >= 300 || scrollSteps >= 150) stopReason = 'limit_reached';

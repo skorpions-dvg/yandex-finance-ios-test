@@ -13,6 +13,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var cancelled = false
     private var foreground = false
     private var automaticTask: Task<Void, Never>?
+    private var progressTask: Task<Void, Never>?
     private var lastAttempt: Date?
     @Published var autoUpdate = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true {
         didSet {
@@ -100,10 +101,22 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         cancelled = false
         message = mode == "card" ? "Читаю карточку…" : "Читаю последние 30 дней. Не переключайте страницу…"
         webView.isUserInteractionEnabled = false
+        progressTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                catch { return }
+                guard let self = self, self.busy, !self.cancelled else { return }
+                do {
+                    let value = try await self.webView.callAsyncJavaScript("return window.__financeProgress || '';", arguments: [:], in: nil, contentWorld: .defaultClient)
+                    guard !Task.isCancelled, self.busy, !self.cancelled else { return }
+                    if let progress = value as? String, !progress.isEmpty { self.message = progress }
+                } catch { }
+            }
+        }
         webView.callAsyncJavaScript(script, arguments: ["mode": mode], in: nil, in: .defaultClient) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                defer { self.busy = false; self.webView.isUserInteractionEnabled = true }
+                defer { self.progressTask?.cancel(); self.progressTask = nil; self.busy = false; self.webView.isUserInteractionEnabled = true }
                 do {
                     guard !self.cancelled else { throw AppFailure(message: "Чтение отменено.") }
                     let raw = try result.get()

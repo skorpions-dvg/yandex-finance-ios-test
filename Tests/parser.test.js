@@ -121,3 +121,38 @@ scroller([{parentElement: scrollParent}]);
 assert.equal(scrollParent.scrollTop, 400);
 assert.equal(scrollEvents, 1);
 console.log('Mobile apply-button cleanup, virtual-list changes and nested scrolling checks passed.');
+
+async function checkDelayedPagination() {
+  const helpers = source.split('\ntry {\nassertHistory();')[0];
+  async function simulate({count = 34, neverLoads = false, cancelAt = Infinity} = {}) {
+    let clock = 0, loading = false;
+    const row = (name) => ({innerText: name + ' −10 ₽', contains: () => false});
+    const first = Array.from({length: 33}, (_, i) => row('Old ' + i));
+    const loaded = Array.from({length: count}, (_, i) => row((count === 33 ? 'New ' : 'Old ') + i));
+    const window = {};
+    const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500,
+      dispatchEvent() { loading = true; }, isConnected: true};
+    first.forEach(el => {el.parentElement = root;});
+    const document = {body: {innerText: 'История'}, scrollingElement: root,
+      querySelectorAll(selector) {
+        const pending = loading && (neverLoads || clock < 12000);
+        if (selector === 'button,[role="button"]') return pending ? [] : loading ? loaded : first;
+        if (selector.includes('aria-busy')) return pending ? [{}] : [];
+        return [];
+      }};
+    const advance = (fn, ms) => {clock += ms; if (clock >= cancelAt) window.__financeCancelled = true; fn();};
+    const next = new Function('document', 'window', 'Date', 'setTimeout', 'location', 'getComputedStyle', 'Event', helpers + '\nreturn nextHistoryWindow;')(
+      document, window, {now: () => clock}, advance,
+      new URL('https://bank.yandex.ru/my/transactions-history'), () => ({overflowY: 'auto'}), class {});
+    const result = await next(first);
+    assert.ok(clock >= 12000, 'Must wait through 12 seconds of empty loading placeholders');
+    assert.equal(result.changed, true);
+    assert.equal(result.list.length, count);
+  }
+  await simulate();
+  await simulate({count: 33});
+  await assert.rejects(simulate({neverLoads: true}), /45 секунд/);
+  await assert.rejects(simulate({cancelAt: 2000}), /отменено/);
+  console.log('Delayed pagination: 33→empty→34, fixed-size replacement, timeout and cancellation passed.');
+}
+checkDelayedPagination().catch(error => {console.error(error); process.exitCode = 1;});
