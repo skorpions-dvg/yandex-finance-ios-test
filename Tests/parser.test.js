@@ -1,0 +1,31 @@
+// Synthetic fixtures only. No bank data or credentials.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../YandexFinance/Collector.js'), 'utf8');
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+new AsyncFunction('mode', source); // Validate the entire injected async function.
+const parse = new Function(source.split('\nassertHistory();')[0] + '\nreturn parseCard;')();
+const url = refs => 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify(refs));
+const ref = {type: 'DEPOT', chainId: 'test-chain', operationId: 'test-operation', operationTimestamp: '2026-10-04T00:11:31.705Z', chainVersionIds: ['v1']};
+const purchase = 'Тестовый магазин\nСегодня, 06:11\n−2 013,84 ₽\nПодробнее\nКатегория\nРазвлечения\nMCC\n5816\nСтатус\nВыполнено';
+const first = parse(url([ref]), purchase, 'Тестовый магазин −2 013,84 ₽');
+assert.equal(first.amountKopecks, -201384);
+assert.equal(first.occurredAt, ref.operationTimestamp);
+assert.equal(first.mcc, '5816');
+assert.equal(first.kind, 'expense');
+const changedVersion = parse(url([{...ref, chainVersionIds: ['v2'], operationId: 'another-version'}]), purchase, '−2 013,84 ₽');
+assert.equal(first.identity, changedVersion.identity);
+const refund = parse(url([ref]), 'Тестовый магазин\nСегодня, 06:11\n+1 886 ₽\nВозврат\nПодробнее\nКатегория\nСупермаркеты\nСтатус\nВыполнено', '+1 886 ₽');
+assert.equal(refund.kind, 'refund');
+assert.equal(refund.category, 'Супермаркеты');
+const split = parse(url([{type: 'BNPL', operationId: 'test-split'}]), 'Тест Сплита\n29 сентября, 14:32\n+15 299 ₽\nПодробнее\nНазначение\nПлатёж 3 из 4\nСтатус\nВыполнено', 'Платёж +15 299 ₽', new Date(2026, 9, 4, 12));
+assert.equal(split.kind, 'installment_payment');
+assert.equal(split.timePrecision, 'display_minute');
+assert.equal(new Date(split.occurredAt).getDate(), 29);
+assert.equal(new Date(split.occurredAt).getHours(), 14);
+assert.throws(() => parse(url([ref]), purchase, '−2 000 ₽'), /Сумма не совпала/);
+assert.throws(() => parse('https://example.com/my/transactions-history/operation', purchase, ''), /Не открылась/);
+assert.throws(() => parse(url([{...ref, operationTimestamp: '2026-10-04T00:11:31'}]), purchase, ''), /часовой пояс/);
+assert.throws(() => parse(url([ref]), purchase.replace('Статус\nВыполнено', ''), ''), /статус/);
+console.log('Parser: purchase, refund, Split, stable identity, exact kopecks, and rejection cases passed.');
