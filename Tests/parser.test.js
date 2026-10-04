@@ -5,7 +5,7 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../YandexFinance/Collector.js'), 'utf8');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('mode', source); // Validate the entire injected async function.
-const parse = new Function(source.split('\nassertHistory();')[0] + '\nreturn parseCard;')();
+const parse = new Function(source.split('\ntry {\nassertHistory();')[0] + '\nreturn parseCard;')();
 const url = refs => 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify(refs));
 const ref = {type: 'DEPOT', chainId: 'test-chain', operationId: 'test-operation', operationTimestamp: '2026-10-04T00:11:31.705Z', chainVersionIds: ['v1']};
 const purchase = 'Тестовый магазин\nСегодня, 06:11\n−2 013,84 ₽\nПодробнее\nКатегория\nРазвлечения\nMCC\n5816\nСтатус\nВыполнено';
@@ -29,3 +29,27 @@ assert.throws(() => parse('https://example.com/my/transactions-history/operation
 assert.throws(() => parse(url([{...ref, operationTimestamp: '2026-10-04T00:11:31'}]), purchase, ''), /часовой пояс/);
 assert.throws(() => parse(url([ref]), purchase.replace('Статус\nВыполнено', ''), ''), /статус/);
 console.log('Parser: purchase, refund, Split, stable identity, exact kopecks, and rejection cases passed.');
+
+// Exercise the injected script with mobile full-page DOM and structured failures.
+async function checkMobile() {
+  const vm = require('node:vm');
+  const run = async (href, pageText) => {
+    const body = {innerText: pageText};
+    const context = vm.createContext({URL, Date, setTimeout, window: {}, location: new URL(href),
+      document: {body, querySelector: () => null}});
+    return JSON.parse(await vm.runInContext('(async function(mode) {' + source + '})("card")', context));
+  };
+  const mobile = await run(url([ref]), 'Назад\n' + purchase);
+  assert.equal(mobile.operations[0].amountKopecks, -201384);
+  assert.equal(mobile.operations[0].description, 'Тестовый магазин');
+  assert.equal(mobile.stopReason, 'single_card');
+  const missingID = await run('https://bank.yandex.ru/my/transactions-history/operation', purchase);
+  assert.match(missingID.error, /идентификатора/);
+  assert.equal(missingID.operations, undefined);
+  const wrongPage = await run('https://bank.yandex.ru/my/transactions-history', purchase);
+  assert.match(wrongPage.error, /подробности/);
+  const login = await run('https://passport.yandex.ru/', purchase);
+  assert.match(login.error, /войдите/);
+  console.log('Mobile full-page card and structured error cases passed.');
+}
+checkMobile().catch(error => { console.error(error); process.exitCode = 1; });

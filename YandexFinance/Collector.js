@@ -79,19 +79,26 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const summary = lines.includes('Подробнее') ? lines.slice(0, lines.indexOf('Подробнее')) : lines;
   const refund = category === 'Возврат' || summary.includes('Возврат');
   const transfer = ['Перевод','Пополнение','Переводы между своими счетами'].includes(category);
+  const dateIndex = lines.findIndex(line => /^(Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}$/.test(line));
+  const description = dateIndex > 0 ? lines[dateIndex - 1] : lines[0];
   return {identity: JSON.stringify(identities), occurredAt: occurred.toISOString(),
     timePrecision: dates.length ? 'source_timestamp' : 'display_minute',
-    description: lines[0], amountKopecks: kopecks, currency: 'RUB', status,
+    description, amountKopecks: kopecks, currency: 'RUB', status,
     category: category || (installment ? 'Платежи Сплита' : 'Не определено'),
     mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты'), providers,
     kind: installment ? 'installment_payment' : refund ? 'refund' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};
 }
+try {
 assertHistory();
 window.__financeCancelled = false;
 if (mode === 'card') {
-  const dialog = document.querySelector('[role="dialog"]');
-  if (!dialog) throw Error('Откройте подробности одной операции.');
-  return JSON.stringify({operations: [parseCard(location.href, text(dialog), '')], stopReason: 'single_card'});
+  if (!location.pathname.endsWith('/operation')) throw Error('Откройте подробности одной операции.');
+  // Mobile history opens a full page rather than an ARIA dialog.
+  const card = await waitFor(() => {
+    const root = document.querySelector('[role="dialog"]') || document.querySelector('main') || document.body;
+    return text(root).split('\n').some(line => line.trim() === 'Статус') ? root : null;
+  });
+  return JSON.stringify({operations: [parseCard(location.href, text(card), '')], stopReason: 'single_card'});
 }
 if (document.querySelector('[role="dialog"]')) throw Error('Закройте карточку и вернитесь к списку.');
 const filter = controls().find(el => text(el) === 'Какие операции скрывать');
@@ -151,3 +158,8 @@ while (index < 300) {
 if (index >= 300) stopReason = 'limit_reached';
 if (!found.size) throw Error('Не прочитано ни одной операции.');
 return JSON.stringify({operations: [...found.values()], stopReason});
+
+} catch (error) {
+  // Return failures as data so WebKit preserves the actionable parser message.
+  return JSON.stringify({error: String(error?.message || 'Не удалось прочитать страницу.')});
+}

@@ -53,10 +53,16 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                     guard let string = raw as? String, let data = string.data(using: .utf8) else {
                         throw AppFailure(message: "Страница вернула неизвестный результат.")
                     }
+                    if let failure = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let detail = failure["error"] as? String {
+                        throw AppFailure(message: detail)
+                    }
                     let batch = try JSONDecoder().decode(ImportBatch.self, from: data)
                     try self.merge(batch)
                 } catch {
-                    self.message = "Чтение остановлено, записи не сохранены: \(error.localizedDescription)"
+                    let nativeError = error as NSError
+                    let detail = nativeError.userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
+                    self.message = "Чтение остановлено, записи не сохранены: \(detail)"
                 }
             }
         }
