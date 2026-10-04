@@ -8,8 +8,10 @@ struct YandexFinanceApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(browser: browser)
+                .onAppear { if scenePhase == .active { browser.becameActive() } }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase != .active && browser.busy { browser.cancel() }
+                    if phase == .active { browser.becameActive() }
+                    else { browser.becameInactive() }
                 }
         }
     }
@@ -44,7 +46,12 @@ struct ContentView: View {
                         if let date = browser.history.lastSync {
                             Text("Обновлено: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
-                        Text("Чтение выполняется при нажатии кнопки. Возвраты, переводы и Сплит пока не объединены в итог расходов.")
+                        Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
+                        Text("Автообновление запускается, когда открыта история банка, не чаще раза в 5 минут. При закрытом приложении обновление не выполняется.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text(browser.message).font(.footnote)
+                        if browser.busy { ProgressView("Обновление операций…") }
+                        Text("Возвраты, переводы и Сплит пока не объединены в итог расходов.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     ForEach(browser.history.operations) { operation in

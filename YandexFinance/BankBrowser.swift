@@ -11,6 +11,60 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private let vault = Vault()
     private var readable = true
     private var cancelled = false
+    private var foreground = false
+    private var automaticTask: Task<Void, Never>?
+    private var lastAttempt: Date?
+    @Published var autoUpdate = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoUpdate, forKey: "autoUpdate")
+            if autoUpdate { scheduleAutomaticUpdate() }
+            else { automaticTask?.cancel(); automaticTask = nil }
+        }
+    }
+
+    func becameActive() {
+        foreground = true
+        scheduleAutomaticUpdate()
+    }
+
+    func becameInactive() {
+        foreground = false
+        automaticTask?.cancel()
+        automaticTask = nil
+        if busy { cancel() }
+    }
+
+    private func scheduleAutomaticUpdate() {
+        guard foreground, autoUpdate, readable, !busy, automaticTask == nil else { return }
+        if let lastAttempt = lastAttempt, Date().timeIntervalSince(lastAttempt) < 300 { return }
+        automaticTask = Task { @MainActor [weak self] in
+            // Wait for manual login and the history UI, without reading authentication pages.
+            for _ in 0..<120 {
+                do { try await Task.sleep(nanoseconds: 500_000_000) }
+                catch { return }
+                guard let self = self, self.foreground, self.autoUpdate, !self.busy else { return }
+                guard self.webView.url?.host == "bank.yandex.ru",
+                      self.webView.url?.path == "/my/transactions-history", !self.webView.isLoading else { continue }
+                let probe = """
+                if (location.hostname !== 'bank.yandex.ru' || location.pathname !== '/my/transactions-history') return false;
+                const body = document.body?.innerText || '';
+                return body.includes('Все карты и счета') && /[+−–-]\\s*[\\d\\s.,]+\\s*₽/.test(body);
+                """
+                let ready: Bool
+                do {
+                    let value = try await self.webView.callAsyncJavaScript(probe, arguments: [:], in: nil, contentWorld: .defaultClient)
+                    ready = value as? Bool ?? false
+                } catch { continue }
+                guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
+                if ready {
+                    self.automaticTask = nil
+                    self.read(mode: "history")
+                    return
+                }
+            }
+            self?.automaticTask = nil
+        }
+    }
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -39,6 +93,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
               let script = try? String(contentsOf: resource, encoding: .utf8) else {
             message = "Не найден модуль чтения истории."; return
         }
+        automaticTask?.cancel()
+        automaticTask = nil
+        lastAttempt = Date()
         busy = true
         cancelled = false
         message = mode == "card" ? "Читаю карточку…" : "Читаю последние 30 дней. Не переключайте страницу…"
@@ -89,7 +146,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         switch batch.stopReason {
         case "lookback_reached": ending = "Достигнута граница 30 дней."
         case "single_card": ending = "Прочитана одна карточка."
-        case "limit_reached": ending = "Достигнут лимит 300 операций; история неполная."
+        case "limit_reached": ending = "Достигнут предел чтения; полнота истории не подтверждена."
         default: ending = "Сайт перестал догружать строки. Полнота истории не подтверждена."
         }
         message = "Прочитано \(batch.operations.count), добавлено \(added), изменено \(changed). \(ending)"
@@ -103,6 +160,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         host = webView.url?.host ?? ""
+        scheduleAutomaticUpdate()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

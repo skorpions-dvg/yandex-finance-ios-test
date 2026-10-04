@@ -72,7 +72,7 @@ console.log('Mobile amount fragments, surrounding amounts, and ambiguous amount 
 
 async function checkHistory() {
   const vm = require('node:vm');
-  let screen = 'list', opened = 0, returned = 0;
+  let screen = 'list', opened = 0, returned = 0, filtersClosed = 0;
   const location = new URL('https://bank.yandex.ru/my/transactions-history');
   const body = {get innerText() { return screen.startsWith('card') ? purchase.replace('−2 013,84 ₽', '−\n2 013,84\n₽') : 'История'; }};
   const control = (label, click, aria = '') => ({innerText: label, click,
@@ -82,7 +82,8 @@ async function checkHistory() {
       operationTimestamp: index === 0 ? new Date().toISOString() : '2000-01-01T00:00:00Z'}]); };
   const list = [control('Тестовый магазин −2 013,84 ₽', () => go(0)), control('Старый магазин −2 013,84 ₽', () => go(1))];
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
-  const close = control('', () => {screen = 'list';}, 'Закрыть');
+  const close = control('Выбрать', () => {screen = 'list'; filtersClosed++;});
+  const hiddenClose = {...control('', () => {throw Error('Clicked hidden desktop close');}, 'Закрыть'), getClientRects: () => []};
   const account = control('Все карты и счета', () => {});
   const switches = [{checked: false, getAttribute: () => 'false'}];
   const doc = {body,
@@ -90,10 +91,10 @@ async function checkHistory() {
     querySelectorAll: selector => {
       if (selector === '[role="dialog"],main') return [{innerText: 'Постоянный диалог оболочки'}, body];
       if (selector.includes('switch')) return screen === 'filters' ? switches : [];
-      if (selector === 'button,[role="button"]') return screen === 'list' ? [filter, account, ...list] : screen === 'filters' ? [close] : [];
+      if (selector === 'button,[role="button"]') return screen === 'list' ? [filter, account, ...list] : screen === 'filters' ? [hiddenClose, close] : [];
       return [];
     }};
-  const window = {history: {back() {returned++; screen = 'list'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
+  const window = {history: {back() {returned++; screen = 'filters'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
   const context = vm.createContext({URL, Date, setTimeout: fn => {fn();}, window, location, document: doc});
   const batch = JSON.parse(await vm.runInContext('(async function(mode) {' + source + '})("history")', context));
   assert.equal(batch.error, undefined);
@@ -102,6 +103,21 @@ async function checkHistory() {
   assert.equal(batch.stopReason, 'lookback_reached');
   assert.equal(opened, 2);
   assert.equal(returned, 2);
+  assert.equal(filtersClosed, 3);
+  assert.equal(screen, 'list');
   console.log('History integration: persistent dialog, icon filter, mobile cards, back navigation, and date cutoff passed.');
 }
 checkHistory().catch(error => {console.error(error); process.exitCode = 1;});
+
+// A fixed-size virtual list must be detected by contents, not only row count.
+const signature = new Function(source.split('\ntry {\nassertHistory();')[0] + '\nreturn rowSignature;')();
+assert.notEqual(signature([{innerText: 'A −10 ₽'}, {innerText: 'B −20 ₽'}]), signature([{innerText: 'B −20 ₽'}, {innerText: 'C −30 ₽'}]));
+const scrollSource = source.split('\ntry {\nassertHistory();')[0] + '\nreturn scrollHistory;';
+let scrollEvents = 0;
+const scrollParent = {scrollHeight: 2000, clientHeight: 500, scrollTop: 0, dispatchEvent: () => scrollEvents++};
+const scroller = new Function('document', 'window', 'getComputedStyle', 'Event', scrollSource)(
+  {body: {}}, {scrollBy: () => {throw Error('Wrong scroll container');}}, () => ({overflowY: 'auto'}), class {});
+scroller([{parentElement: scrollParent}]);
+assert.equal(scrollParent.scrollTop, 400);
+assert.equal(scrollEvents, 1);
+console.log('Mobile apply-button cleanup, virtual-list changes and nested scrolling checks passed.');

@@ -36,6 +36,41 @@ function currentCardText() {
   }
   return null;
 }
+function isVisible(el) {
+  return el.getClientRects?.().length !== 0 && !el.closest?.('[hidden],[aria-hidden="true"]');
+}
+function activeSwitches() {
+  return [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')].filter(isVisible);
+}
+async function closeHistoryFilters() {
+  const switches = activeSwitches();
+  if (!switches.length) return;
+  if (switches.some(el => el.getAttribute('aria-checked') === 'true' || el.checked))
+    throw Error('Выключите скрытие типов операций и нажмите «Выбрать».');
+  // Mobile has an explicit Apply button. Prefer it over hidden desktop close controls.
+  const visibleControls = controls().filter(isVisible);
+  const apply = visibleControls.filter(el => text(el) === 'Выбрать');
+  const close = apply.length === 1 ? apply[0] : visibleControls.find(el => /^(Закрыть|Готово)(?: |$)/.test(controlName(el)));
+  if (!close) throw Error('Закройте фильтры кнопкой «Выбрать» и повторите обновление.');
+  close.click();
+  await waitFor(() => activeSwitches().length === 0, 5000);
+}
+function rowSignature(list) { return JSON.stringify(list.map(text)); }
+function scrollHistory(list) {
+  const last = list[list.length - 1];
+  let parent = last?.parentElement;
+  while (parent && parent !== document.body) {
+    if (parent.scrollHeight > parent.clientHeight + 20 && /(auto|scroll)/.test(getComputedStyle(parent).overflowY)) {
+      parent.scrollTop = Math.min(parent.scrollHeight, parent.scrollTop + Math.max(200, parent.clientHeight * 0.8));
+      parent.dispatchEvent(new Event('scroll', {bubbles: true}));
+      return;
+    }
+    parent = parent.parentElement;
+  }
+  const root = document.scrollingElement || document.documentElement;
+  window.scrollBy(0, Math.max(200, window.innerHeight * 0.8));
+  root.dispatchEvent(new Event('scroll', {bubbles: true}));
+}
 function assertHistory() {
   if (location.hostname !== 'bank.yandex.ru' || !location.pathname.startsWith('/my/transactions-history'))
     throw Error('Откройте историю и войдите в банк.');
@@ -82,11 +117,11 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   // fraction and currency across text lines. Amounts in details are unrelated.
   const header = cardText.replace(/\u200b/g, '').split('Подробнее')[0];
   const headerDates = [...header.matchAll(/(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/g)];
-  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 6).');
+  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 7).');
   const dateMark = headerDates[0];
   const amountArea = header.slice(dateMark.index + dateMark[0].length);
   const amounts = amountArea.match(/[+−–-]\s*\d[\d\s.,]*\s*₽/g) || [];
-  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 6).');
+  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 7).');
   const kopecks = amount(amounts[0]);
   const listed = rowText.match(moneyPattern);
   if (listed && amount(listed[0]) !== kopecks) throw Error('Сумма не совпала со списком.');
@@ -137,7 +172,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 6).');
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 7).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
@@ -157,57 +192,65 @@ if (!filter) {
   }
 }
 if (!filter) throw Error('Не найдены фильтры истории. Мобильный вид требует проверки.');
-filter.click();
-await waitFor(() => document.querySelector('[role="switch"],input[type="checkbox"]'));
-const switches = [...document.querySelectorAll('[role="switch"],input[type="checkbox"]')];
-if (switches.some(el => el.getAttribute('aria-checked') === 'true' || el.checked))
-  throw Error('Выключите скрытие типов операций и повторите чтение.');
-const closeFilter = controls().find(el => /^(Закрыть|Готово)(?: |$)/.test(controlName(el)));
-if (!closeFilter) throw Error('Не найдена кнопка закрытия фильтров.');
-closeFilter.click();
-await sleep(400);
+if (!activeSwitches().length) filter.click();
+await waitFor(() => activeSwitches().length);
+await closeHistoryFilters();
 if (!controls().some(el => text(el) === 'Все карты и счета')) throw Error('Выберите Все карты и счета.');
 await waitFor(() => rows().length);
 const cutoff = Date.now() - 30 * 86400000;
 const found = new Map();
-let index = 0, stalls = 0, stopReason = 'loaded_rows_exhausted';
-while (index < 300) {
+let index = 0, stalls = 0, opened = 0, scrollSteps = 0, stopReason = 'loaded_rows_exhausted';
+while (opened < 300 && scrollSteps < 150) {
   assertHistory();
   if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
   const list = rows();
   if (index >= list.length) {
-    const last = list[list.length - 1];
-    last?.scrollIntoView({block: 'end'});
-    let parent = last?.parentElement;
-    while (parent && parent !== document.body) {
-      if (parent.scrollHeight > parent.clientHeight + 20 && /(auto|scroll)/.test(getComputedStyle(parent).overflowY))
-        parent.scrollTop = parent.scrollHeight;
-      parent = parent.parentElement;
-    }
-    window.scrollTo(0, document.documentElement.scrollHeight);
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline && rows().length <= list.length) {
+    const before = rowSignature(list);
+    const root = document.scrollingElement || document.documentElement;
+    const beforeScroll = root.scrollTop;
+    scrollHistory(list);
+    scrollSteps++;
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline && rowSignature(rows()) === before) {
       if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
       await sleep(250);
     }
-    if (rows().length <= list.length) { if (++stalls >= 2) break; }
-    else stalls = 0;
+    const next = rows();
+    if (rowSignature(next) !== before) {
+      // A virtualized list can replace rows without increasing their count.
+      const appended = next.length > list.length && JSON.parse(before).every((value, i) => value === text(next[i]));
+      if (!appended) index = 0;
+      stalls = 0;
+    } else {
+      // Allow repeated small scrolls through a long list before declaring its end.
+      let canScroll = root.scrollTop > beforeScroll;
+      let parent = next[next.length - 1]?.parentElement;
+      while (parent && parent !== document.body) {
+        if (parent.scrollTop + parent.clientHeight < parent.scrollHeight - 2 && /(auto|scroll)/.test(getComputedStyle(parent).overflowY)) canScroll = true;
+        parent = parent.parentElement;
+      }
+      if (!canScroll && ++stalls >= 3) break;
+    }
     continue;
   }
   const rowText = text(list[index]);
   list[index].click();
+  opened++;
   const cardText = await waitFor(() => onCard() && currentCardText());
   const operation = parseCard(location.href, cardText, rowText);
   // Reuse the site's navigation, which also preserves its month and account filters.
   const back = controls().find(el => el.getClientRects?.().length !== 0 && /^(Назад|Вернуться)(?: |$)/.test(controlName(el)));
   if (back) back.click();
   else window.history.back();
-  await waitFor(() => !onCard() && rows().length);
+  await waitFor(() => !onCard());
+  await closeHistoryFilters();
+  await waitFor(() => rows().length);
   if (Date.parse(operation.occurredAt) < cutoff) { stopReason = 'lookback_reached'; break; }
   found.set(operation.identity, operation);
   index++;
 }
-if (index >= 300) stopReason = 'limit_reached';
+if (opened >= 300 || scrollSteps >= 150) stopReason = 'limit_reached';
+await closeHistoryFilters();
 if (!found.size) throw Error('Не прочитано ни одной операции.');
 return JSON.stringify({operations: [...found.values()], stopReason});
 
