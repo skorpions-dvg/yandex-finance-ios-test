@@ -78,19 +78,19 @@ function scrollHistory(list) {
   return {moved: root.scrollTop > before + 1,
     atBottom: root.scrollTop + root.clientHeight >= root.scrollHeight - 2};
 }
-function historyLoading() {
-  return [...document.querySelectorAll('[aria-busy="true"],[role="progressbar"],[class*="skeleton" i]')].some(isVisible);
-}
 async function waitForHistoryRows(timeout = 45000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     assertHistory();
     if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
     const list = rows();
-    if (list.length && !historyLoading()) return list;
+    // A footer loader may stay mounted alongside usable rows. Only an empty list blocks reading.
+    if (list.length) return list;
     await sleep(250);
   }
-  throw Error('Банк не завершил загрузку списка за 45 секунд. Повторите обновление позже.');
+  const failure = Error('Не появились строки операций за 45 секунд. Повторите обновление позже.');
+  failure.code = 'HISTORY_ROWS_TIMEOUT';
+  throw failure;
 }
 async function nextHistoryWindow(list) {
   const before = rowSignature(list);
@@ -100,7 +100,7 @@ async function nextHistoryWindow(list) {
   while (Date.now() < deadline) {
     if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
     let next = rows();
-    if (!next.length || historyLoading()) next = await waitForHistoryRows();
+    if (!next.length) next = await waitForHistoryRows();
     if (rowSignature(next) !== before) return {list: next, changed: true, movement};
     await sleep(250);
   }
@@ -153,11 +153,11 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   // fraction and currency across text lines. Amounts in details are unrelated.
   const header = cardText.replace(/\u200b/g, '').split('Подробнее')[0];
   const headerDates = [...header.matchAll(/(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/g)];
-  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 8).');
+  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 9).');
   const dateMark = headerDates[0];
   const amountArea = header.slice(dateMark.index + dateMark[0].length);
   const amounts = amountArea.match(/[+−–-]\s*\d[\d\s.,]*\s*₽/g) || [];
-  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 8).');
+  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 9).');
   const kopecks = amount(amounts[0]);
   const listed = rowText.match(moneyPattern);
   if (listed && amount(listed[0]) !== kopecks) throw Error('Сумма не совпала со списком.');
@@ -209,7 +209,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 8).');
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 9).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
@@ -244,7 +244,13 @@ while (opened < 300 && scrollSteps < 150) {
   if (index >= list.length) {
     window.__financeProgress = 'Прочитано ' + found.size + '. Догружаю более ранние операции…';
     const before = list.map(text);
-    const result = await nextHistoryWindow(list);
+    let result;
+    try { result = await nextHistoryWindow(list); }
+    catch (error) {
+      if (error.code !== 'HISTORY_ROWS_TIMEOUT') throw error;
+      stopReason = 'loading_timeout';
+      break;
+    }
     scrollSteps++;
     if (result.changed) {
       const appended = result.list.length > before.length && before.every((value, i) => value === text(result.list[i]));

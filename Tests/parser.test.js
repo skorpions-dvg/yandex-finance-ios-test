@@ -156,3 +156,20 @@ async function checkDelayedPagination() {
   console.log('Delayed pagination: 33→empty→34, fixed-size replacement, timeout and cancellation passed.');
 }
 checkDelayedPagination().catch(error => {console.error(error); process.exitCode = 1;});
+
+async function checkPermanentFooterLoader() {
+  const operation = {innerText: 'Тестовый магазин −20 ₽', contains: () => false};
+  let loaderQueries = 0;
+  const document = {body: {innerText: 'История'}, querySelectorAll(selector) {
+    if (selector === 'button,[role="button"]') return [operation];
+    loaderQueries++;
+    return [{getClientRects: () => [{}]}];
+  }};
+  const wait = new Function('document', 'window', 'location', source.split('\ntry {\nassertHistory();')[0] + '\nreturn waitForHistoryRows;')(
+    document, {}, new URL('https://bank.yandex.ru/my/transactions-history'));
+  const list = await wait();
+  assert.equal(list.length, 1);
+  assert.equal(loaderQueries, 0, 'Footer loading widgets must not decide whether existing operations are readable');
+  console.log('Regression: loaded operations remain readable with a persistent footer loader.');
+}
+checkPermanentFooterLoader().catch(error => {console.error(error); process.exitCode = 1;});

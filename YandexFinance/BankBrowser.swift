@@ -158,6 +158,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let ending: String
         switch batch.stopReason {
         case "lookback_reached": ending = "Достигнута граница 30 дней."
+        case "loading_timeout": ending = "Сохранены прочитанные операции. Догрузка не завершилась; полнота 30 дней не подтверждена."
         case "single_card": ending = "Прочитана одна карточка."
         case "limit_reached": ending = "Достигнут предел чтения; полнота истории не подтверждена."
         default: ending = "Сайт перестал догружать строки. Полнота истории не подтверждена."
