@@ -66,6 +66,27 @@ struct ContentView: View {
                         Text("Возвраты, переводы и Сплит пока не объединены в итог расходов.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                    if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
+                        Section("Не удалось прочитать") {
+                            ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(issue.rowSummary ?? "Операция из предыдущей версии").font(.headline)
+                                    if let month = issue.monthOrdinal {
+                                        Text("Период: \(month % 12 + 1).\(month / 12)").font(.caption)
+                                    }
+                                    if let identity = issue.identity {
+                                        Text("Идентификатор: " + identity).font(.caption2).textSelection(.enabled)
+                                    }
+                                    Text(issue.reason).font(.footnote)
+                                    Button(issue.operationURL == nil ? "Найти и перечитать" : "Перечитать эту операцию") { browser.retry(issue) }
+                                        .disabled(browser.busy)
+                                    if issue.operationURL == nil {
+                                        Text("У старой записи нет ссылки: поиск пройдёт только по сохранённому месяцу. Откройте вкладку «Банк» → «История» перед поиском.").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }.padding(.vertical, 4)
+                            }
+                        }
+                    }
                     ForEach(browser.history.operations) { operation in
                         NavigationLink {
                             Form {

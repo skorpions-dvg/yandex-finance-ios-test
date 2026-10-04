@@ -513,7 +513,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
   if (dateMarks.length > 1) throw Error('Найдено несколько карточек. Не удалось выбрать активную.');
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 20).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 21).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -543,7 +543,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 20).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 21).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -633,15 +633,18 @@ if (historyPeriodSheetOpen()) {
 window.__financeCancelled = false;
 window.__financeCheckpointQueue = [];
 window.__financeProgress = 'Подготовка истории…';
-if (mode === 'card') {
+const retryIssue = typeof retryIssueJson === 'string' ? JSON.parse(retryIssueJson) : null;
+if (mode === 'card' || mode === 'retry_card') {
   if (!location.pathname.endsWith('/operation')) throw Error('Откройте подробности одной операции.');
   let cardText;
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 20).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 21).');
   }
-  return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card', skippedCount: 0});
+  const operation = parseCard(location.href, cardText, '');
+  if (retryIssue?.identity && operation.identity !== retryIssue.identity) throw Error('Открылась другая операция. Повторное чтение не сохранено.');
+  return JSON.stringify({operations: [operation], stopReason: 'single_card', skippedCount: 0});
 }
 if (onCard()) throw Error('Закройте карточку и вернитесь к списку.');
 
@@ -719,6 +722,7 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
     if (error.code !== 'HISTORY_ROWS_TIMEOUT') throw error;
     // An empty month is not the end of the bank history. Try the nearest older
     // available month before giving up.
+    if (mode === 'retry') { stopReason = 'issue_not_found'; break; }
     const move = await selectPreviousHistoryMonth(monthCursor, '');
     if (move.status === 'moved') {
       monthCursor = move.cursor;
@@ -757,6 +761,7 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
     if (!result.movement.moved && result.movement.atBottom) stalls = 2; else stalls = 0;
     if (stalls < 2) continue;
 
+    if (mode === 'retry') { stopReason = 'issue_not_found'; break; }
     const move = await selectPreviousHistoryMonth(monthCursor, rowSignature(list));
     if (move.status === 'moved') {
       monthCursor = move.cursor;
@@ -780,6 +785,9 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
   let known = null;
   if (linkedURL) {
     try { known = knownOperationMap.get(parseOperationReference(linkedURL).identity) || null; } catch { known = null; }
+  }
+  if (mode === 'retry' && linkedURL && retryIssue?.identity) {
+    try { if (parseOperationReference(linkedURL).identity !== retryIssue.identity) { index++; continue; } } catch {}
   }
   if (known && stableKnownRow(rowText, known)) {
     const knownTime = Date.parse(known.occurredAt || '');
@@ -810,9 +818,13 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
     lastWarning = String(error?.message || 'Не удалось разобрать карточку.');
     let failedIdentity = null;
     try { failedIdentity = parseOperationReference(linkedURL || (onCard() ? location.href : '')).identity; } catch {}
-    window.__financeIssues.push({identity: failedIdentity, monthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null, reason: lastWarning});
+    if (mode !== 'retry' || failedIdentity === retryIssue?.identity) window.__financeIssues.push({identity: failedIdentity, monthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null,
+      reason: lastWarning, rowSummary: rowText.slice(0, 500),
+      operationURL: linkedURL || (onCard() ? location.href : null), observedAt: new Date().toISOString()});
   }
 
+  const retryMatches = operation && (!retryIssue?.identity || operation.identity === retryIssue.identity);
+  if (mode === 'retry' && !retryMatches) operation = null;
   const reachedCutoff = operation && cutoff !== null && Date.parse(operation.occurredAt) < cutoff;
   if (operation && !reachedCutoff) {
     // Save into the in-memory batch before any fragile UI cleanup. If closing the
@@ -829,6 +841,7 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
   // card. Close it only when it is actually present; failures preserve `found`.
   if (activeSwitches().length) await closeHistoryFilters();
 
+  if (mode === 'retry' && retryMatches) { stopReason = 'issue_retry_completed'; break mainLoop; }
   if (reachedCutoff) {
     stopReason = 'lookback_reached';
     break mainLoop;

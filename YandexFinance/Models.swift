@@ -32,6 +32,9 @@ struct ImportIssue: Codable, Equatable {
     let identity: String?
     let monthOrdinal: Int?
     let reason: String
+    var rowSummary: String?
+    var operationURL: String?
+    var observedAt: String?
 }
 
 struct ImportBatch: Codable {

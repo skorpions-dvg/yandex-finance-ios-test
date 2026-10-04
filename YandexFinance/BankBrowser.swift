@@ -15,6 +15,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var automaticTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
     private var lastAttempt: Date?
+    private var pendingRetry: ImportIssue?
+    private var retryNavigationTask: Task<Void, Never>?
     private var activeRunID: String?
     private var checkpointInFlight = false
     private var bootstrapRun = false
@@ -51,7 +53,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         if busy { Task { @MainActor [weak self] in await self?.flushCheckpointFromWebView() } }
     }
     private func scheduleAutomaticUpdate() {
-        guard foreground, autoUpdate, readable, !busy, automaticTask == nil else { return }
+        guard foreground, autoUpdate, readable, !busy, pendingRetry == nil, automaticTask == nil else { return }
         if let lastAttempt, Date().timeIntervalSince(lastAttempt) < 300 { return }
         automaticTask = Task { @MainActor [weak self] in
             for _ in 0..<120 {
@@ -111,7 +113,30 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         catch { message = "Не удалось сохранить состояние: \(error.localizedDescription)"; return }
         continueInitialHistory()
     }
-    func read(mode: String, lookbackDays: Int? = 30, initialImport: Bool = false) {
+    func retry(_ issue: ImportIssue) {
+        guard !busy, readable else { return }
+        automaticTask?.cancel(); automaticTask = nil
+        lastAttempt = Date()
+        if let raw = issue.operationURL, let url = URL(string: raw),
+           url.scheme == "https", url.host == "bank.yandex.ru", url.path == "/my/transactions-history/operation" {
+            pendingRetry = issue
+            busy = true
+            message = "Открываю пропущенную операцию…"
+            webView.load(URLRequest(url: url))
+            retryNavigationTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
+                guard let self, self.pendingRetry != nil else { return }
+                self.pendingRetry = nil; self.busy = false
+                self.message = "Карточка не открылась вовремя. Ошибка остаётся в списке; можно повторить."
+            }
+        } else if issue.monthOrdinal != nil && issue.identity != nil {
+            if webView.url?.path != "/my/transactions-history" { message = "Откройте «Банк» → «История», затем повторите поиск пропущенной операции."; return }
+            read(mode: "retry", lookbackDays: nil, retryIssue: issue)
+        } else {
+            message = "У старой ошибки нет ссылки или идентификатора. Откройте нужную карточку вручную; автоматически сопоставить её пока нельзя."
+        }
+    }
+    func read(mode: String, lookbackDays: Int? = 30, initialImport: Bool = false, retryIssue: ImportIssue? = nil) {
         guard !busy, readable else { return }
         guard webView.url?.host == "bank.yandex.ru" else { message = "Сначала завершите вход на сайте банка."; return }
         guard let resource = Bundle.main.url(forResource: "Collector", withExtension: "js"),
@@ -123,7 +148,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let runID = UUID().uuidString
         activeRunID = runID
         let startedAt = Date()
-        let resume = initialImport ? history.bootstrapResumeMonth : nil
+        let resume = retryIssue?.monthOrdinal ?? (initialImport ? history.bootstrapResumeMonth : nil)
         message = mode == "card" ? "Читаю карточку…" : "Проверяю историю. Уже сохранённые записи остаются на телефоне."
         webView.isUserInteractionEnabled = false
         progressTask = Task { @MainActor [weak self] in
@@ -134,8 +159,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             }
         }
         let knownData = (try? JSONEncoder().encode(history.operations)) ?? Data("[]".utf8)
+        let retryData = retryIssue.flatMap { try? JSONEncoder().encode($0) }
         let arguments: [String: Any] = ["mode": mode, "lookbackDays": lookbackDays.map { NSNumber(value: $0) } ?? NSNull(),
             "resumeMonthOrdinal": resume.map { NSNumber(value: $0) } ?? NSNull(), "runID": runID,
+            "retryIssueJson": retryData.flatMap { String(data: $0, encoding: .utf8) } ?? "null",
             "forceVerification": !initialImport,
             "knownOperationsJson": String(data: knownData, encoding: .utf8) ?? "[]"]
         webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .defaultClient) { [weak self] result in
@@ -177,7 +204,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
     private func addIssues(_ issues: [ImportIssue], to next: inout SavedHistory) {
         var items = next.unresolvedIssues ?? []
-        for issue in issues where !items.contains(issue) { items.append(issue) }
+        for issue in issues {
+            if let identity = issue.identity, let index = items.firstIndex(where: { $0.identity == identity }) { items[index] = issue }
+            else if !items.contains(issue) { items.append(issue) }
+        }
         next.unresolvedIssues = items
     }
     private func merge(_ batch: ImportBatch, initialImport: Bool, startedAt: Date, resumed: Bool, mode: String, requestedDays: Int?) throws {
@@ -196,7 +226,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         next.lastSync = Date(); next.lastStopReason = batch.stopReason
         try vault.save(next); history = next
         let ending: String
-        if batch.stopReason == "single_card" { ending = "Карточка прочитана." }
+        if batch.stopReason == "issue_retry_completed" { ending = "Пропущенная операция прочитана." }
+        else if batch.stopReason == "issue_not_found" { ending = "Операция не найдена в сохранённом месяце. Ошибка остаётся в списке." }
+        else if batch.stopReason == "single_card" { ending = "Карточка прочитана." }
         else if boundaryReached && clean { ending = "Граница выбранного периода достигнута." }
         else if batch.stopReason == "cancelled" { ending = "Остановлено. Прогресс сохранён." }
         else { ending = "Прогресс сохранён. Полнота периода не подтверждена." }
@@ -237,12 +269,26 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
     func cancel() {
         guard busy else { return }
+        if pendingRetry != nil {
+            pendingRetry = nil; retryNavigationTask?.cancel(); webView.stopLoading(); busy = false
+            message = "Повторное чтение остановлено. Ошибка остаётся в списке."
+            return
+        }
         cancelled = true
         webView.evaluateJavaScript("window.__financeCancelled = true", in: nil, in: .defaultClient) { _ in }
         Task { @MainActor [weak self] in await self?.flushCheckpointFromWebView() }
         message = "Останавливаю чтение и сохраняю прогресс…"
     }
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { host = webView.url?.host ?? ""; scheduleAutomaticUpdate() }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        host = webView.url?.host ?? ""
+        if let issue = pendingRetry {
+            pendingRetry = nil; retryNavigationTask?.cancel(); busy = false
+            guard webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history/operation" else {
+                message = "Войдите в банк и повторите чтение пропущенной операции."; return
+            }
+            read(mode: "retry_card", lookbackDays: nil, retryIssue: issue)
+        } else { scheduleAutomaticUpdate() }
+    }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if (error as NSError).code != NSURLErrorCancelled { message = "Не открылась страница: \(error.localizedDescription)" }
     }

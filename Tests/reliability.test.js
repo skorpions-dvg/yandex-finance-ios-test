@@ -375,8 +375,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 20;/g) || []).length, 2, 'Debug and Release build number must both be 20');
-  assert.match(readme, /текущий номер сборки — 20/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 21;/g) || []).length, 2, 'Debug and Release build number must both be 21');
+  assert.match(readme, /текущий номер сборки — 21/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
@@ -472,3 +472,77 @@ checkpointWindow.__financeRunID = 'two';
 assert.equal(acknowledge(checkpointWindow, 'one', 2), false);
 assert.deepEqual(checkpointWindow.__financeCheckpointQueue, [{sequence:2}]);
 console.log('v20: ambiguous cards rejected; changed status rechecked; repeated/stale acknowledgments preserve new records.');
+
+// v21: execute direct retry against a synthetic loaded card; verify identity guard.
+(async () => {
+  const card = {innerText: purchase, getClientRects: () => [{}], closest: () => null};
+  const document = {body: card, querySelectorAll: selector => selector === '[role="dialog"],main' ? [card] : []};
+  const run = async identity => {
+    const context = vm.createContext({URL, Date, setTimeout, document, window: {}, location: new URL(url([ref]))});
+    return JSON.parse(await vm.runInContext('(async function(mode,retryIssueJson){' + source +
+      '})("retry_card",' + JSON.stringify(JSON.stringify({identity})) + ')', context));
+  };
+  const correct = await run(JSON.stringify([['DEPOT','test-chain']]));
+  assert.equal(correct.operations.length, 1);
+  assert.equal(correct.stopReason, 'single_card');
+  const wrong = await run(JSON.stringify([['DEPOT','other-chain']]));
+  assert.match(wrong.error, /другая операция/);
+  assert.equal(wrong.operations, undefined);
+  console.log('v21: direct retry reads the requested identity and rejects a different card.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
+// A resumed full pass starts from the saved oldest month instead of rereading the current month.
+(async () => {
+  let screen = 'list', clock = Date.parse('2026-10-04T12:00:00Z'), picker = false, selectedMonth = 'Октябрь 2026';
+  let openedOctober = 0, openedSeptember = 0;
+  const location = new URL('https://bank.yandex.ru/my/transactions-history');
+  const body = {get innerText() {
+    if (screen === 'card-sep') return purchase;
+    return selectedMonth.startsWith('Сентябрь') ? 'История\nЭто все операции' : 'История';
+  }};
+  const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
+  const control = (label, click, aria = '') => ({innerText: label, click, parentElement: root,
+    getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
+    closest: () => null, querySelector: sel => sel === 'svg' ? {} : null,
+    getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
+  const octRow = control('Октябрьская −2 013,84 ₽', () => {openedOctober++;});
+  const sepRow = control('Сентябрьская −2 013,84 ₽', () => {
+    openedSeptember++; screen = 'card-sep';
+    location.href = url([{...ref, chainId: 'resume-sep', operationTimestamp: '2026-09-20T08:00:00Z'}]);
+  });
+  const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
+  const chooseFilter = control('Выбрать', () => {screen = 'list';});
+  const account = control('Все карты и счета', () => {});
+  const monthButton = () => control('Период: ' + selectedMonth, () => {picker = true;});
+  const sepChoice = control('Сентябрь 2026', () => {selectedMonth = 'Сентябрь 2026'; picker = false; root.scrollTop = 0;});
+  const octChoice = control('Октябрь 2026', () => {selectedMonth = 'Октябрь 2026'; picker = false; root.scrollTop = 0;});
+  const sw = {checked: false, getAttribute: () => 'false', getClientRects: () => [{}], closest: () => null};
+  const actionables = () => {
+    if (screen === 'filters') return [chooseFilter];
+    if (screen !== 'list') return [];
+    const list = selectedMonth.startsWith('Октябрь') ? [octRow] : [sepRow];
+    const base = [filter, monthButton(), account, ...list];
+    return picker ? [...base, sepChoice, octChoice] : base;
+  };
+  const document = {body, scrollingElement: root, documentElement: root, querySelectorAll(selector) {
+    if (selector === '[role="dialog"],main') return [body];
+    if (selector.includes('switch')) return screen === 'filters' ? [sw] : [];
+    if (selector === 'button,[role="button"]' || selector.includes('[role="option"]')) return actionables();
+    return [];
+  }};
+  const window = {history: {back() {screen = 'list'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
+  class FakeDate extends Date { static now() { return clock; } }
+  const context = vm.createContext({URL, Date: FakeDate, setTimeout: fn => {clock += 250; fn();}, window, location, document,
+    getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
+  const septemberOrdinal = 2026 * 12 + 8;
+  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays, resumeMonthOrdinal, retryIssueJson) {' + source + '})("retry", null, ' + septemberOrdinal + ', ' + JSON.stringify(JSON.stringify({identity: JSON.stringify([["DEPOT","resume-sep"]])})) + ')', context));
+  assert.equal(batch.error, undefined);
+  assert.equal(batch.stopReason, 'issue_retry_completed');
+  assert.equal(openedOctober, 0, 'Resume must not reread October');
+  assert.equal(openedSeptember, 1);
+  assert.ok(batch.operations.some(x => x.identity.includes('resume-sep')));
+  assert.equal(batch.oldestMonthOrdinal, septemberOrdinal);
+  assert.equal(selectedMonth, 'Октябрь 2026', 'Original visible month should be restored after the pass');
+  console.log('v21: legacy issue search scans its saved month and stops on the matching identity.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+
