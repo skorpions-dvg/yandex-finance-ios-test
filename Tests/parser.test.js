@@ -57,3 +57,15 @@ async function checkMobile() {
   console.log('Mobile full-page card and structured error cases passed.');
 }
 checkMobile().catch(error => { console.error(error); process.exitCode = 1; });
+
+// WebKit mobile text layout: amount fragments, neighbouring list and detail sums.
+for (const rendered of ['−\n2 013,84\n₽', '−2 013\n,84 ₽', '−\t2\u00a0013,84\t₽']) {
+  const result = parse(url([ref]), purchase.replace('−2 013,84 ₽', rendered), '');
+  assert.equal(result.amountKopecks, -201384);
+}
+const surrounding = parse(url([ref]), 'История\nДругая покупка −500 ₽\n' + purchase + '\nКомиссия\n−10 ₽', '');
+assert.equal(surrounding.amountKopecks, -201384);
+assert.equal(surrounding.description, 'Тестовый магазин');
+assert.throws(() => parse(url([ref]), purchase.replace('−2 013,84 ₽', '−2 013,84 ₽\n−500 ₽'), ''), /найдено сумм: 2/);
+assert.throws(() => parse(url([ref]), purchase.replace('−2 013,84 ₽', '2 013,84 ₽'), ''), /найдено сумм: 0/);
+console.log('Mobile amount fragments, surrounding amounts, and ambiguous amount rejection passed.');

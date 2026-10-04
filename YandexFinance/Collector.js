@@ -72,8 +72,15 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     return stamp;
   });
   const lines = cardLines(cardText);
-  const amounts = lines.filter(line => /^[+−–-]\s*[\d\s.,]+\s*₽$/.test(line));
-  if (amounts.length !== 1) throw Error('Не найдена однозначная сумма.');
+  // Read only the card header after its date; WebKit may split sign, digits,
+  // fraction and currency across text lines. Amounts in details are unrelated.
+  const header = cardText.replace(/\u200b/g, '').split('Подробнее')[0];
+  const headerDates = [...header.matchAll(/(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/g)];
+  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 5).');
+  const dateMark = headerDates[0];
+  const amountArea = header.slice(dateMark.index + dateMark[0].length);
+  const amounts = amountArea.match(/[+−–-]\s*\d[\d\s.,]*\s*₽/g) || [];
+  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 5).');
   const kopecks = amount(amounts[0]);
   const listed = rowText.match(moneyPattern);
   if (listed && amount(listed[0]) !== kopecks) throw Error('Сумма не совпала со списком.');
@@ -124,7 +131,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 4).');
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 5).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
