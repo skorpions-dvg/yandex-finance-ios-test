@@ -370,23 +370,30 @@ console.log('Swift/static reliability guards passed.');
   const workflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/build-ios.yml'), 'utf8');
   const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
   const freeSetup = fs.readFileSync(path.join(__dirname, '../FREE-SETUP.md'), 'utf8');
+  const financeEngineForSync = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 
   assert.ok(!source.includes('Ничего не сохранено'), 'Cancellation/timeout text must not contradict checkpoint saving');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
   assert.match(workflow, /swiftc -parse-as-library YandexFinance\/FinanceEngine\.swift Tests\/FinanceEngineTests\.swift/, 'GitHub build must execute the Swift finance tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 28;/g) || []).length, 2, 'Debug and Release build number must both be 28');
-  assert.match(readme, /текущий номер сборки — 28/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 30;/g) || []).length, 2, 'Debug and Release build number must both be 30');
+  assert.match(readme, /текущий номер сборки — 30/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
-  const incrementalBlock = swift.match(/private func incrementalDays[\s\S]*?private static func operationDate/)[0];
+  const incrementalBlock = swift.match(/private func incrementalPolicy[\s\S]*?private static func operationDate/)[0];
   assert.ok(!/unresolvedIssues/.test(incrementalBlock), 'Old import issues must not expand every automatic refresh');
-  assert.match(incrementalBlock, /let noStatusCutoff = now\.addingTimeInterval\(-14 \* 86400\)/, 'Status-less cards must have a finite refresh horizon');
-  assert.match(incrementalBlock, /noStatus && date >= noStatusCutoff/, 'Old status-less cards must stop widening automatic refresh');
-  assert.match(incrementalBlock, /pending\|hold\|заблок/, 'Explicit pending states must remain watched');
-  assert.match(swift, /let runClean = \(batch\.skippedCount \?\? 0\) == 0 && \(batch\.issues \?\? \[\]\)\.isEmpty/);
+  assert.match(incrementalBlock, /IncrementalSyncPolicy\.calculate/, 'BankBrowser must delegate incremental window logic to the tested policy');
+  assert.match(financeEngineForSync, /static let noStatusWatchDays = 14/, 'Status-less cards must have a finite refresh horizon');
+  assert.match(financeEngineForSync, /static let pendingWatchDays = 45/, 'Stale pending operations must have a finite automatic refresh horizon');
+  assert.match(financeEngineForSync, /static func isPendingStatus/, 'Pending status classification must have one shared source of truth');
+  assert.match(financeEngineForSync, /"в обработке", "обрабатыва", "ожида", "в процессе", "pending", "hold", "заблок"/, 'Pending status variants must stay synchronized');
+  assert.match(financeEngineForSync, /static func isOpenStatus\(_ value: String\) -> Bool \{ FinancialEngine\.isPendingStatus\(value\) \}/, 'Incremental sync must reuse finance pending classification');
+  assert.match(swift, /let runClean = counts\.rejected == 0 && \(batch\.skippedCount \?\? 0\) == 0 && \(batch\.issues \?\? \[\]\)\.isEmpty/);
   assert.match(swift, /boundaryReached, runClean, !resumed/, 'Fresh coverage may advance when the current pass is clean even if an older retry issue remains');
+  assert.match(swift, /automaticRun:\s*true/, 'Automatic history refresh must identify itself so stale-pending warnings do not spam every launch');
+  assert.match(swift, /IncrementalSyncPolicy\.pendingWatchDays/, 'User-facing stale-pending warning must use the same watch-window constant');
+  assert.match(appSwift, /Автообновление выключено/, 'UI must remind the user when automatic refresh is disabled');
 
   const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
   assert.deepEqual(monthParser('Октябрь'), {month: 9, year: null});
@@ -600,7 +607,7 @@ const projectV25 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodep
 const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
-assert.match(projectV25, /CURRENT_PROJECT_VERSION = 28;/);
+assert.match(projectV25, /CURRENT_PROJECT_VERSION = 30;/);
 assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Банковские списания/);
 assert.match(appSwift, /DisclosureGroup/);
@@ -617,5 +624,14 @@ assert.match(financeTests, /cash withdrawal/);
 assert.match(appSwift, /let report = FinancialEngine\.report/);
 assert.match(appSwift, /resetLocalStorage/);
 assert.match(swift, /Не сохранено после проверки/);
-assert.match(source, /V28 keeps conservative verification/);
+assert.match(source, /V30 keeps conservative verification/);
 console.log('v25: finance engine handles fractional ISO8601 dates, half-open periods, and surfaces invalid dates.');
+
+
+// v30: storage recovery and bounded incremental refresh must stay wired.
+assert.match(swift, /func retryOpenStorage\(\)/, 'storage failure must offer a non-destructive retry');
+assert.match(swift, /storageRetryFailed/, 'destructive reset must be gated behind a failed retry');
+assert.match(swift, /counts\.rejected == 0 && \(batch\.skippedCount/, 'rejected operations must prevent a run from being marked clean');
+assert.match(swift, /IncrementalSyncPolicy\.calculate/, 'BankBrowser must use the tested incremental sync policy');
+assert.match(appSwift, /Повторить открытие/, 'storage retry must be visible in the UI');
+assert.match(appSwift, /автообновление после сброса будет выключено/i, 'reset warning must explain that automatic bootstrap is suppressed');

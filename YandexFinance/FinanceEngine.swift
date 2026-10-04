@@ -108,6 +108,62 @@ struct FinanceReport {
     var differenceKopecks: Int64 { incomeKopecks - netExpenseKopecks }
 }
 
+struct SyncStatusInput {
+    let occurredAt: String
+    let status: String
+}
+
+struct SyncLookbackResult {
+    let days: Int
+    let stalePendingCount: Int
+}
+
+enum BankDateParser {
+    private static let fractionalISO8601 = Date.ISO8601FormatStyle(timeZoneSeparator: .colon, includingFractionalSeconds: true)
+    private static let plainISO8601 = Date.ISO8601FormatStyle(timeZoneSeparator: .colon)
+
+    static func parse(_ value: String) -> Date? {
+        (try? fractionalISO8601.parse(value)) ?? (try? plainISO8601.parse(value))
+    }
+}
+
+enum IncrementalSyncPolicy {
+    static let noStatusWatchDays = 14
+    static let pendingWatchDays = 45
+
+    static func operationDate(_ value: String) -> Date? { BankDateParser.parse(value) }
+
+    static func isOpenStatus(_ value: String) -> Bool { FinancialEngine.isPendingStatus(value) }
+
+    static func calculate(_ operations: [SyncStatusInput], lastCompletedSync: Date?, now: Date) -> SyncLookbackResult {
+        var start = lastCompletedSync?.addingTimeInterval(-7 * 86400)
+            ?? now.addingTimeInterval(-183 * 86400)
+        let noStatusCutoff = now.addingTimeInterval(-Double(noStatusWatchDays) * 86400)
+        let pendingCutoff = now.addingTimeInterval(-Double(pendingWatchDays) * 86400)
+        var stalePendingCount = 0
+
+        for operation in operations {
+            let open = isOpenStatus(operation.status)
+            let noStatus = FinancialEngine.isNoStatus(operation.status)
+            guard open || noStatus else { continue }
+            guard let date = BankDateParser.parse(operation.occurredAt) else { continue }
+
+            if open {
+                if date >= pendingCutoff {
+                    start = min(start, date.addingTimeInterval(-86400))
+                } else {
+                    stalePendingCount += 1
+                }
+            } else if noStatus && date >= noStatusCutoff {
+                start = min(start, date.addingTimeInterval(-86400))
+            }
+        }
+
+        return SyncLookbackResult(days: max(7, Int(ceil(now.timeIntervalSince(start) / 86400))),
+                                  stalePendingCount: stalePendingCount)
+    }
+}
+
 enum FinancialEngine {
     private static func normalized(_ value: String?) -> String {
         (value ?? "")
@@ -120,6 +176,17 @@ enum FinancialEngine {
 
     private static func containsAny(_ value: String, _ fragments: [String]) -> Bool {
         fragments.contains { value.contains($0) }
+    }
+
+    static func isPendingStatus(_ value: String) -> Bool {
+        let status = normalized(value)
+        // Keep this narrower than the generic Russian root "обраб":
+        // "Обрабатывается" is pending, while a completed "Обработана" is not.
+        return containsAny(status, ["в обработке", "обрабатыва", "ожида", "в процессе", "pending", "hold", "заблок"])
+    }
+
+    static func isNoStatus(_ value: String) -> Bool {
+        normalized(value).contains("не указан")
     }
 
     static func classify(_ operation: FinancialOperationInput) -> FinancialAssessment {
@@ -135,7 +202,7 @@ enum FinancialEngine {
             return FinancialAssessment(type: .cancelled, reason: "Банк пометил операцию как отменённую/не выполненную.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        if containsAny(status, ["в обработке", "обрабаты", "ожида", "в процессе", "pending", "hold", "заблок"]) {
+        if isPendingStatus(operation.status) {
             return FinancialAssessment(type: .pending, reason: "Операция ещё не завершена и пока не входит в окончательные итоги.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
@@ -221,13 +288,6 @@ enum FinancialEngine {
         return FinancialAssessment(type: .unknown, reason: "Положительная операция без подтверждённого типа не считается доходом: это может быть перевод между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
     }
 
-    private static let fractionalISO8601 = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
-    private static let plainISO8601 = Date.ISO8601FormatStyle()
-
-    private static func operationDate(_ value: String) -> Date? {
-        (try? fractionalISO8601.parse(value)) ?? (try? plainISO8601.parse(value))
-    }
-
     static func summarize(_ operations: [FinancialOperationInput], in interval: DateInterval) -> FinancialSummary {
         var counts: [FinancialType: Int] = [:]
         var signedAmounts: [FinancialType: Int64] = [:]
@@ -238,7 +298,7 @@ enum FinancialEngine {
         var invalidDateCount = 0
 
         for operation in operations {
-            guard let date = operationDate(operation.occurredAt) else {
+            guard let date = BankDateParser.parse(operation.occurredAt) else {
                 invalidDateCount += 1
                 continue
             }
@@ -287,7 +347,7 @@ enum FinancialEngine {
         }
 
         for operation in operations {
-            guard let date = operationDate(operation.occurredAt) else {
+            guard let date = BankDateParser.parse(operation.occurredAt) else {
                 invalidDateCount += 1
                 continue
             }

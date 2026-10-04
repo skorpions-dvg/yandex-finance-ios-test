@@ -115,6 +115,72 @@ struct FinanceEngineTests {
         require(withdrawalReport.expenseLines.contains { $0.title == "Комиссии" && $0.amountKopecks == 300 }, "cash withdrawal fee remains expense")
         require(withdrawalReport.netExpenseKopecks == 300, "cash withdrawal itself is excluded from financial expense")
 
+
+        let policyNow = ISO8601DateFormatter().date(from: "2033-03-20T12:00:00Z")!
+        let recentCompleted = policyNow.addingTimeInterval(-1 * 86400)
+        let policyBase = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: "not-a-date", status: "Выполнено")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(policyBase.days == 8, "completed operations do not need date parsing or widen refresh")
+
+        let processing = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: "2033-03-01T12:00:00.123+03:00", status: "Обрабатывается")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(processing.days >= 20, "Обрабатывается must widen the refresh window")
+        require(processing.stalePendingCount == 0, "recent processing is actively watched")
+
+        let stalePending = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: "2032-12-01T12:00:00Z", status: "Pending")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(stalePending.days == 8, "stale pending must not widen every refresh for months")
+        require(stalePending.stalePendingCount == 1, "stale pending is surfaced separately")
+
+        let recentNoStatus = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: "2033-03-10T12:00:00Z", status: "Не указан")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(recentNoStatus.days >= 11, "recent status-less operation remains watched")
+
+        let oldNoStatus = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: "2033-02-01T12:00:00Z", status: "Не указан")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(oldNoStatus.days == 8, "old status-less operation no longer widens refresh")
+
+        require(FinancialEngine.isPendingStatus("Обрабатывается"), "processing status must be pending")
+        require(FinancialEngine.isPendingStatus("Ожидает подтверждения"), "waiting status must be pending")
+        require(FinancialEngine.isPendingStatus("hold"), "hold status must be pending")
+        require(!FinancialEngine.isPendingStatus("Обработана"), "completed processed status must not be pending")
+        require(FinancialEngine.classify(op(-12_345, kind: "expense", status: "Обработана")).type == .expense, "completed processed debit remains expense")
+
+        let iso = ISO8601DateFormatter()
+        let exactly14 = iso.string(from: policyNow.addingTimeInterval(-Double(IncrementalSyncPolicy.noStatusWatchDays) * 86400))
+        let justOlder14 = iso.string(from: policyNow.addingTimeInterval(-Double(IncrementalSyncPolicy.noStatusWatchDays) * 86400 - 1))
+        let noStatusBoundary = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: exactly14, status: "Не указан")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(noStatusBoundary.days == IncrementalSyncPolicy.noStatusWatchDays + 1, "status-less operation exactly at 14-day boundary is still watched")
+        let noStatusPastBoundary = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: justOlder14, status: "Не указан")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(noStatusPastBoundary.days == 8, "status-less operation just older than 14 days no longer widens refresh")
+
+        let exactly45 = iso.string(from: policyNow.addingTimeInterval(-Double(IncrementalSyncPolicy.pendingWatchDays) * 86400))
+        let justOlder45 = iso.string(from: policyNow.addingTimeInterval(-Double(IncrementalSyncPolicy.pendingWatchDays) * 86400 - 1))
+        let holdBoundary = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: exactly45, status: "hold")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(holdBoundary.days == IncrementalSyncPolicy.pendingWatchDays + 1, "pending exactly at 45-day boundary is still watched")
+        require(holdBoundary.stalePendingCount == 0, "45-day boundary pending is not stale")
+        let holdPastBoundary = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: justOlder45, status: "hold")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(holdPastBoundary.days == 8, "pending just older than 45 days no longer widens refresh")
+        require(holdPastBoundary.stalePendingCount == 1, "pending just older than 45 days is surfaced as stale")
+
+        let processedStatus = IncrementalSyncPolicy.calculate([
+            SyncStatusInput(occurredAt: iso.string(from: policyNow.addingTimeInterval(-15 * 86400)), status: "Обработана")
+        ], lastCompletedSync: recentCompleted, now: policyNow)
+        require(processedStatus.days == 8, "completed 'Обработана' status must not widen refresh")
+
         print("Finance engine tests passed")
     }
 }

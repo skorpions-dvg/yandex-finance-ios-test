@@ -10,6 +10,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published var host = "bank.yandex.ru"
     @Published var history = SavedHistory()
     @Published private(set) var storageError: String?
+    @Published private(set) var storageRetryFailed = false
     private let vault = Vault()
     private var readable = true
     private var cancelled = false
@@ -34,6 +35,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
     var bootstrapComplete: Bool { history.bootstrapCompleted == true }
     var canResume: Bool { !bootstrapComplete && history.bootstrapResumeMonth != nil }
+    var storageAvailable: Bool { readable }
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -77,7 +79,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                         self.automaticTask = nil
                         // Fresh data first; older bootstrap work has an explicit continuation action.
                         if self.history.operations.isEmpty { self.continueInitialHistory() }
-                        else { self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: self.history.lastCompletedSync == nil && self.history.bootstrapResumeMonth == nil) }
+                        else { self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: self.history.lastCompletedSync == nil && self.history.bootstrapResumeMonth == nil, automaticRun: true) }
                         return
                     }
                 } catch { continue }
@@ -85,29 +87,15 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             self?.automaticTask = nil
         }
     }
-    private func incrementalDays(now: Date = Date()) -> Int {
-        var start = history.lastCompletedSync?.addingTimeInterval(-7 * 86400)
-            ?? now.addingTimeInterval(-183 * 86400)
-        let noStatusCutoff = now.addingTimeInterval(-14 * 86400)
-        for operation in history.operations {
-            guard let date = Self.operationDate(operation.occurredAt) else { continue }
-            let open = operation.status.range(of: "ожида|обработ|в процессе|pending|hold|заблок", options: [.regularExpression, .caseInsensitive]) != nil
-            let noStatus = operation.status.localizedCaseInsensitiveContains("не указан")
-            if open || (noStatus && date >= noStatusCutoff) {
-                start = min(start, date.addingTimeInterval(-86400))
-            }
-        }
-        // Old status-less cards (for example own transfers or interest payouts) are immutable
-        // enough to stop widening every refresh after two weeks. Explicit pending states stay watched.
-        return max(7, Int(ceil(now.timeIntervalSince(start) / 86400)))
+    private func incrementalPolicy(now: Date = Date()) -> SyncLookbackResult {
+        IncrementalSyncPolicy.calculate(
+            history.operations.map { SyncStatusInput(occurredAt: $0.occurredAt, status: $0.status) },
+            lastCompletedSync: history.lastCompletedSync,
+            now: now
+        )
     }
-    private static func operationDate(_ value: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)
-    }
+    private func incrementalDays(now: Date = Date()) -> Int { incrementalPolicy(now: now).days }
+    private static func operationDate(_ value: String) -> Date? { IncrementalSyncPolicy.operationDate(value) }
     func openHistory() {
         guard !busy else { return }
         webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
@@ -151,7 +139,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             message = "У старой ошибки нет ссылки или идентификатора. Откройте нужную карточку вручную; автоматически сопоставить её пока нельзя."
         }
     }
-    func read(mode: String, lookbackDays: Int? = 30, initialImport: Bool = false, retryIssue: ImportIssue? = nil) {
+    func read(mode: String, lookbackDays: Int? = 30, initialImport: Bool = false, retryIssue: ImportIssue? = nil, automaticRun: Bool = false) {
         guard !busy, readable else { return }
         guard webView.url?.host == "bank.yandex.ru" else { message = "Сначала завершите вход на сайте банка."; return }
         guard let resource = Bundle.main.url(forResource: "Collector", withExtension: "js"),
@@ -191,7 +179,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                     guard let string = try result.get() as? String, let data = string.data(using: .utf8) else { throw AppFailure(message: "Неизвестный результат чтения.") }
                     if let failure = try JSONSerialization.jsonObject(with: data) as? [String: Any], let detail = failure["error"] as? String { throw AppFailure(message: detail) }
                     let batch = try JSONDecoder().decode(ImportBatch.self, from: data)
-                    try self.merge(batch, initialImport: initialImport, startedAt: startedAt, resumed: resume != nil, mode: mode, requestedDays: lookbackDays)
+                    try self.merge(batch, initialImport: initialImport, startedAt: startedAt, resumed: resume != nil, mode: mode, requestedDays: lookbackDays, automaticRun: automaticRun)
                 } catch { self.message = "Чтение остановлено: \(error.localizedDescription). Ранее сохранённые записи доступны." }
             }
         }
@@ -231,11 +219,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
         next.unresolvedIssues = items
     }
-    private func merge(_ batch: ImportBatch, initialImport: Bool, startedAt: Date, resumed: Bool, mode: String, requestedDays: Int?) throws {
+    private func merge(_ batch: ImportBatch, initialImport: Bool, startedAt: Date, resumed: Bool, mode: String, requestedDays: Int?, automaticRun: Bool) throws {
         var next = history
         let counts = apply(batch.operations, to: &next)
         addIssues(batch.issues ?? [], to: &next)
-        let runClean = (batch.skippedCount ?? 0) == 0 && (batch.issues ?? []).isEmpty
+        let runClean = counts.rejected == 0 && (batch.skippedCount ?? 0) == 0 && (batch.issues ?? []).isEmpty
         let bootstrapClean = runClean && (next.unresolvedIssues ?? []).isEmpty
         let boundaryReached = ["lookback_reached", "history_beginning_reached", "full_history_exhausted"].contains(batch.stopReason)
         if initialImport {
@@ -260,6 +248,12 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         if counts.rejected > 0 { message += " Не сохранено после проверки: \(counts.rejected) (не RUB или неполные обязательные поля)." }
         if let skipped = batch.skippedCount, skipped > 0 { message += " Пропущено: \(skipped)." }
         if let warning = batch.warning, !warning.isEmpty { message += " \(warning)" }
+        if mode == "history" && !automaticRun {
+            let stalePending = incrementalPolicy(now: startedAt).stalePendingCount
+            if stalePending > 0 {
+                message += " Старых незавершённых операций старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(stalePending). Они не расширяют обычное автообновление; при необходимости проверьте их вручную."
+            }
+        }
     }
     private func flushCheckpointFromWebView() async {
         guard busy, !checkpointInFlight, let runID = activeRunID else { return }
@@ -292,6 +286,23 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             """, arguments: ["expectedRunID": runID, "throughSequence": snapshot.throughSequence], in: nil, contentWorld: .defaultClient)
         } catch { /* Queue remains available to retry; final batch contains all parsed operations. */ }
     }
+    func retryOpenStorage() {
+        guard !busy else { return }
+        do {
+            history = try vault.load()
+            readable = true
+            storageError = nil
+            storageRetryFailed = false
+            message = "Локальное хранилище снова доступно."
+            scheduleAutomaticUpdate()
+        } catch {
+            readable = false
+            storageError = error.localizedDescription
+            storageRetryFailed = true
+            message = "Хранилище по-прежнему недоступно: \(error.localizedDescription)"
+        }
+    }
+
     func resetLocalStorage() {
         guard !busy else { return }
         do {
@@ -299,8 +310,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             history = SavedHistory()
             readable = true
             storageError = nil
-            message = "Локальное хранилище сброшено. Войдите в банк и выполните синхронизацию заново."
-            scheduleAutomaticUpdate()
+            storageRetryFailed = false
+            autoUpdate = false
+            message = "Локальное хранилище сброшено. Автообновление выключено: после входа запустите «Синхронизировать 6 месяцев» вручную, затем при желании снова включите автообновление."
         } catch {
             message = "Не удалось сбросить локальное хранилище: \(error.localizedDescription)"
         }

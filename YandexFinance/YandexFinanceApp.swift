@@ -29,21 +29,39 @@ struct ContentView: View {
                     Spacer()
                     Button("История") { browser.openHistory() }.disabled(browser.busy)
                 }.padding(.horizontal)
+                if let storageError = browser.storageError {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Хранилище недоступно").font(.headline)
+                        Text(storageError).font(.caption).foregroundStyle(.secondary)
+                        Button("Повторить открытие") { browser.retryOpenStorage() }
+                            .disabled(browser.busy)
+                        if browser.storageRetryFailed {
+                            Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
+                                .disabled(browser.busy)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
                 BankWebView(browser: browser)
                 Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")
+                if !browser.autoUpdate {
+                    Text("Автообновление выключено. Новые операции не будут проверяться при открытии, пока вы снова не включите его во вкладке «Операции».")
+                        .font(.caption).foregroundStyle(.orange).padding(.horizontal)
+                }
                 if browser.busy {
                     HStack { ProgressView(); Button("Остановить") { browser.cancel() } }.padding(.bottom, 8)
                 } else {
                     VStack(spacing: 8) {
                         HStack {
-                            Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }
-                            Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent)
+                            Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }.disabled(!browser.storageAvailable)
+                            Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent).disabled(!browser.storageAvailable)
                         }
                         if browser.canResume {
-                            Button("Продолжить загрузку истории") { browser.continueInitialHistory() }
+                            Button("Продолжить загрузку истории") { browser.continueInitialHistory() }.disabled(!browser.storageAvailable)
                         }
                         Button("Синхронизировать 6 месяцев") { browser.syncSixMonthsHistory() }
                             .font(.footnote)
+                            .disabled(!browser.storageAvailable)
                     }.font(.footnote).padding(.bottom, 8)
                 }
             }.tabItem { Label("Банк", systemImage: "building.columns") }.tag(0)
@@ -52,10 +70,14 @@ struct ContentView: View {
                     if let storageError = browser.storageError {
                         Section("Хранилище недоступно") {
                             Text(storageError).font(.footnote)
-                            Text("Сброс удалит только локально сохранённую историю и ключ шифрования. После этого историю нужно будет синхронизировать заново.")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
+                            Button("Повторить открытие") { browser.retryOpenStorage() }
                                 .disabled(browser.busy)
+                            if browser.storageRetryFailed {
+                                Text("Повторная попытка не помогла. Сброс удалит только локальную историю и ключ шифрования. Автообновление после сброса будет выключено, чтобы шестимесячная загрузка не началась неожиданно.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
+                                    .disabled(browser.busy)
+                            }
                         }
                     }
                     Section {
@@ -69,6 +91,10 @@ struct ContentView: View {
                             Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
                         Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
+                        if !browser.autoUpdate {
+                            Text("Автообновление выключено. После сброса хранилища это делается специально; включите его снова после ручной синхронизации, когда будете готовы.")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                         Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(browser.message).font(.footnote)
@@ -148,7 +174,7 @@ struct ContentView: View {
             Button("Сбросить и удалить локальную историю", role: .destructive) { browser.resetLocalStorage() }
             Button("Отмена", role: .cancel) {}
         } message: {
-            Text("Используйте это только если зашифрованная база больше не открывается. Действие необратимо для локальной копии.")
+            Text("Используйте это только после неудачной повторной попытки открыть хранилище. Действие необратимо для локальной копии; автообновление после сброса будет выключено.")
         }
     }
 }
