@@ -8,7 +8,6 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published var message = "Войдите в банк, затем откройте историю."
     @Published var host = "bank.yandex.ru"
     @Published var history = SavedHistory()
-
     private let vault = Vault()
     private var readable = true
     private var cancelled = false
@@ -16,56 +15,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var automaticTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
     private var lastAttempt: Date?
+    private var activeRunID: String?
+    private var checkpointInFlight = false
+    private var bootstrapRun = false
     private var checkpointAdded = 0
     private var checkpointChanged = 0
-
-    // V19 keeps the six-month bootstrap marker and V18 fast path. After a partial
-    // bootstrap that already saved data, normal app launches only refresh 7 days;
-    // the explicit six-month button is used to retry older months.
-    private let fullHistoryKey = "initialSixMonthsImportedV1"
-    private let fullHistoryResumeKey = "fullHistoryResumeOrdinalV2"
-    private let boundaryOrdinalKey = "fullHistoryBoundaryOrdinalV2"
-    private let boundaryCountKey = "fullHistoryBoundaryCountV2"
-    private var fullHistoryImported: Bool {
-        get { UserDefaults.standard.bool(forKey: fullHistoryKey) }
-        set { UserDefaults.standard.set(newValue, forKey: fullHistoryKey) }
-    }
-
-    private var fullHistoryResumeOrdinal: Int? {
-        get {
-            guard UserDefaults.standard.object(forKey: fullHistoryResumeKey) != nil else { return nil }
-            return UserDefaults.standard.integer(forKey: fullHistoryResumeKey)
-        }
-        set {
-            if let newValue { UserDefaults.standard.set(newValue, forKey: fullHistoryResumeKey) }
-            else { UserDefaults.standard.removeObject(forKey: fullHistoryResumeKey) }
-        }
-    }
-
-    private func clearBoundaryConfirmation() {
-        UserDefaults.standard.removeObject(forKey: boundaryOrdinalKey)
-        UserDefaults.standard.removeObject(forKey: boundaryCountKey)
-    }
-
-    /// Returns true only after the same oldest reachable month has failed to move
-    /// farther back twice, and the first observation came after visiting >= 2 months.
-    /// This prevents an endless full rescan without declaring the current month to be
-    /// the beginning merely because the picker was temporarily unavailable.
-    private func confirmStableHistoryBoundary(ordinal: Int, monthsVisited: Int) -> Bool {
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: boundaryOrdinalKey) == nil || defaults.integer(forKey: boundaryOrdinalKey) != ordinal {
-            guard monthsVisited >= 2 else {
-                clearBoundaryConfirmation()
-                return false
-            }
-            defaults.set(ordinal, forKey: boundaryOrdinalKey)
-            defaults.set(1, forKey: boundaryCountKey)
-            return false
-        }
-        let next = defaults.integer(forKey: boundaryCountKey) + 1
-        defaults.set(next, forKey: boundaryCountKey)
-        return next >= 2
-    }
 
     @Published var autoUpdate = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true {
         didSet {
@@ -74,57 +28,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             else { automaticTask?.cancel(); automaticTask = nil }
         }
     }
-
-    func becameActive() {
-        foreground = true
-        scheduleAutomaticUpdate()
-    }
-
-    func becameInactive() {
-        foreground = false
-        automaticTask?.cancel()
-        automaticTask = nil
-        // Do not cancel an active import on .inactive/.background. iOS can enter
-        // .inactive for Control Center, notifications, permission sheets, etc.
-        // Flush the JavaScript queue before suspension so only the last small
-        // in-flight chunk can be lost if iOS later kills the process.
-        if busy {
-            Task { @MainActor [weak self] in await self?.flushCheckpointFromWebView() }
-        }
-    }
-
-    private func scheduleAutomaticUpdate() {
-        guard foreground, autoUpdate, readable, !busy, automaticTask == nil else { return }
-        if let lastAttempt, Date().timeIntervalSince(lastAttempt) < 300 { return }
-        automaticTask = Task { @MainActor [weak self] in
-            // Wait for manual login and the history UI, without reading authentication pages.
-            for _ in 0..<120 {
-                do { try await Task.sleep(nanoseconds: 500_000_000) }
-                catch { return }
-                guard let self, self.foreground, self.autoUpdate, !self.busy else { return }
-                guard self.webView.url?.host == "bank.yandex.ru",
-                      self.webView.url?.path == "/my/transactions-history", !self.webView.isLoading else { continue }
-                let probe = """
-                if (location.hostname !== 'bank.yandex.ru' || location.pathname !== '/my/transactions-history') return false;
-                const body = document.body?.innerText || '';
-                return body.includes('Все карты и счета') && /История|Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь/.test(body);
-                """
-                let ready: Bool
-                do {
-                    let value = try await self.webView.callAsyncJavaScript(probe, arguments: [:], in: nil, contentWorld: .defaultClient)
-                    ready = value as? Bool ?? false
-                } catch { continue }
-                guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
-                if ready {
-                    self.automaticTask = nil
-                    let automaticLookback = (!self.fullHistoryImported && self.history.operations.isEmpty) ? 183 : 7
-                    self.read(mode: "history", lookbackDays: automaticLookback)
-                    return
-                }
-            }
-            self?.automaticTask = nil
-        }
-    }
+    var bootstrapComplete: Bool { history.bootstrapCompleted == true }
+    var canResume: Bool { !bootstrapComplete && history.bootstrapResumeMonth != nil }
 
     override init() {
         let configuration = WKWebViewConfiguration()
@@ -134,329 +39,222 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        do {
-            history = try vault.load()
-            if history.operations.isEmpty {
-                fullHistoryImported = false
-                fullHistoryResumeOrdinal = nil
-                clearBoundaryConfirmation()
-            }
-        } catch {
-            readable = false
-            message = "Хранилище не открыто: \(error.localizedDescription)"
-        }
+        do { history = try vault.load() }
+        catch { readable = false; message = "Хранилище не открыто: \(error.localizedDescription)" }
+        // Old UserDefaults completion flags do not prove coverage; legacy records remain intact.
         openHistory()
     }
-
+    func becameActive() { foreground = true; scheduleAutomaticUpdate() }
+    func becameInactive() {
+        foreground = false
+        automaticTask?.cancel(); automaticTask = nil
+        if busy { Task { @MainActor [weak self] in await self?.flushCheckpointFromWebView() } }
+    }
+    private func scheduleAutomaticUpdate() {
+        guard foreground, autoUpdate, readable, !busy, automaticTask == nil else { return }
+        if let lastAttempt, Date().timeIntervalSince(lastAttempt) < 300 { return }
+        automaticTask = Task { @MainActor [weak self] in
+            for _ in 0..<120 {
+                do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
+                guard let self, self.foreground, self.autoUpdate, !self.busy else { return }
+                guard self.webView.url?.host == "bank.yandex.ru", self.webView.url?.path == "/my/transactions-history", !self.webView.isLoading else { continue }
+                let probe = """
+                if (location.hostname !== 'bank.yandex.ru' || location.pathname !== '/my/transactions-history') return false;
+                return (document.body?.innerText || '').includes('Все карты и счета');
+                """
+                do {
+                    let value = try await self.webView.callAsyncJavaScript(probe, arguments: [:], in: nil, contentWorld: .defaultClient)
+                    guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
+                    if value as? Bool == true {
+                        self.automaticTask = nil
+                        // Fresh data first; older bootstrap work has an explicit continuation action.
+                        if self.history.operations.isEmpty { self.continueInitialHistory() }
+                        else { self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: self.history.lastCompletedSync == nil && self.history.bootstrapResumeMonth == nil) }
+                        return
+                    }
+                } catch { continue }
+            }
+            self?.automaticTask = nil
+        }
+    }
+    private func incrementalDays(now: Date = Date()) -> Int {
+        var start = history.lastCompletedSync?.addingTimeInterval(-7 * 86400)
+            ?? now.addingTimeInterval(-183 * 86400)
+        for operation in history.operations {
+            if operation.status.range(of: "ожида|обработ|в процессе|pending|не указан", options: [.regularExpression, .caseInsensitive]) != nil,
+               let date = Self.operationDate(operation.occurredAt) { start = min(start, date.addingTimeInterval(-86400)) }
+        }
+        for issue in history.unresolvedIssues ?? [] {
+            if let ordinal = issue.monthOrdinal,
+               let date = Calendar.current.date(from: DateComponents(year: ordinal / 12, month: ordinal % 12 + 1, day: 1)) { start = min(start, date) }
+        }
+        return max(7, Int(ceil(now.timeIntervalSince(start) / 86400)))
+    }
+    private static func operationDate(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
     func openHistory() {
         guard !busy else { return }
         webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
     }
-
+    func continueInitialHistory() { read(mode: "history", lookbackDays: 183, initialImport: true) }
     func syncSixMonthsHistory() {
-        fullHistoryImported = false
-        fullHistoryResumeOrdinal = nil
-        clearBoundaryConfirmation()
-        read(mode: "history", lookbackDays: 183)
-    }
-
-    func read(mode: String, lookbackDays: Int? = 30) {
         guard !busy, readable else { return }
-        guard webView.url?.host == "bank.yandex.ru" else {
-            message = "Сначала завершите вход на сайте банка."
-            return
-        }
+        var next = history
+        next.bootstrapResumeMonth = nil
+        next.bootstrapCompleted = false
+        do { try vault.save(next); history = next }
+        catch { message = "Не удалось сохранить состояние: \(error.localizedDescription)"; return }
+        continueInitialHistory()
+    }
+    func read(mode: String, lookbackDays: Int? = 30, initialImport: Bool = false) {
+        guard !busy, readable else { return }
+        guard webView.url?.host == "bank.yandex.ru" else { message = "Сначала завершите вход на сайте банка."; return }
         guard let resource = Bundle.main.url(forResource: "Collector", withExtension: "js"),
-              let script = try? String(contentsOf: resource, encoding: .utf8) else {
-            message = "Не найден модуль чтения истории."
-            return
-        }
-
-        automaticTask?.cancel()
-        automaticTask = nil
-        lastAttempt = Date()
-        busy = true
-        cancelled = false
-        checkpointAdded = 0
-        checkpointChanged = 0
-
-        if mode == "card" {
-            message = "Читаю карточку…"
-        } else if let lookbackDays {
-            message = "Читаю последние \(lookbackDays) дней. Не переключайте страницу…"
-        } else {
-            message = "Синхронизация: читаю последние 6 месяцев. Не переключайте страницу…"
-        }
-
+              let script = try? String(contentsOf: resource, encoding: .utf8) else { message = "Не найден модуль чтения."; return }
+        automaticTask?.cancel(); automaticTask = nil
+        lastAttempt = Date(); busy = true; cancelled = false
+        checkpointAdded = 0; checkpointChanged = 0
+        bootstrapRun = initialImport
+        let runID = UUID().uuidString
+        activeRunID = runID
+        let startedAt = Date()
+        let resume = initialImport ? history.bootstrapResumeMonth : nil
+        message = mode == "card" ? "Читаю карточку…" : "Проверяю историю. Уже сохранённые записи остаются на телефоне."
         webView.isUserInteractionEnabled = false
         progressTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                do { try await Task.sleep(nanoseconds: 3_000_000_000) }
-                catch { return }
-                guard let self, self.busy else { return }
+                do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
+                guard let self, self.busy, self.activeRunID == runID else { return }
                 await self.flushCheckpointFromWebView()
             }
         }
-
-        let lookbackArgument: Any = lookbackDays.map { NSNumber(value: $0) } ?? NSNull()
-        let shouldResumeInitialImport = mode == "history" && !fullHistoryImported && (lookbackDays == 183 || lookbackDays == nil)
-        let resumeArgument: Any = (shouldResumeInitialImport ? fullHistoryResumeOrdinal : nil)
-            .map { NSNumber(value: $0) } ?? NSNull()
-        let knownOperationsJSON: String
-        do {
-            let data = try JSONEncoder().encode(history.operations)
-            knownOperationsJSON = String(data: data, encoding: .utf8) ?? "[]"
-        } catch {
-            knownOperationsJSON = "[]"
-        }
-        webView.callAsyncJavaScript(
-            script,
-            arguments: ["mode": mode, "lookbackDays": lookbackArgument, "resumeMonthOrdinal": resumeArgument,
-                        "knownOperationsJson": knownOperationsJSON],
-            in: nil,
-            in: .defaultClient
-        ) { [weak self] result in
+        let knownData = (try? JSONEncoder().encode(history.operations)) ?? Data("[]".utf8)
+        let arguments: [String: Any] = ["mode": mode, "lookbackDays": lookbackDays.map { NSNumber(value: $0) } ?? NSNull(),
+            "resumeMonthOrdinal": resume.map { NSNumber(value: $0) } ?? NSNull(), "runID": runID,
+            "forceVerification": !initialImport,
+            "knownOperationsJson": String(data: knownData, encoding: .utf8) ?? "[]"]
+        webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .defaultClient) { [weak self] result in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                defer {
-                    self.progressTask?.cancel()
-                    self.progressTask = nil
-                    self.busy = false
-                    self.webView.isUserInteractionEnabled = true
-                }
+                guard let self, self.activeRunID == runID else { return }
+                // Invalidate late snapshots before merging the authoritative final batch.
+                self.activeRunID = nil
+                self.progressTask?.cancel(); self.progressTask = nil
+                defer { self.busy = false; self.webView.isUserInteractionEnabled = true }
                 do {
-                    let raw = try result.get()
-                    guard let string = raw as? String, let data = string.data(using: .utf8) else {
-                        throw AppFailure(message: "Страница вернула неизвестный результат.")
-                    }
-                    if let failure = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let detail = failure["error"] as? String {
-                        throw AppFailure(message: detail)
-                    }
+                    guard let string = try result.get() as? String, let data = string.data(using: .utf8) else { throw AppFailure(message: "Неизвестный результат чтения.") }
+                    if let failure = try JSONSerialization.jsonObject(with: data) as? [String: Any], let detail = failure["error"] as? String { throw AppFailure(message: detail) }
                     let batch = try JSONDecoder().decode(ImportBatch.self, from: data)
-                    try self.merge(batch, requestedLookbackDays: mode == "card" ? nil : lookbackDays)
-                } catch {
-                    let nativeError = error as NSError
-                    let detail = nativeError.userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
-                    let checkpointed = self.checkpointAdded + self.checkpointChanged
-                    self.message = checkpointed > 0
-                        ? "Чтение остановлено: \(detail). Уже сохранено операций из этого прохода: \(checkpointed)."
-                        : "Чтение остановлено: \(detail)"
-                    self.checkpointAdded = 0
-                    self.checkpointChanged = 0
-                }
+                    try self.merge(batch, initialImport: initialImport, startedAt: startedAt, resumed: resume != nil, mode: mode, requestedDays: lookbackDays)
+                } catch { self.message = "Чтение остановлено: \(error.localizedDescription). Ранее сохранённые записи доступны." }
             }
         }
     }
-
-    private func merge(_ batch: ImportBatch, requestedLookbackDays: Int?) throws {
-        // An empty successful batch is meaningful: for example there may have been
-        // no operations in the last seven days, or an empty account may have reached
-        // the beginning of history. Do not turn those states into an error.
+    private func apply(_ operations: [BankOperation], to next: inout SavedHistory) -> (Int, Int) {
         var byID: [String: BankOperation] = [:]
-        for operation in history.operations { byID[operation.id] = operation }
-
-        var added = checkpointAdded
-        var changed = checkpointChanged
-        var rejected = 0
-        for operation in batch.operations {
-            guard operation.currency == "RUB", !operation.identity.isEmpty,
-                  !operation.description.isEmpty, !operation.status.isEmpty else {
-                rejected += 1
-                continue
-            }
-            if let old = byID[operation.id] {
-                if old != operation { changed += 1 }
-            } else {
-                added += 1
-            }
-            byID[operation.id] = operation
-        }
-        if !batch.operations.isEmpty && added + changed == 0 && batch.operations.count == rejected {
-            throw AppFailure(message: "Все полученные операции содержат неполные данные.")
-        }
-
-        let next = SavedHistory(
-            operations: byID.values.sorted { $0.occurredAt > $1.occurredAt },
-            lastSync: Date(),
-            lastStopReason: batch.stopReason
-        )
-        try vault.save(next)
-        history = next
-
-        let skipped = (batch.skippedCount ?? 0) + rejected
-        let isFullHistorySync = requestedLookbackDays == 183 && batch.stopReason != "single_card"
-        var acceptedStableBoundary = false
-
-        if isFullHistorySync {
-            switch batch.stopReason {
-            case "lookback_reached", "history_beginning_reached", "full_history_exhausted":
-                // Reaching the beginning and parsing every single card are separate
-                // facts. One malformed card must not force a complete rescan forever.
-                fullHistoryImported = true
-                fullHistoryResumeOrdinal = nil
-                clearBoundaryConfirmation()
-            case "month_navigation_unavailable":
-                if let oldest = batch.oldestMonthOrdinal,
-                   confirmStableHistoryBoundary(ordinal: oldest, monthsVisited: batch.monthsVisited ?? 0) {
-                    // The site did not expose a textual "beginning" marker, but the
-                    // same oldest reachable month was observed twice. Treat traversal
-                    // as complete while keeping any skipped-card warning visible.
-                    acceptedStableBoundary = true
-                    fullHistoryImported = true
-                    fullHistoryResumeOrdinal = nil
-                    clearBoundaryConfirmation()
-                } else {
-                    fullHistoryResumeOrdinal = batch.oldestMonthOrdinal
-                }
-            case "cancelled", "interrupted", "loading_timeout", "limit_reached":
-                fullHistoryResumeOrdinal = batch.oldestMonthOrdinal
-                clearBoundaryConfirmation()
-            default:
-                clearBoundaryConfirmation()
-            }
-        }
-
-        let ending: String
-        switch batch.stopReason {
-        case "lookback_reached":
-            ending = requestedLookbackDays == 183 ? "Первичная синхронизация последних 6 месяцев завершена; дальше автоматически проверяются последние 7 дней." : "Достигнута граница \(requestedLookbackDays ?? 0) дней."
-        case "loading_timeout":
-            ending = isFullHistorySync
-                ? "Сохранено всё, что удалось прочитать. Полная синхронизация продолжится с последнего достигнутого месяца."
-                : "Сохранено всё, что удалось прочитать. Период проверен не полностью."
-        case "single_card":
-            ending = "Прочитана одна карточка."
-        case "limit_reached":
-            ending = isFullHistorySync
-                ? "Достигнут защитный предел. Прогресс сохранён; следующий полный проход продолжится с последнего месяца."
-                : "Достигнут предел чтения; прогресс сохранён, период проверен не полностью."
-        case "full_history_exhausted":
-            ending = skipped == 0
-                ? "Полная доступная история прочитана."
-                : "Полная доступная история пройдена. Не удалось разобрать карточек: \(skipped); автоматические обновления всё равно переключены на последние 7 дней."
-        case "history_beginning_reached":
-            ending = isFullHistorySync ? "Доступная история короче 6 месяцев; первичная синхронизация завершена." : "Достигнуто начало доступной истории банка."
-        case "month_navigation_unavailable":
-            if acceptedStableBoundary {
-                ending = "Одинаковая нижняя граница истории подтверждена повторно. Полный проход завершён; дальше будут проверяться последние 7 дней."
-            } else {
-                ending = isFullHistorySync
-                    ? "Переход к более старому периоду не подтверждён. Прогресс сохранён; следующая попытка продолжится с этого месяца, а не с начала."
-                    : "Не удалось перейти к предыдущему периоду; прогресс сохранён, период проверен не полностью."
-            }
-        case "cancelled":
-            ending = "Остановлено пользователем. Уже прочитанные операции сохранены."
-        case "interrupted":
-            ending = "Сайт прервал чтение. Уже прочитанные операции сохранены."
-        default:
-            ending = "Прогресс сохранён, но полнота периода не подтверждена."
-        }
-
-        let fast = batch.fastSkippedCount ?? 0
-        let openedCards = batch.openedCardCount ?? 0
-        var parts = ["Прочитано новых/изменённых \(batch.operations.count), добавлено \(added), изменено \(changed).", ending]
-        if fast > 0 || openedCards > 0 { parts.append("Быстро проверено: \(fast), открыто карточек: \(openedCards).") }
-        if skipped > 0 { parts.append("Пропущено: \(skipped).") }
-        if let warning = batch.warning, !warning.isEmpty { parts.append("Причина: \(warning)") }
-        message = parts.joined(separator: " ")
-        checkpointAdded = 0
-        checkpointChanged = 0
-    }
-
-    private func persistCheckpoint(_ operations: [BankOperation]) throws {
-        guard !operations.isEmpty else { return }
-        var byID: [String: BankOperation] = [:]
-        for operation in history.operations { byID[operation.id] = operation }
-
-        var added = 0
-        var changed = 0
+        for operation in next.operations { byID[operation.id] = operation }
+        var added = 0, changed = 0
+        var resolved = Set<String>()
         for operation in operations {
-            guard operation.currency == "RUB", !operation.identity.isEmpty,
-                  !operation.description.isEmpty, !operation.status.isEmpty else { continue }
+            guard operation.currency == "RUB", !operation.identity.isEmpty, !operation.description.isEmpty,
+                  !operation.status.isEmpty, Self.operationDate(operation.occurredAt) != nil else { continue }
             if let old = byID[operation.id] {
-                if old != operation { changed += 1 }
-            } else {
-                added += 1
-            }
+                if !old.sameFinancialContent(as: operation) { changed += 1 }
+            } else { added += 1 }
             byID[operation.id] = operation
+            resolved.insert(operation.identity)
         }
-        guard added > 0 || changed > 0 else { return }
-        let next = SavedHistory(
-            operations: byID.values.sorted { $0.occurredAt > $1.occurredAt },
-            lastSync: Date(),
-            lastStopReason: history.lastStopReason
-        )
-        try vault.save(next)
-        history = next
-        checkpointAdded += added
-        checkpointChanged += changed
+        next.operations = byID.values.sorted { $0.occurredAt > $1.occurredAt }
+        next.unresolvedIssues = (next.unresolvedIssues ?? []).filter { issue in
+            guard let identity = issue.identity else { return true }
+            return !resolved.contains(identity)
+        }
+        return (added, changed)
     }
-
+    private func addIssues(_ issues: [ImportIssue], to next: inout SavedHistory) {
+        var items = next.unresolvedIssues ?? []
+        for issue in issues where !items.contains(issue) { items.append(issue) }
+        next.unresolvedIssues = items
+    }
+    private func merge(_ batch: ImportBatch, initialImport: Bool, startedAt: Date, resumed: Bool, mode: String, requestedDays: Int?) throws {
+        var next = history
+        let counts = apply(batch.operations, to: &next)
+        addIssues(batch.issues ?? [], to: &next)
+        let clean = (batch.skippedCount ?? 0) == 0 && (next.unresolvedIssues ?? []).isEmpty
+        let boundaryReached = ["lookback_reached", "history_beginning_reached", "full_history_exhausted"].contains(batch.stopReason)
+        if initialImport {
+            next.bootstrapResumeMonth = batch.oldestMonthOrdinal ?? next.bootstrapResumeMonth
+            next.bootstrapCompleted = boundaryReached && clean
+            if next.bootstrapCompleted == true { next.bootstrapResumeMonth = nil }
+        }
+        // A resumed pass covers old months only; it must not advance the fresh-data watermark.
+        if mode == "history", boundaryReached, clean, !resumed, (requestedDays == nil || requestedDays! >= incrementalDays(now: startedAt)) { next.lastCompletedSync = startedAt }
+        next.lastSync = Date(); next.lastStopReason = batch.stopReason
+        try vault.save(next); history = next
+        let ending: String
+        if batch.stopReason == "single_card" { ending = "Карточка прочитана." }
+        else if boundaryReached && clean { ending = "Граница выбранного периода достигнута." }
+        else if batch.stopReason == "cancelled" { ending = "Остановлено. Прогресс сохранён." }
+        else { ending = "Прогресс сохранён. Полнота периода не подтверждена." }
+        message = "Разобрано карточек: \(batch.operations.count), добавлено \(checkpointAdded + counts.0), изменено \(checkpointChanged + counts.1). \(ending)"
+        if let skipped = batch.skippedCount, skipped > 0 { message += " Пропущено: \(skipped)." }
+        if let warning = batch.warning, !warning.isEmpty { message += " \(warning)" }
+    }
     private func flushCheckpointFromWebView() async {
-        guard busy else { return }
+        guard busy, !checkpointInFlight, let runID = activeRunID else { return }
+        checkpointInFlight = true
+        defer { checkpointInFlight = false }
         let script = """
-        const q = Array.isArray(window.__financeCheckpointQueue) ? window.__financeCheckpointQueue : [];
-        return JSON.stringify({progress: window.__financeProgress || '', operations: q.slice(), count: q.length});
+        if (window.__financeRunID !== expectedRunID) return null;
+        const q = window.__financeCheckpointQueue || [];
+        return JSON.stringify({runID: window.__financeRunID, progress: window.__financeProgress || '',
+          operations: q.map(x => x.operation), throughSequence: q.length ? q[q.length-1].sequence : 0,
+          monthOrdinal: window.__financeCheckpointMonth ?? null, issues: window.__financeIssues || []});
         """
         do {
-            let raw = try await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient)
-            guard let string = raw as? String, let data = string.data(using: .utf8) else { return }
+            let raw = try await webView.callAsyncJavaScript(script, arguments: ["expectedRunID": runID], in: nil, contentWorld: .defaultClient)
+            guard busy, activeRunID == runID, let string = raw as? String, let data = string.data(using: .utf8) else { return }
             let snapshot = try JSONDecoder().decode(ProgressCheckpoint.self, from: data)
-            if !cancelled && !snapshot.progress.isEmpty { message = snapshot.progress }
-            if snapshot.count > 0 {
-                try persistCheckpoint(snapshot.operations)
-                // Remove only the prefix we successfully persisted. Operations
-                // appended after the snapshot remain queued for the next flush.
-                _ = try? await webView.callAsyncJavaScript(
-                    "if (Array.isArray(window.__financeCheckpointQueue)) window.__financeCheckpointQueue.splice(0, Math.max(0, Number(count) || 0)); return true;",
-                    arguments: ["count": snapshot.count], in: nil, contentWorld: .defaultClient
-                )
-            }
-        } catch {
-            // Keep the JS queue intact; a later poll or the final batch can retry.
-        }
+            guard snapshot.runID == runID else { return }
+            var next = history
+            let counts = apply(snapshot.operations, to: &next)
+            addIssues(snapshot.issues, to: &next)
+            if bootstrapRun { next.bootstrapResumeMonth = snapshot.monthOrdinal ?? next.bootstrapResumeMonth }
+            if !snapshot.operations.isEmpty { next.lastSync = Date() }
+            try vault.save(next); history = next
+            checkpointAdded += counts.0; checkpointChanged += counts.1
+            if !cancelled, !snapshot.progress.isEmpty { message = snapshot.progress }
+            _ = try? await webView.callAsyncJavaScript("""
+            if (window.__financeRunID !== expectedRunID) return false;
+            window.__financeCheckpointQueue = (window.__financeCheckpointQueue || []).filter(x => x.sequence > throughSequence);
+            return true;
+            """, arguments: ["expectedRunID": runID, "throughSequence": snapshot.throughSequence], in: nil, contentWorld: .defaultClient)
+        } catch { /* Queue remains available to retry; final batch contains all parsed operations. */ }
     }
-
     func cancel() {
         guard busy else { return }
         cancelled = true
         webView.evaluateJavaScript("window.__financeCancelled = true", in: nil, in: .defaultClient) { _ in }
         Task { @MainActor [weak self] in await self?.flushCheckpointFromWebView() }
-        message = "Останавливаю чтение и сохраняю уже прочитанные операции…"
+        message = "Останавливаю чтение и сохраняю прогресс…"
     }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        host = webView.url?.host ?? ""
-        scheduleAutomaticUpdate()
-    }
-
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { host = webView.url?.host ?? ""; scheduleAutomaticUpdate() }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if (error as NSError).code != NSURLErrorCancelled {
-            message = "Не открылась страница: \(error.localizedDescription)"
-        }
+        if (error as NSError).code != NSURLErrorCancelled { message = "Не открылась страница: \(error.localizedDescription)" }
     }
-
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        // Manual authentication may visit Yandex identity domains. Never read their DOM.
-        guard navigationAction.request.url?.scheme == "https" else {
-            message = "Этот переход не поддерживается тестовой версией."
-            decisionHandler(.cancel)
-            return
-        }
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard navigationAction.request.url?.scheme == "https" else { decisionHandler(.cancel); return }
         decisionHandler(.allow)
     }
-
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
-                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if navigationAction.targetFrame == nil, navigationAction.request.url?.scheme == "https" {
-            webView.load(navigationAction.request)
-        }
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil, navigationAction.request.url?.scheme == "https" { webView.load(navigationAction.request) }
         return nil
     }
 }
-
 @MainActor
 struct BankWebView: UIViewRepresentable {
     let browser: BankBrowser

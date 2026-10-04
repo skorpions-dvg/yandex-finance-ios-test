@@ -206,11 +206,9 @@ assert.ok(!/var\s+byID\s*=\s*Dictionary\(uniqueKeysWithValues:/.test(swift), 'Du
 const inactiveBody = swift.match(/func becameInactive\(\) \{([\s\S]*?)\n    \}/)?.[1] || '';
 assert.ok(!/if\s+busy\s*\{\s*cancel\(\)/.test(inactiveBody) && !/self\.cancel\(\)/.test(inactiveBody), '.inactive must not cancel an active import');
 assert.ok(appSwift.includes('Синхронизировать 6 месяцев'), 'Manual six-month retry button must exist');
-assert.match(swift, /history\.operations\.isEmpty\) \? 183 : 7/, 'Automatic startup must use 183 days only before any operation has been saved, then fall back to 7 days');
-assert.ok(swift.includes('requestedLookbackDays == 183'), 'Swift must recognize the six-month bootstrap as the initial sync');
 assert.ok(source.includes("stopReason === 'running' && (opened >= maxOpened"), 'Limit must not overwrite a more specific stop reason');
 assert.ok(!source.includes('enoughMonthChoices'), 'Picker-size heuristic must not mark full history complete');
-assert.ok(source.includes('window.__financeCheckpointQueue.push(operation)'), 'Parsed operations must enter the checkpoint queue');
+assert.ok(source.includes('window.__financeCheckpointQueue.push({sequence: ++checkpointSequence, operation})'), 'Parsed operations must enter the checkpoint queue');
 assert.ok(swift.includes('flushCheckpointFromWebView()'), 'Swift must periodically persist checkpointed operations');
 console.log('Swift/static reliability guards passed.');
 
@@ -259,6 +257,8 @@ console.log('Swift/static reliability guards passed.');
   assert.equal(batch.error, undefined);
   assert.equal(batch.operations.length, 1);
   assert.equal(batch.skippedCount, 1);
+  assert.equal(batch.issues.length, 1);
+  assert.ok(batch.issues[0].identity.includes('bad'));
   assert.ok(batch.operations[0].identity.includes('good'));
   assert.match(batch.warning, /Сумма не совпала/);
   console.log('Malformed card: valid operations survive and the bad card is counted as skipped.');
@@ -311,9 +311,7 @@ console.log('Swift/static reliability guards passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
 
-// V18 fast path: an old, terminal, already-saved operation with a direct list
-// link and unchanged description+amount must not reopen the card. A recent
-// operation remains on the full-card path so status changes are still detected.
+// v20: even a known terminal operation must reopen to detect changed details.
 (async () => {
   let screen = 'list', clock = Date.parse('2026-10-04T12:00:00Z'), rowClicks = 0, filters = false;
   const knownRef = {...ref, chainId: 'known-fast', operationTimestamp: '2026-09-29T08:00:00Z'};
@@ -353,16 +351,16 @@ console.log('Swift/static reliability guards passed.');
     getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
   const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays, resumeMonthOrdinal, knownOperationsJson) {' + source + '})("history", 7, null, ' + JSON.stringify(JSON.stringify(known)) + ')', context));
   assert.equal(batch.error, undefined);
-  assert.equal(rowClicks, 0, 'Stable known linked operation must not reopen its card');
-  assert.equal(batch.fastSkippedCount, 1);
-  assert.equal(batch.openedCardCount, 0);
+  assert.equal(rowClicks, 1, 'Known operations must reopen: old status does not prove current status');
+  assert.equal(batch.fastSkippedCount, 0);
+  assert.equal(batch.openedCardCount, 1);
 
   const stable = new Function('URL', 'Date', helpers + '\nreturn stableKnownRow;')(URL, Date);
   assert.equal(stable('Тестовый магазин −2 013,84 ₽', {...known[0], occurredAt: new Date(Date.now() - 3600000).toISOString()}), false,
     'Recent operation must not use the fast skip path');
   assert.equal(stable('Тестовый магазин −2 013,84 ₽', {...known[0], status: 'Не указан'}), false,
     'Unknown/non-terminal status must not use the fast skip path');
-  console.log('v18 fast path: stable linked history skips card safely; recent/non-terminal rows still require full detail.');
+  console.log('v20: saved linked operations reopen; no status change is hidden by the old fast path.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
 // v19: regression guards and project consistency.
@@ -374,16 +372,11 @@ console.log('Swift/static reliability guards passed.');
   const freeSetup = fs.readFileSync(path.join(__dirname, '../FREE-SETUP.md'), 'utf8');
 
   assert.ok(!source.includes('Ничего не сохранено'), 'Cancellation/timeout text must not contradict checkpoint saving');
-  const initialCompletionCase = swift.match(/case "lookback_reached", "history_beginning_reached", "full_history_exhausted":([\s\S]*?)case "month_navigation_unavailable":/)?.[1] || '';
-  assert.match(initialCompletionCase, /fullHistoryImported\s*=\s*true/, 'A skipped card must not block completion of the six-month bootstrap');
-  assert.ok(!/skipped\s*==\s*0[\s\S]*fullHistoryImported\s*=\s*true/.test(swift), 'Full completion must not require zero parser skips');
-  assert.match(swift, /fullHistoryResumeOrdinal/, 'Interrupted full sync must persist a resume month');
-  assert.match(swift, /lookbackDays == 183 \|\| lookbackDays == nil/, 'The 183-day bootstrap must actually pass its saved resume month back to JavaScript');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 19;/g) || []).length, 2, 'Debug and Release build number must both be 19');
-  assert.match(readme, /текущий номер сборки — 19/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 20;/g) || []).length, 2, 'Debug and Release build number must both be 20');
+  assert.match(readme, /текущий номер сборки — 20/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
@@ -393,15 +386,12 @@ console.log('Swift/static reliability guards passed.');
   assert.match(source, /const status = detail\('Статус'\) \|\| 'Не указан'/, 'Status must be optional for operation cards');
   assert.match(source, /internal_transfer/, 'Internal own-account transfers must have a dedicated kind');
   assert.match(source, /interest_income/, 'Interest payouts must have a dedicated kind');
-  assert.match(swift, /initialSixMonthsImportedV1/, 'v18 must preserve the six-month bootstrap completion marker');
-  assert.match(swift, /fullHistoryResumeOrdinalV2/, 'v15 must also invalidate old resume points so skipped cards in newer months are rescanned');
-  assert.match(swift, /fullHistoryBoundaryOrdinalV2/, 'v15 must not reuse old boundary confirmation evidence');
   assert.match(swift, /knownOperationsJson/, 'Swift must pass saved operations to the fast-path verifier');
   assert.match(models, /fastSkippedCount:\s*Int\?/, 'Batch must expose fast-path metrics');
   assert.match(models, /openedCardCount:\s*Int\?/, 'Batch must expose opened-card metrics');
   assert.match(source, /waitFor\(\(\) => onCard\(\) && currentCardText\(\), 8000\)/, 'Card readiness timeout must be capped at 8 seconds');
   assert.match(source, /dismissHistoryPeriodSheet/, 'A failed month restore must be able to close the mobile period sheet');
-  console.log('v19 static guards: startup fallback, period-sheet cleanup, safe fast path, 8-second card timeout, navigation fallback, workflow and docs passed.');
+  console.log('Project consistency, card timeout, navigation, workflow and documentation guards passed.');
 }
 
 // A resumed full pass starts from the saved oldest month instead of rereading the current month.
@@ -458,3 +448,27 @@ console.log('Swift/static reliability guards passed.');
   assert.equal(selectedMonth, 'Октябрь 2026', 'Original visible month should be restored after the pass');
   console.log('v18 resume: incomplete six-month sync continues from the saved month instead of current month.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+
+// v20: two simultaneously rendered cards with equal amounts must not mix details.
+assert.throws(() => parse(url([ref]), purchase + '\n' + purchase.replace('Тестовый магазин', 'Другой магазин'),
+  'Другой магазин −2 013,84 ₽'), /несколько карточек/);
+const stable20 = new Function(helpers + '\nreturn stableKnownRow;')();
+assert.equal(stable20('Магазин −100 ₽ Отменено', {description: 'Магазин', amountKopecks: -10000,
+  occurredAt: '2026-09-01T00:00:00Z', status: 'Выполнено'}), false);
+assert.match(swift, /checkpointInFlight/);
+assert.match(swift, /activeRunID == runID/);
+assert.match(swift, /sequence > throughSequence/);
+assert.match(swift, /boundaryReached && clean/);
+assert.match(appSwift, /Продолжить загрузку истории/);
+// Execute the actual acknowledgment JS, including a delayed acknowledgment after a new run.
+const ack = swift.match(/if \(window.__financeRunID !== expectedRunID\) return false;[\s\S]*?return true;/)[0];
+const acknowledge = new Function('window', 'expectedRunID', 'throughSequence', ack);
+const checkpointWindow = {__financeRunID:'one', __financeCheckpointQueue:[{sequence:1},{sequence:2}]};
+acknowledge(checkpointWindow, 'one', 1);
+assert.deepEqual(checkpointWindow.__financeCheckpointQueue, [{sequence:2}]);
+acknowledge(checkpointWindow, 'one', 1);
+assert.deepEqual(checkpointWindow.__financeCheckpointQueue, [{sequence:2}]);
+checkpointWindow.__financeRunID = 'two';
+assert.equal(acknowledge(checkpointWindow, 'one', 2), false);
+assert.deepEqual(checkpointWindow.__financeCheckpointQueue, [{sequence:2}]);
+console.log('v20: ambiguous cards rejected; changed status rechecked; repeated/stale acknowledgments preserve new records.');

@@ -5,7 +5,7 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../YandexFinance/Collector.js'), 'utf8');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('mode', source); // Validate the entire injected async function.
-const parse = new Function(source.split('\ntry {\nassertHistory();')[0] + '\nreturn parseCard;')();
+const parse = new Function(source.split('\nconst found = new Map();')[0] + '\nreturn parseCard;')();
 const url = refs => 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify(refs));
 const ref = {type: 'DEPOT', chainId: 'test-chain', operationId: 'test-operation', operationTimestamp: '2026-10-04T00:11:31.705Z', chainVersionIds: ['v1']};
 const purchase = 'Тестовый магазин\nСегодня, 06:11\n−2 013,84 ₽\nПодробнее\nКатегория\nРазвлечения\nMCC\n5816\nСтатус\nВыполнено';
@@ -284,9 +284,9 @@ async function checkSevenDayCrossMonth() {
 checkSevenDayCrossMonth().catch(error => {console.error(error); process.exitCode = 1;});
 
 // A fixed-size virtual list must be detected by contents, not only row count.
-const signature = new Function(source.split('\ntry {\nassertHistory();')[0] + '\nreturn rowSignature;')();
+const signature = new Function(source.split('\nconst found = new Map();')[0] + '\nreturn rowSignature;')();
 assert.notEqual(signature([{innerText: 'A −10 ₽'}, {innerText: 'B −20 ₽'}]), signature([{innerText: 'B −20 ₽'}, {innerText: 'C −30 ₽'}]));
-const scrollSource = source.split('\ntry {\nassertHistory();')[0] + '\nreturn scrollHistory;';
+const scrollSource = source.split('\nconst found = new Map();')[0] + '\nreturn scrollHistory;';
 let scrollEvents = 0;
 const scrollParent = {scrollHeight: 2000, clientHeight: 500, scrollTop: 0, dispatchEvent: () => scrollEvents++};
 const scroller = new Function('document', 'window', 'getComputedStyle', 'Event', scrollSource)(
@@ -297,7 +297,7 @@ assert.equal(scrollEvents, 1);
 console.log('Mobile apply-button cleanup, virtual-list changes and nested scrolling checks passed.');
 
 async function checkDelayedPagination() {
-  const helpers = source.split('\ntry {\nassertHistory();')[0];
+  const helpers = source.split('\nconst found = new Map();')[0];
   async function simulate({count = 34, neverLoads = false, cancelAt = Infinity} = {}) {
     let clock = 0, loading = false;
     const row = (name) => ({innerText: name + ' −10 ₽', contains: () => false});
@@ -339,7 +339,7 @@ async function checkPermanentFooterLoader() {
     loaderQueries++;
     return [{getClientRects: () => [{}]}];
   }};
-  const wait = new Function('document', 'window', 'location', source.split('\ntry {\nassertHistory();')[0] + '\nreturn waitForHistoryRows;')(
+  const wait = new Function('document', 'window', 'location', source.split('\nconst found = new Map();')[0] + '\nreturn waitForHistoryRows;')(
     document, {}, new URL('https://bank.yandex.ru/my/transactions-history'));
   const list = await wait();
   assert.equal(list.length, 1);
@@ -350,7 +350,7 @@ checkPermanentFooterLoader().catch(error => {console.error(error); process.exitC
 
 async function checkMobilePeriodSheetRequiresApply() {
   const vm = require('node:vm');
-  const helpers = source.split('\ntry {\nassertHistory();')[0];
+  const helpers = source.split('\nconst found = new Map();')[0];
   let clock = 0, picker = false, periodSheet = false, selectedMonth = 'Октябрь', pendingMonth = null, applied = 0;
   const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
   const control = (label, click) => ({innerText: label, click, parentElement: root,

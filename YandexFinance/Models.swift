@@ -15,6 +15,12 @@ struct BankOperation: Codable, Equatable, Identifiable {
     let paymentMethod: String?
     let providers: [String]
     let kind: String
+    var verifiedAt: String?
+    func sameFinancialContent(as other: BankOperation) -> Bool {
+        var lhs = self, rhs = other
+        lhs.verifiedAt = nil; rhs.verifiedAt = nil
+        return lhs == rhs
+    }
     var id: String { SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined() }
     var formattedAmount: String {
         let value = Decimal(amountKopecks) / 100
@@ -22,7 +28,14 @@ struct BankOperation: Codable, Equatable, Identifiable {
     }
 }
 
+struct ImportIssue: Codable, Equatable {
+    let identity: String?
+    let monthOrdinal: Int?
+    let reason: String
+}
+
 struct ImportBatch: Codable {
+    let issues: [ImportIssue]?
     let operations: [BankOperation]
     let stopReason: String
     let skippedCount: Int?
@@ -36,13 +49,20 @@ struct ImportBatch: Codable {
 struct ProgressCheckpoint: Codable {
     let progress: String
     let operations: [BankOperation]
-    let count: Int
+    let runID: String
+    let throughSequence: Int
+    let monthOrdinal: Int?
+    let issues: [ImportIssue]
 }
 
 struct SavedHistory: Codable {
     var operations: [BankOperation] = []
     var lastSync: Date?
     var lastStopReason: String?
+    var lastCompletedSync: Date?
+    var bootstrapResumeMonth: Int?
+    var bootstrapCompleted: Bool?
+    var unresolvedIssues: [ImportIssue]?
 }
 
 struct AppFailure: LocalizedError {

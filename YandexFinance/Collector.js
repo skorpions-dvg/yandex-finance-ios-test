@@ -499,15 +499,9 @@ function rowAmountKopecks(rowText) {
   } catch { return null; }
 }
 function stableKnownRow(rowText, known, nowMs = Date.now()) {
-  if (!known || typeof known.description !== 'string' || !known.description) return false;
-  if (!String(rowText || '').includes(known.description)) return false;
-  const listed = rowAmountKopecks(rowText);
-  if (listed === null || Number(known.amountKopecks) !== listed) return false;
-  const when = Date.parse(known.occurredAt || '');
-  if (!Number.isFinite(when)) return false;
-  if (nowMs - when < 48 * 3600000) return false;
-  if (!known.status || /ожида|обработ|в процессе|pending|не указан/i.test(String(known.status))) return false;
-  return true;
+  // v20: identity + amount cannot prove unchanged status/category.
+  // Reopen cards until the bank exposes a verified revision contract.
+  return false;
 }
 function parseCard(url, cardText, rowText, now = new Date()) {
   const reference = parseOperationReference(url);
@@ -518,7 +512,8 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const normalized = cardText.replace(/\u200b/g, '');
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 19).');
+  if (dateMarks.length > 1) throw Error('Найдено несколько карточек. Не удалось выбрать активную.');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 20).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -531,7 +526,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     const nextDate = i + 1 < dateMarks.length ? dateMarks[i + 1].index : normalized.length;
     let end = nextDate;
     const tail = normalized.slice(start, end);
-    const detail = tail.search(/(?:^|[\r\n\t])\s*(?:Подробнее|Категория|MCC|Статус|Назначение|Способ оплаты)\b/i);
+    const detail = tail.search(/(?:^|[\r\n\t])\s*(?:Подробнее|Категория|MCC|Статус|Назначение|Способ оплаты)(?=\s|$)/i);
     if (detail >= 0) end = start + detail;
     const area = normalized.slice(start, end);
     for (const match of area.matchAll(/[+−–-]\s*\d[\d\s.,]*\s*₽/g)) {
@@ -545,12 +540,10 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     const distinctMatching = [...new Set(matching.map(x => x.kopecks))];
     if (!matching.length) throw Error('Сумма не совпала со списком.');
     if (distinctMatching.length !== 1) throw Error('Не удалось однозначно сопоставить сумму карточки со списком.');
-    // Duplicate shells may repeat the exact same card; identical amount matches
-    // are safe because identity/timestamp come from the operation URL.
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 19).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 20).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -606,7 +599,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     : hasDetailHeading('Пополнение') ? 'Пополнение'
     : 'Не определено');
 
-  return {identity: JSON.stringify(identities), occurredAt: occurred.toISOString(),
+  return {identity: JSON.stringify(identities), verifiedAt: new Date().toISOString(), occurredAt: occurred.toISOString(),
     timePrecision: dates.length ? 'source_timestamp' : 'display_minute',
     description, amountKopecks: kopecks, currency: 'RUB', status,
     category, mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты'), providers,
@@ -622,6 +615,13 @@ let initialMonthCursor = null;
 let monthCursor = null;
 let fastSkippedCount = 0;
 let openedCardCount = 0;
+let monthsVisited = 0;
+let checkpointSequence = 0;
+window.__financeRunID = typeof runID === 'string' ? runID : 'test-run';
+window.__financeCancelled = false;
+window.__financeCheckpointQueue = [];
+window.__financeCheckpointMonth = null;
+window.__financeIssues = [];
 const knownOperationMap = parseKnownOperations(typeof knownOperationsJson === 'undefined' ? '[]' : knownOperationsJson);
 
 try {
@@ -639,7 +639,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 19).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 20).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card', skippedCount: 0});
 }
@@ -680,7 +680,8 @@ function cursorFromOrdinal(value) {
   return {month: value - year * 12, year};
 }
 
-let index = 0, stalls = 0, opened = 0, scrollSteps = 0, monthsVisited = 1, stopReason = 'running';
+monthsVisited = 1;
+let index = 0, stalls = 0, opened = 0, scrollSteps = 0, stopReason = 'running';
 monthCursor = parseMonthCursor();
 initialMonthCursor = {...monthCursor};
 const nowForStart = new Date();
@@ -699,7 +700,7 @@ if (monthCursor.month !== startCursor.month || monthCursor.year !== startCursor.
   }
   monthCursor = startCursor;
 }
-const maxOpened = cutoff === null ? 5000 : 300;
+const maxOpened = cutoff === null || effectiveLookbackDays > 30 ? 5000 : 300;
 const maxScrollSteps = cutoff === null ? 2500 : 200;
 const maxMonths = cutoff === null ? 240 : 24;
 window.__financeProgress = cutoff === null
@@ -707,6 +708,7 @@ window.__financeProgress = cutoff === null
   : 'Обновляю последние ' + effectiveLookbackDays + ' дн.…';
 
 mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVisited <= maxMonths) {
+  window.__financeCheckpointMonth = monthCursor ? monthOrdinal(monthCursor) : null;
   assertHistory();
   if (window.__financeCancelled) throw Error('Чтение отменено пользователем.');
 
@@ -773,10 +775,7 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
   const rowText = text(row);
   let operation = null;
 
-  // Fast path: a direct operation link proves the exact bank identity. Only skip
-  // reopening when that operation is already stored, visible description+amount
-  // are unchanged, status is terminal, and it is older than 48 hours. New,
-  // changed and ambiguous rows still open the full card, preserving all details.
+  // Direct links verify identity, but do not establish unchanged details.
   const linkedURL = operationURLFromRow(row);
   let known = null;
   if (linkedURL) {
@@ -801,10 +800,17 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
   try {
     const cardText = await waitFor(() => onCard() && currentCardText(), 8000);
     operation = parseCard(location.href, cardText, rowText);
+    if (linkedURL && parseOperationReference(linkedURL).identity !== operation.identity) {
+      operation = null;
+      throw Error('Открылась другая карточка. Операция не сохранена.');
+    }
   } catch (error) {
     if (window.__financeCancelled) throw error;
     skippedCount++;
     lastWarning = String(error?.message || 'Не удалось разобрать карточку.');
+    let failedIdentity = null;
+    try { failedIdentity = parseOperationReference(linkedURL || (onCard() ? location.href : '')).identity; } catch {}
+    window.__financeIssues.push({identity: failedIdentity, monthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null, reason: lastWarning});
   }
 
   const reachedCutoff = operation && cutoff !== null && Date.parse(operation.occurredAt) < cutoff;
@@ -812,7 +818,8 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
     // Save into the in-memory batch before any fragile UI cleanup. If closing the
     // bank overlay fails, the outer catch still returns this operation to Swift.
     found.set(operation.identity, operation);
-    window.__financeCheckpointQueue.push(operation);
+    window.__financeIssues = window.__financeIssues.filter(issue => issue.identity !== operation.identity);
+    window.__financeCheckpointQueue.push({sequence: ++checkpointSequence, operation});
     window.__financeProgress = 'Проверено ' + (found.size + fastSkippedCount) + ': быстро ' + fastSkippedCount +
       ', карточек ' + openedCardCount + (skippedCount ? ', пропущено ' + skippedCount : '') + '…';
   }
@@ -840,7 +847,7 @@ if (!window.__financeCancelled && initialMonthCursor && monthCursor) {
 }
 
 return JSON.stringify({operations: [...found.values()], stopReason,
-  lookbackDays: effectiveLookbackDays, skippedCount, warning: lastWarning || null,
+  issues: window.__financeIssues, lookbackDays: effectiveLookbackDays, skippedCount, warning: lastWarning || null,
   oldestMonthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null, monthsVisited,
   fastSkippedCount, openedCardCount});
 
@@ -854,7 +861,7 @@ return JSON.stringify({operations: [...found.values()], stopReason,
   if (found.size || wasCancelled) {
     return JSON.stringify({operations: [...found.values()],
       stopReason: wasCancelled ? 'cancelled' : 'interrupted',
-      lookbackDays: effectiveLookbackDays, skippedCount, warning: wasCancelled ? null : detail,
+      issues: window.__financeIssues, lookbackDays: effectiveLookbackDays, skippedCount, warning: wasCancelled ? null : detail,
       oldestMonthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null, monthsVisited: typeof monthsVisited === 'number' ? monthsVisited : 0,
       fastSkippedCount, openedCardCount});
   }

@@ -38,6 +38,9 @@ struct ContentView: View {
                             Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }
                             Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent)
                         }
+                        if browser.canResume {
+                            Button("Продолжить загрузку истории") { browser.continueInitialHistory() }
+                        }
                         Button("Синхронизировать 6 месяцев") { browser.syncSixMonthsHistory() }
                             .font(.footnote)
                     }.font(.footnote).padding(.bottom, 8)
@@ -48,10 +51,15 @@ struct ContentView: View {
                     Section {
                         Text("Сохранено операций: \(browser.history.operations.count)")
                         if let date = browser.history.lastSync {
-                            Text("Обновлено: \(date.formatted(date: .abbreviated, time: .shortened))")
+                            Text("Последнее сохранение: \(date.formatted(date: .abbreviated, time: .shortened))")
+                        }
+                        Text(browser.bootstrapComplete ? "Первичная загрузка завершена" : "Полнота первичной загрузки ещё не подтверждена")
+                        Text("Не разобрано: \(browser.history.unresolvedIssues?.count ?? 0)")
+                        if let date = browser.history.lastCompletedSync {
+                            Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
                         Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
-                        Text("При первой синхронизации приложение читает последние 6 месяцев и сохраняет уже прочитанные операции даже при остановке. Затем при открытии автоматически перепроверяет последние 7 дней. «Обновить 30 дней» — ручная перепроверка, а «Синхронизировать 6 месяцев» — повтор первичного периода. При закрытом приложении гарантированное обновление не выполняется.")
+                        Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(browser.message).font(.footnote)
                         if browser.busy { ProgressView("Обновление операций…") }
