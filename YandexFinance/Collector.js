@@ -1,4 +1,4 @@
-// Runs only on the bank history page, on an explicit user action.
+// Runs only on the bank history page. Supports full first sync and bounded refreshes.
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
@@ -153,11 +153,11 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   // fraction and currency across text lines. Amounts in details are unrelated.
   const header = cardText.replace(/\u200b/g, '').split('Подробнее')[0];
   const headerDates = [...header.matchAll(/(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/g)];
-  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 9).');
+  if (headerDates.length !== 1) throw Error('Не удалось выделить заголовок одной карточки (версия 10).');
   const dateMark = headerDates[0];
   const amountArea = header.slice(dateMark.index + dateMark[0].length);
   const amounts = amountArea.match(/[+−–-]\s*\d[\d\s.,]*\s*₽/g) || [];
-  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 9).');
+  if (amounts.length !== 1) throw Error('В заголовке найдено сумм: ' + amounts.length + '. Ожидалась одна (версия 10).');
   const kopecks = amount(amounts[0]);
   const listed = rowText.match(moneyPattern);
   if (listed && amount(listed[0]) !== kopecks) throw Error('Сумма не совпала со списком.');
@@ -209,7 +209,7 @@ if (mode === 'card') {
   try { cardText = await waitFor(currentCardText, 6000); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены сумма и статус в тексте карточки (версия 9).');
+    throw Error('Не найдены сумма и статус в тексте карточки (версия 10).');
   }
   return JSON.stringify({operations: [parseCard(location.href, cardText, '')], stopReason: 'single_card'});
 }
@@ -234,10 +234,22 @@ await waitFor(() => activeSwitches().length);
 await closeHistoryFilters();
 if (!controls().some(el => text(el) === 'Все карты и счета')) throw Error('Выберите Все карты и счета.');
 await waitForHistoryRows();
-const cutoff = Date.now() - 30 * 86400000;
+const rawLookback = typeof lookbackDays === 'undefined' ? 30 : lookbackDays;
+const parsedLookback = rawLookback == null ? null : Number(rawLookback);
+if (parsedLookback !== null && (!Number.isFinite(parsedLookback) || parsedLookback <= 0))
+  throw Error('Некорректный период синхронизации.');
+const effectiveLookbackDays = parsedLookback === null ? null : Math.floor(parsedLookback);
+const cutoff = effectiveLookbackDays === null ? null : Date.now() - effectiveLookbackDays * 86400000;
 const found = new Map();
 let index = 0, stalls = 0, opened = 0, scrollSteps = 0, stopReason = 'loaded_rows_exhausted';
-while (opened < 300 && scrollSteps < 150) {
+// Full first import may contain far more than 300 operations. Keep only a very high safety cap
+// to prevent an endless loop if the bank page starts recycling broken rows forever.
+const maxOpened = cutoff === null ? 5000 : 300;
+const maxScrollSteps = cutoff === null ? 2000 : 150;
+window.__financeProgress = cutoff === null
+  ? 'Первая синхронизация: читаю всю доступную историю…'
+  : 'Обновляю последние ' + effectiveLookbackDays + ' дн.…';
+while (opened < maxOpened && scrollSteps < maxScrollSteps) {
   assertHistory();
   if (window.__financeCancelled) throw Error('Чтение отменено. Ничего не сохранено.');
   const list = await waitForHistoryRows();
@@ -275,15 +287,15 @@ while (opened < 300 && scrollSteps < 150) {
   await waitFor(() => !onCard());
   await closeHistoryFilters();
   await waitForHistoryRows();
-  if (Date.parse(operation.occurredAt) < cutoff) { stopReason = 'lookback_reached'; break; }
+  if (cutoff !== null && Date.parse(operation.occurredAt) < cutoff) { stopReason = 'lookback_reached'; break; }
   found.set(operation.identity, operation);
   window.__financeProgress = 'Прочитано ' + found.size + '. Продолжаю чтение истории…';
   index++;
 }
-if (opened >= 300 || scrollSteps >= 150) stopReason = 'limit_reached';
+if (opened >= maxOpened || scrollSteps >= maxScrollSteps) stopReason = 'limit_reached';
 await closeHistoryFilters();
 if (!found.size) throw Error('Не прочитано ни одной операции.');
-return JSON.stringify({operations: [...found.values()], stopReason});
+return JSON.stringify({operations: [...found.values()], stopReason, lookbackDays: effectiveLookbackDays});
 
 } catch (error) {
   // Return failures as data so WebKit preserves the actionable parser message.

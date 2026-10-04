@@ -34,8 +34,8 @@ struct ContentView: View {
                     HStack { ProgressView(); Button("Остановить") { browser.cancel() } }.padding(.bottom, 8)
                 } else {
                     HStack {
-                        Button("Прочитать карточку") { browser.read(mode: "card") }
-                        Button("Обновить 30 дней") { browser.read(mode: "history") }.buttonStyle(.borderedProminent)
+                        Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }
+                        Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent)
                     }.font(.footnote).padding(.bottom, 8)
                 }
             }.tabItem { Label("Банк", systemImage: "building.columns") }
@@ -47,7 +47,7 @@ struct ContentView: View {
                             Text("Обновлено: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
                         Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
-                        Text("Автообновление запускается, когда открыта история банка, не чаще раза в 5 минут. При закрытом приложении обновление не выполняется.")
+                        Text("При первой синхронизации приложение читает всю доступную историю. Затем при открытии автоматически перепроверяет последние 7 дней. Кнопка «Обновить 30 дней» запускает ручную перепроверку 30 дней. При закрытом приложении обновление не выполняется.")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text(browser.message).font(.footnote)
                         if browser.busy { ProgressView("Обновление операций…") }

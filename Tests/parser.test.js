@@ -79,7 +79,7 @@ async function checkHistory() {
     getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false});
   const go = (index) => { screen = 'card' + index; opened++;
     location.href = url([{...ref, chainId: 'history-' + index,
-      operationTimestamp: index === 0 ? new Date().toISOString() : '2000-01-01T00:00:00Z'}]); };
+      operationTimestamp: index === 0 ? new Date().toISOString() : new Date(Date.now() - 8 * 86400000).toISOString()}]); };
   const list = [control('Тестовый магазин −2 013,84 ₽', () => go(0)), control('Старый магазин −2 013,84 ₽', () => go(1))];
   const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
   const close = control('Выбрать', () => {screen = 'list'; filtersClosed++;});
@@ -96,11 +96,12 @@ async function checkHistory() {
     }};
   const window = {history: {back() {returned++; screen = 'filters'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
   const context = vm.createContext({URL, Date, setTimeout: fn => {fn();}, window, location, document: doc});
-  const batch = JSON.parse(await vm.runInContext('(async function(mode) {' + source + '})("history")', context));
+  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays) {' + source + '})("history", 7)', context));
   assert.equal(batch.error, undefined);
   assert.equal(batch.operations.length, 1);
   assert.equal(batch.operations[0].amountKopecks, -201384);
   assert.equal(batch.stopReason, 'lookback_reached');
+  assert.equal(batch.lookbackDays, 7);
   assert.equal(opened, 2);
   assert.equal(returned, 2);
   assert.equal(filtersClosed, 3);
@@ -108,6 +109,47 @@ async function checkHistory() {
   console.log('History integration: persistent dialog, icon filter, mobile cards, back navigation, and date cutoff passed.');
 }
 checkHistory().catch(error => {console.error(error); process.exitCode = 1;});
+
+
+async function checkFullHistoryNoCutoff() {
+  const vm = require('node:vm');
+  let screen = 'list', opened = 0, returned = 0, filtersClosed = 0, clock = 0;
+  const location = new URL('https://bank.yandex.ru/my/transactions-history');
+  const body = {get innerText() { return screen.startsWith('card') ? purchase : 'История'; }};
+  const root = {scrollTop: 0, scrollHeight: 500, clientHeight: 500, isConnected: true, dispatchEvent() {}};
+  const control = (label, click, aria = '') => ({innerText: label, click, parentElement: root,
+    getClientRects: () => [{}], getAttribute: key => key === 'aria-label' ? aria : null, contains: () => false,
+    querySelector: () => null, getBoundingClientRect: () => ({left: 0, right: 0, top: 0, width: 1, height: 1})});
+  const go = (index) => { screen = 'card' + index; opened++;
+    location.href = url([{...ref, chainId: 'full-history-' + index,
+      operationTimestamp: index === 0 ? '2026-10-04T00:11:31Z' : '2020-01-01T00:11:31Z'}]); };
+  const list = [control('Новая операция −2 013,84 ₽', () => go(0)), control('Очень старая операция −2 013,84 ₽', () => go(1))];
+  const filter = control('', () => {screen = 'filters';}, 'Какие операции скрывать');
+  const close = control('Выбрать', () => {screen = 'list'; filtersClosed++;});
+  const account = control('Все карты и счета', () => {});
+  const switches = [{checked: false, getAttribute: () => 'false', getClientRects: () => [{}], closest: () => null}];
+  const doc = {body, scrollingElement: root, documentElement: root,
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"],main') return [{innerText: 'Оболочка'}, body];
+      if (selector.includes('switch')) return screen === 'filters' ? switches : [];
+      if (selector === 'button,[role="button"]') return screen === 'list' ? [filter, account, ...list] : screen === 'filters' ? [close] : [];
+      return [];
+    }};
+  const window = {history: {back() {returned++; screen = 'filters'; location.href = 'https://bank.yandex.ru/my/transactions-history';}}};
+  class FakeDate extends Date { static now() { return clock; } }
+  const context = vm.createContext({URL, Date: FakeDate, setTimeout: fn => {clock += 250; fn();}, window, location, document: doc,
+    getComputedStyle: () => ({overflowY: 'auto'}), Event: class {}});
+  const batch = JSON.parse(await vm.runInContext('(async function(mode, lookbackDays) {' + source + '})("history", null)', context));
+  assert.equal(batch.error, undefined);
+  assert.equal(batch.operations.length, 2);
+  assert.equal(batch.lookbackDays, null);
+  assert.equal(batch.stopReason, 'loaded_rows_exhausted');
+  assert.equal(opened, 2);
+  assert.equal(returned, 2);
+  assert.ok(filtersClosed >= 3);
+  console.log('Full first sync: no 30-day cutoff and natural history exhaustion passed.');
+}
+checkFullHistoryNoCutoff().catch(error => {console.error(error); process.exitCode = 1;});
 
 // A fixed-size virtual list must be detected by contents, not only row count.
 const signature = new Function(source.split('\ntry {\nassertHistory();')[0] + '\nreturn rowSignature;')();

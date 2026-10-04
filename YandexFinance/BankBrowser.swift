@@ -15,6 +15,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var automaticTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
     private var lastAttempt: Date?
+    private let fullHistoryKey = "fullHistoryImportedV1"
+    private var fullHistoryImported: Bool {
+        get { UserDefaults.standard.bool(forKey: fullHistoryKey) }
+        set { UserDefaults.standard.set(newValue, forKey: fullHistoryKey) }
+    }
     @Published var autoUpdate = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(autoUpdate, forKey: "autoUpdate")
@@ -59,7 +64,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
                 if ready {
                     self.automaticTask = nil
-                    self.read(mode: "history")
+                    self.read(mode: "history", lookbackDays: self.fullHistoryImported ? 7 : nil)
                     return
                 }
             }
@@ -85,7 +90,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
     }
 
-    func read(mode: String) {
+    func read(mode: String, lookbackDays: Int? = 30) {
         guard !busy, readable else { return }
         guard webView.url?.host == "bank.yandex.ru" else {
             message = "Сначала завершите вход на сайте банка."; return
@@ -99,7 +104,13 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         lastAttempt = Date()
         busy = true
         cancelled = false
-        message = mode == "card" ? "Читаю карточку…" : "Читаю последние 30 дней. Не переключайте страницу…"
+        if mode == "card" {
+            message = "Читаю карточку…"
+        } else if let lookbackDays {
+            message = "Читаю последние \(lookbackDays) дней. Не переключайте страницу…"
+        } else {
+            message = "Первая синхронизация: читаю всю доступную историю. Не переключайте страницу…"
+        }
         webView.isUserInteractionEnabled = false
         progressTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -113,7 +124,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 } catch { }
             }
         }
-        webView.callAsyncJavaScript(script, arguments: ["mode": mode], in: nil, in: .defaultClient) { [weak self] result in
+        let lookbackArgument: Any = lookbackDays.map { NSNumber(value: $0) } ?? NSNull()
+        webView.callAsyncJavaScript(script, arguments: ["mode": mode, "lookbackDays": lookbackArgument], in: nil, in: .defaultClient) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 defer { self.progressTask?.cancel(); self.progressTask = nil; self.busy = false; self.webView.isUserInteractionEnabled = true }
@@ -128,7 +140,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                         throw AppFailure(message: detail)
                     }
                     let batch = try JSONDecoder().decode(ImportBatch.self, from: data)
-                    try self.merge(batch)
+                    try self.merge(batch, requestedLookbackDays: mode == "card" ? nil : lookbackDays)
                 } catch {
                     let nativeError = error as NSError
                     let detail = nativeError.userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription
@@ -138,7 +150,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
     }
 
-    private func merge(_ batch: ImportBatch) throws {
+    private func merge(_ batch: ImportBatch, requestedLookbackDays: Int?) throws {
         guard !batch.operations.isEmpty else { throw AppFailure(message: "Нет операций для сохранения.") }
         var byID = Dictionary(uniqueKeysWithValues: history.operations.map { ($0.id, $0) })
         var added = 0, changed = 0
@@ -155,13 +167,28 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                                 lastSync: Date(), lastStopReason: batch.stopReason)
         try vault.save(next)
         history = next
+        let isFullHistorySync = requestedLookbackDays == nil && batch.stopReason != "single_card"
+        if isFullHistorySync && batch.stopReason == "loaded_rows_exhausted" {
+            fullHistoryImported = true
+        }
         let ending: String
         switch batch.stopReason {
-        case "lookback_reached": ending = "Достигнута граница 30 дней."
-        case "loading_timeout": ending = "Сохранены прочитанные операции. Догрузка не завершилась; полнота 30 дней не подтверждена."
-        case "single_card": ending = "Прочитана одна карточка."
-        case "limit_reached": ending = "Достигнут предел чтения; полнота истории не подтверждена."
-        default: ending = "Сайт перестал догружать строки. Полнота истории не подтверждена."
+        case "lookback_reached":
+            ending = "Достигнута граница \(requestedLookbackDays ?? 0) дней."
+        case "loading_timeout":
+            ending = isFullHistorySync
+                ? "Сохранены прочитанные операции. Полная синхронизация не завершена и будет повторена при следующем запуске."
+                : "Сохранены прочитанные операции. Догрузка не завершилась; период проверен не полностью."
+        case "single_card":
+            ending = "Прочитана одна карточка."
+        case "limit_reached":
+            ending = isFullHistorySync
+                ? "Достигнут защитный предел чтения. Полная синхронизация не завершена и будет повторена."
+                : "Достигнут предел чтения; период проверен не полностью."
+        case "loaded_rows_exhausted":
+            ending = isFullHistorySync ? "Полная доступная история прочитана." : "Доступная история за период прочитана."
+        default:
+            ending = "Сайт перестал догружать строки. Полнота периода не подтверждена."
         }
         message = "Прочитано \(batch.operations.count), добавлено \(added), изменено \(changed). \(ending)"
     }
