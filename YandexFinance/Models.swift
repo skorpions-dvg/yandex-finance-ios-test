@@ -1,6 +1,12 @@
 import Foundation
 import CryptoKit
 
+struct OperationComponent: Codable, Equatable {
+    let displayDate: String
+    let amountKopecks: Int64
+    var formattedAmount: String { (Decimal(amountKopecks) / 100).formatted(.currency(code: "RUB")) }
+}
+
 struct BankOperation: Codable, Equatable, Identifiable {
     let identity: String
     let occurredAt: String
@@ -15,6 +21,7 @@ struct BankOperation: Codable, Equatable, Identifiable {
     let paymentMethod: String?
     let providers: [String]
     let kind: String
+    var components: [OperationComponent]?
     var verifiedAt: String?
     func sameFinancialContent(as other: BankOperation) -> Bool {
         var lhs = self, rhs = other
@@ -35,6 +42,15 @@ struct ImportIssue: Codable, Equatable {
     var rowSummary: String?
     var operationURL: String?
     var observedAt: String?
+    var sourceDate: String?
+    var bankDate: String? {
+        if let sourceDate { return sourceDate }
+        guard let raw = operationURL, let url = URLComponents(string: raw),
+              let encoded = url.queryItems?.first(where: { $0.name == "id" })?.value,
+              let data = encoded.data(using: .utf8),
+              let refs = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        return refs.compactMap { $0["operationTimestamp"] as? String }.sorted().first
+    }
 }
 
 struct ImportBatch: Codable {

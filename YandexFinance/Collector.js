@@ -503,7 +503,37 @@ function stableKnownRow(rowText, known, nowMs = Date.now()) {
   // Reopen cards until the bank exposes a verified revision contract.
   return false;
 }
+// A bank group is one identity with an explicit N-operations section. Components
+// have no bank IDs here: keep them nested and replace the entire snapshot on reread.
+function parseGroupedCard(url, cardText, rowText, now) {
+  const normalized = cardText.replace(/\u200b/g, '');
+  const headings = [...normalized.matchAll(/(?:^|[\r\n])\s*(\d+)\s+операци(?:я|и|й)\s*(?=[\r\n]|$)/gi)];
+  if (!headings.length) return null;
+  if (headings.length !== 1) throw Error('Несколько разделов операций: нельзя выбрать одну сводную карточку.');
+  const heading = headings[0];
+  const count = Number(heading[1]);
+  if (!Number.isSafeInteger(count) || count < 2 || count > 500) throw Error('Некорректное число составляющих карточки.');
+  const tailStart = heading.index + heading[0].length;
+  const remaining = normalized.slice(tailStart);
+  const details = remaining.search(/(?:^|[\r\n])\s*Подробнее(?=\s|$)/i);
+  if (details < 0) throw Error('Не загружены подробности сводной карточки.');
+  const section = remaining.slice(0, details);
+  const pattern = /((?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2})\s*([+−–-]\s*\d[\d\s.,]*\s*₽)/gi;
+  const matches = [...section.matchAll(pattern)];
+  if (matches.length !== count || section.replace(pattern, '').trim())
+    throw Error('Не удалось прочитать все составляющие сводной карточки.');
+  // Reuse ordinary header validation, including rejection of other cards in the shell.
+  const header = normalized.slice(0, heading.index) + '\n' + remaining.slice(details);
+  const parent = parseCard(url, header, rowText, now);
+  const components = matches.map(match => ({displayDate: match[1].replace(/\s+/g, ' ').trim(), amountKopecks: amount(match[2])}));
+  const total = components.reduce((sum, item) => sum + item.amountKopecks, 0);
+  if (!Number.isSafeInteger(total) || total !== parent.amountKopecks)
+    throw Error('Сумма составляющих не совпала с итогом карточки.');
+  return {...parent, kind: 'grouped_operation', components};
+}
 function parseCard(url, cardText, rowText, now = new Date()) {
+  const grouped = parseGroupedCard(url, cardText, rowText, now);
+  if (grouped) return grouped;
   const reference = parseOperationReference(url);
   const identities = reference.identities;
   const dates = reference.dates;
@@ -513,7 +543,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
   if (dateMarks.length > 1) throw Error('Найдено несколько карточек. Не удалось выбрать активную.');
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 21).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 22).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -543,7 +573,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 21).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 22).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -640,7 +670,7 @@ if (mode === 'card' || mode === 'retry_card') {
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 21).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 22).');
   }
   const operation = parseCard(location.href, cardText, '');
   if (retryIssue?.identity && operation.identity !== retryIssue.identity) throw Error('Открылась другая операция. Повторное чтение не сохранено.');
@@ -820,7 +850,9 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
     try { failedIdentity = parseOperationReference(linkedURL || (onCard() ? location.href : '')).identity; } catch {}
     if (mode !== 'retry' || failedIdentity === retryIssue?.identity) window.__financeIssues.push({identity: failedIdentity, monthOrdinal: monthCursor ? monthOrdinal(monthCursor) : null,
       reason: lastWarning, rowSummary: rowText.slice(0, 500),
-      operationURL: linkedURL || (onCard() ? location.href : null), observedAt: new Date().toISOString()});
+      operationURL: linkedURL || (onCard() ? location.href : null),
+      sourceDate: (() => { try { const dates = parseOperationReference(linkedURL || location.href).dates;
+        return dates.length ? new Date(Math.min(...dates)).toISOString() : null; } catch { return null; } })(), observedAt: new Date().toISOString()});
   }
 
   const retryMatches = operation && (!retryIssue?.identity || operation.identity === retryIssue.identity);

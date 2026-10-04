@@ -4,6 +4,7 @@ import WebKit
 @MainActor
 final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
+    @Published var selectedTab = 0
     @Published var busy = false
     @Published var message = "Войдите в банк, затем откройте историю."
     @Published var host = "bank.yandex.ru"
@@ -115,10 +116,15 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
     func retry(_ issue: ImportIssue) {
         guard !busy, readable else { return }
+        selectedTab = 0
         automaticTask?.cancel(); automaticTask = nil
         lastAttempt = Date()
         if let raw = issue.operationURL, let url = URL(string: raw),
            url.scheme == "https", url.host == "bank.yandex.ru", url.path == "/my/transactions-history/operation" {
+            if webView.url == url, !webView.isLoading {
+                read(mode: "retry_card", lookbackDays: nil, retryIssue: issue)
+                return
+            }
             pendingRetry = issue
             busy = true
             message = "Открываю пропущенную операцию…"
@@ -127,6 +133,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
                 guard let self, self.pendingRetry != nil else { return }
                 self.pendingRetry = nil; self.busy = false
+                self.webView.stopLoading()
                 self.message = "Карточка не открылась вовремя. Ошибка остаётся в списке; можно повторить."
             }
         } else if issue.monthOrdinal != nil && issue.identity != nil {
@@ -149,7 +156,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         activeRunID = runID
         let startedAt = Date()
         let resume = retryIssue?.monthOrdinal ?? (initialImport ? history.bootstrapResumeMonth : nil)
-        message = mode == "card" ? "Читаю карточку…" : "Проверяю историю. Уже сохранённые записи остаются на телефоне."
+        message = (mode == "card" || mode == "retry_card") ? "Читаю карточку…" : "Проверяю историю. Уже сохранённые записи остаются на телефоне."
         webView.isUserInteractionEnabled = false
         progressTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -290,7 +297,19 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         } else { scheduleAutomaticUpdate() }
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if (error as NSError).code != NSURLErrorCancelled { message = "Не открылась страница: \(error.localizedDescription)" }
+        handleNavigationError(error)
+    }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        handleNavigationError(error)
+    }
+    private func handleNavigationError(_ error: Error) {
+        let detail = error as NSError
+        if detail.code == NSURLErrorCancelled { return }
+        if pendingRetry != nil {
+            pendingRetry = nil; retryNavigationTask?.cancel(); busy = false
+            webView.isUserInteractionEnabled = true
+        }
+        message = "Не открылась страница: \(error.localizedDescription). Код: \(detail.code). Ошибка операции остаётся в списке."
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard navigationAction.request.url?.scheme == "https" else { decisionHandler(.cancel); return }

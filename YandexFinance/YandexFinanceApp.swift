@@ -21,7 +21,7 @@ struct YandexFinanceApp: App {
 struct ContentView: View {
     @ObservedObject var browser: BankBrowser
     var body: some View {
-        TabView {
+        TabView(selection: $browser.selectedTab) {
             VStack(spacing: 8) {
                 HStack {
                     Text(browser.host).font(.caption).foregroundStyle(.secondary)
@@ -45,7 +45,7 @@ struct ContentView: View {
                             .font(.footnote)
                     }.font(.footnote).padding(.bottom, 8)
                 }
-            }.tabItem { Label("Банк", systemImage: "building.columns") }
+            }.tabItem { Label("Банк", systemImage: "building.columns") }.tag(0)
             NavigationStack {
                 List {
                     Section {
@@ -72,8 +72,11 @@ struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text(issue.rowSummary ?? "Операция из предыдущей версии").font(.headline)
                                     if let month = issue.monthOrdinal {
-                                        Text("Период: \(month % 12 + 1).\(month / 12)").font(.caption)
+                                        Text("Месяц сканера (не дата платежа): \(String(month % 12 + 1)).\(String(month / 12))").font(.caption)
                                     }
+                                    if let date = issue.bankDate {
+                                        Text("Дата из данных банка: " + date).font(.caption)
+                                    } else { Text("Дата платежа пока не определена").font(.caption) }
                                     if let identity = issue.identity {
                                         Text("Идентификатор: " + identity).font(.caption2).textSelection(.enabled)
                                     }
@@ -90,7 +93,22 @@ struct ContentView: View {
                     ForEach(browser.history.operations) { operation in
                         NavigationLink {
                             Form {
-                                LabeledContent("Сумма", value: operation.formattedAmount)
+                                LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
+                                if let components = operation.components {
+                                    Section("Составляющие") {
+                                        ForEach(Array(components.enumerated()), id: \.offset) { _, component in
+                                            VStack(alignment: .leading) {
+                                                HStack {
+                                                    Text(component.amountKopecks < 0 ? "Списание" : "Поступление")
+                                                    Spacer()
+                                                    Text(component.formattedAmount)
+                                                }
+                                                Text(component.displayDate).font(.caption)
+                                            }
+                                        }
+                                        Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
+                                    }
+                                }
                                 LabeledContent("Категория", value: operation.category)
                                 LabeledContent("Статус", value: operation.status)
                                 LabeledContent("Дата UTC", value: operation.occurredAt)
@@ -102,12 +120,15 @@ struct ContentView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack { Text(operation.description); Spacer(); Text(operation.formattedAmount) }
+                                if let components = operation.components {
+                                    Text("Сводная карточка: \(components.count) составляющих").font(.caption)
+                                }
                                 Text(operation.category + " · " + operation.status).font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
                 }.navigationTitle("Мои операции")
-            }.tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }
+            }.tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
         }
     }
 }

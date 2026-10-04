@@ -375,8 +375,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 21;/g) || []).length, 2, 'Debug and Release build number must both be 21');
-  assert.match(readme, /текущий номер сборки — 21/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 22;/g) || []).length, 2, 'Debug and Release build number must both be 22');
+  assert.match(readme, /текущий номер сборки — 22/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const monthParser = new Function(helpers + '\nreturn parseMonthLabel;')();
@@ -546,3 +546,41 @@ console.log('v20: ambiguous cards rejected; changed status rechecked; repeated/s
   console.log('v21: legacy issue search scans its saved month and stops on the matching identity.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
+
+// v22: grouped bank card fixture, anonymized merchant/identity, no account data.
+const groupCard = 'Тестовый платёж\n2 апреля, 20:41\n−1773 ₽\n2 операции\n2 апреля, 21:18\n+257 ₽\n2 апреля, 20:41\n−2030 ₽\nПодробнее\nСтатус\nВыполнено';
+const groupRef = {type:'OHIO_LINKED_TXNS', chainId:'synthetic-group', operationTimestamp:'2026-04-02T14:41:00Z'};
+const groupURL = url([groupRef]);
+const parsedGroup = parse(groupURL, groupCard, 'Тестовый платёж −1773 ₽', new Date('2026-10-04T12:00:00Z'));
+assert.equal(parsedGroup.kind, 'grouped_operation');
+assert.equal(parsedGroup.amountKopecks, -177300);
+assert.deepEqual(parsedGroup.components, [
+  {displayDate:'2 апреля, 21:18', amountKopecks:25700},
+  {displayDate:'2 апреля, 20:41', amountKopecks:-203000}
+]);
+assert.equal(parsedGroup.components.reduce((n,x) => n+x.amountKopecks,0), parsedGroup.amountKopecks);
+assert.equal(parsedGroup.components.length, 2, 'Net total must not become a third component');
+assert.equal(parse(groupURL, groupCard, '').identity, parsedGroup.identity, 'Reread keeps the bank group identity');
+const sameAmounts = groupCard.replace('−1773 ₽','−4060 ₽').replace('+257 ₽','−2030 ₽');
+assert.equal(parse(groupURL, sameAmounts, '').components.length, 2, 'Equal amounts are separate component occurrences');
+const nextGroup = parse(url([{...groupRef, chainId:'synthetic-other-group'}]), groupCard, '');
+assert.notEqual(nextGroup.identity, parsedGroup.identity, 'Equal amounts never merge distinct bank identities');
+assert.throws(() => parse(groupURL, groupCard.replace('+257 ₽','+258 ₽'), ''), /не совпала/);
+assert.throws(() => parse(groupURL, groupCard.replace('2 операции','3 операции'), ''), /все составляющие/);
+assert.throws(() => parse(groupURL, groupCard.replace('2 апреля, 21:18\n+257 ₽','Не загружено'), ''), /все составляющие/);
+assert.throws(() => parse(groupURL, groupCard + '\n' + purchase, ''), /несколько карточек/);
+assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Несколько разделов/);
+assert.match(appSwift, /TabView\(selection: \$browser.selectedTab\)/);
+assert.match(swift, /selectedTab = 0/);
+assert.match(appSwift, /Месяц сканера \(не дата платежа\)/);
+(async () => {
+  const card = {innerText:groupCard, getClientRects:()=>[{}], closest:()=>null};
+  const context = vm.createContext({URL,Date,setTimeout,window:{},location:new URL(groupURL),
+    document:{body:card,querySelectorAll:sel=>sel==='[role="dialog"],main'?[card]:[]}});
+  const result = JSON.parse(await vm.runInContext('(async function(mode,retryIssueJson){'+source+
+    '})("retry_card",'+JSON.stringify(JSON.stringify({identity:parsedGroup.identity}))+')',context));
+  assert.equal(result.operations.length,1);
+  assert.equal(result.operations[0].components.length,2);
+  assert.equal(result.operations[0].identity, parsedGroup.identity);
+  console.log('v22: grouped retry returns one bank identity with two reconciled components; duplicates, partial groups and mismatched totals tested.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
