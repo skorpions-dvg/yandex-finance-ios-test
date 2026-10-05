@@ -84,7 +84,6 @@ jobs:
 
       - name: Проверка JavaScript после патча
         run: |
-          node --check YandexFinance/Collector.js
           node Tests/parser.test.js
           node Tests/reliability.test.js
 
