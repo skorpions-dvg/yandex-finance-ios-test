@@ -41,7 +41,6 @@ jobs:
                   raise SystemExit(f"{path}: marker count != 1: {marker[:120]!r}")
               p.write_text(text.replace(marker, addition + marker, 1))
 
-          # --- Finance engine: own Save account, transfer direction, interest priority ---
           insert_before(
               'YandexFinance/FinanceEngine.swift',
               'struct SyncStatusInput {\n',
@@ -72,7 +71,6 @@ jobs:
               '''    private static func isSaveTransfer(_ operation: FinancialOperationInput) -> Bool {\n        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))\n        return containsAny(combined, ["перевод между счетами одного клиента", "сейв", "накопитель"])\n    }\n\n    static func saveTransferDirection(for operation: FinancialOperationInput) -> String? {\n        guard classify(operation).type == .internalTransfer, isSaveTransfer(operation) else { return nil }\n        if operation.amountKopecks < 0 { return "Карта → Сейв" }\n        if operation.amountKopecks > 0 { return "Сейв → Карта" }\n        return nil\n    }\n\n    static func movementCategory(for operation: FinancialOperationInput) -> String {\n        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))\n        if containsAny(combined, ["снятие налич", "выдача налич", "банкомат"]) { return "Снятие наличных" }\n        if isSaveTransfer(operation) { return "Сейв" }\n        return "Между своими счетами"\n    }\n'''
           )
 
-          # --- Live bank parser: recognize Save transfer phrase and let explicit interest beat generic transfer labels ---
           replace_once(
               'YandexFinance/Collector.js',
               '''  const internalTransfer = (arrowParts.length === 2 && ownAccountHint.test(arrowParts[0]) && ownAccountHint.test(arrowParts[1])) ||\n    (hasDetailHeading('Перевод') && !!sourceAccount && !!destinationAccount &&\n      ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount));\n  const transfer = internalTransfer || /^(?:Переводы?|Пополнени[ея]|Переводы? между своими счетами)$/i.test(rawCategory || '') ||\n    hasDetailHeading('Перевод');\n  const cashback = /к[эе]шб[эе]к|cashback/i.test(combined);\n  const interestIncome = kopecks > 0 && !transfer && !cashback &&\n    /(?:^|[^а-яёa-z])(?:начисление процентов|начислены проценты|выплата процентов|выплачены проценты|процентный доход)(?=$|[^а-яёa-z])/i.test(combined);\n''',
@@ -91,7 +89,6 @@ jobs:
               '''    kind: installment ? 'installment_payment' : refund ? 'refund' : internalTransfer ? 'internal_transfer'\n      : interestIncome ? 'interest_income' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};\n'''
           )
 
-          # --- UI: show Save as its own account activity and transfer direction ---
           replace_once(
               'YandexFinance/YandexFinanceApp.swift',
               '''                                LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)\n                                Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)\n''',
@@ -122,7 +119,6 @@ jobs:
               '                    Text("Возвраты уменьшают расходы и не считаются доходом. Переводы Карта ↔ Сейв и другие подтверждённые переводы между своими счетами относятся к перемещениям; проценты по Сейву считаются доходом.")\n'
           )
 
-          # --- Tests ---
           replace_once(
               'Tests/FinanceEngineTests.swift',
               '''        require(FinancialEngine.classify(op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами")).type == .internalTransfer, "internal transfer")\n        require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")\n''',
@@ -140,10 +136,9 @@ jobs:
           anchor = "assert.match(source, /V34\\.6\\.2 keeps conservative verification/);"
           if anchor not in t:
               raise SystemExit('reliability version anchor not found')
-          t = t.replace(anchor, anchor + "\nassert.match(swift, /перевод между счетами одного клиента/);\nassert.match(appSwift, /Section\\(\\\"Сейв\\\"\\)/);\nassert.match(appSwift, /Карта ↔ Сейв/);", 1)
+          t = t.replace(anchor, anchor + "\nassert.match(source, /перевод между счетами одного клиента/);\nassert.match(appSwift, /Section\\(\\\"Сейв\\\"\\)/);\nassert.match(appSwift, /Карта ↔ Сейв/);", 1)
           p.write_text(t)
 
-          # --- Version bump ---
           p = Path('YandexFinance.xcodeproj/project.pbxproj')
           t = p.read_text()
           if t.count('CURRENT_PROJECT_VERSION = 34.6.2;') != 2 or t.count('MARKETING_VERSION = 34.6.2;') != 2:
