@@ -11,7 +11,7 @@ struct StatementImportResult {
 
 enum StatementImporter {
     // Old history comes from statements. The live WebView scanner owns this date and everything newer.
-    static let archiveCutoffISO = "2026-09-30T21:00:00.000Z" // 01.10.2026 00:00 Moscow
+    static let archiveCutoffISO = "2026-09-30T21:00:00Z" // 01.10.2026 00:00 Moscow
 
     private static let moscow = TimeZone(identifier: "Europe/Moscow")!
     private static let posix = Locale(identifier: "en_US_POSIX")
@@ -52,7 +52,8 @@ enum StatementImporter {
     )
 
     static var archiveCutoff: Date {
-        ISO8601DateFormatter().date(from: archiveCutoffISO)!
+        let formatter = ISO8601DateFormatter()
+        return formatter.date(from: archiveCutoffISO)!
     }
 
     static func importPDF(at url: URL) throws -> StatementImportResult {
