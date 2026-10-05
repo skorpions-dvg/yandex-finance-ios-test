@@ -72,8 +72,9 @@ jobs:
 
           p = Path('Tests/reliability.test.js')
           t = p.read_text().replace('Синхронизировать 6 месяцев', 'Импортировать выписку')
-          if 'Импортировать выписку' not in t:
-              raise SystemExit('reliability button guard was not updated')
+          t = t.replace(r'\(batch\.issues \?\? \[\]\)\.isEmpty', r'acceptedIssues\.isEmpty')
+          if 'Импортировать выписку' not in t or r'acceptedIssues\.isEmpty' not in t:
+              raise SystemExit('reliability guards were not updated')
           p.write_text(t)
 
           p = Path('YandexFinance.xcodeproj/project.pbxproj')
