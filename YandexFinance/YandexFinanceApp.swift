@@ -161,6 +161,9 @@ struct ContentView: View {
                                 }
                                 LabeledContent("Категория", value: operation.category)
                                 LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
+                                if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
+                                    LabeledContent("Счета", value: route)
+                                }
                                 Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)
                                 LabeledContent("Статус", value: operation.status)
                                 LabeledContent("Дата UTC", value: operation.occurredAt)
@@ -301,6 +304,9 @@ struct FinanceCategoryOperationsView: View {
                                 LabeledContent("Статус", value: operation.status)
                                 LabeledContent("Категория приложения", value: selection.parentTitle + " → " + selection.title)
                                 LabeledContent("Категория банка", value: operation.category.isEmpty ? "Без категории" : operation.category)
+                                if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
+                                    LabeledContent("Счета", value: route)
+                                }
                                 if let purpose = operation.purpose, !purpose.isEmpty { LabeledContent("Назначение", value: purpose) }
                                 if let mcc = operation.mcc, !mcc.isEmpty { LabeledContent("MCC", value: mcc) }
                                 Section("Почему здесь") {
@@ -354,7 +360,9 @@ struct FinanceDashboardView: View {
 
     var body: some View {
         let interval = currentInterval
-        let report = FinancialEngine.report(browser.history.operations.map(\.financialInput), in: interval)
+        let inputs = browser.history.operations.map(\.financialInput)
+        let report = FinancialEngine.report(inputs, in: interval)
+        let save = FinancialEngine.saveAccountSummary(inputs, in: interval)
         NavigationStack {
             List {
                 Section("Текущий месяц") {
@@ -396,6 +404,17 @@ struct FinanceDashboardView: View {
                     Text("Разница доходов и расходов не является остатком на банковских счетах.")
                 }.font(.footnote)
 
+                Section("Сейв") {
+                    LabeledContent("В Сейв", value: rubles(save.toSaveKopecks))
+                    LabeledContent("Из Сейва", value: rubles(save.fromSaveKopecks))
+                    LabeledContent("Чистое пополнение", value: signed(save.netTransferKopecks))
+                    if save.interestIncomeKopecks > 0 {
+                        LabeledContent("Начисленные проценты", value: "+" + rubles(save.interestIncomeKopecks))
+                    }
+                    Text("Это движение по Сейву за текущий месяц, а не текущий остаток на счёте. Переводы Карта ↔ Сейв не входят в доходы и расходы; начисленные банком проценты входят в доходы.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 incomeBlock(report, interval: interval)
                 expenseBlock(report, interval: interval)
 
@@ -418,7 +437,7 @@ struct FinanceDashboardView: View {
                 }
 
                 Section("Правила") {
-                    Text("Возвраты уменьшают расходы и не считаются доходом. Подтверждённые переводы между своими счетами и снятие наличных относятся к перемещениям.")
+                    Text("Возвраты уменьшают расходы и не считаются доходом. Переводы Карта ↔ Сейв и другие подтверждённые переводы между своими счетами относятся к перемещениям; проценты по Сейву считаются доходом.")
                     Text("Сплит показывается отдельно и пока не входит в итог расходов, пока исходная покупка и платежи не связаны — так мы не создаём двойной расход.")
                     Text("Старое завершённое списание без современного типа считается расходом. Непонятное положительное поступление автоматически доходом не назначается.")
                 }.font(.footnote).foregroundStyle(.secondary)

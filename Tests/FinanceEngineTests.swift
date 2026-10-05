@@ -25,6 +25,13 @@ struct FinanceEngineTests {
         require(FinancialEngine.classify(op(5_300, kind: "unclassified_income", description: "Кэшбэк 5 процентов")).type == .income, "cashback with percent text remains cashback income")
         require(FinancialEngine.classify(op(3_000, kind: "refund", category: "Возврат")).type == .refund, "refund")
         require(FinancialEngine.classify(op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами")).type == .internalTransfer, "internal transfer")
+        let saveOut = op(-50_000, kind: "transfer", category: "Перевод", description: "Перевод между счетами одного клиента")
+        let saveBack = op(20_000, kind: "transfer", category: "Перевод", description: "Перевод между счетами одного клиента")
+        require(FinancialEngine.classify(saveOut).type == .internalTransfer, "statement/live Save transfer must be internal")
+        require(FinancialEngine.movementCategory(for: saveOut) == "Сейв", "Save movement gets its own account bucket")
+        require(FinancialEngine.saveTransferDirection(for: saveOut) == "Карта → Сейв", "negative own transfer moves money to Save")
+        require(FinancialEngine.saveTransferDirection(for: saveBack) == "Сейв → Карта", "positive own transfer moves money back to card")
+        require(FinancialEngine.classify(op(31, kind: "transfer", category: "Пополнение", description: "Начисление процентов по Сейву")).type == .interestIncome, "explicit Save interest beats generic top-up label")
         require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")
         require(FinancialEngine.classify(op(-199, kind: "expense", description: "Комиссия банка")).type == .commission, "commission")
         require(FinancialEngine.classify(op(-200, kind: "expense", description: "Покупка без комиссии")).type == .expense, "no-commission phrase must not become a fee")
@@ -84,6 +91,15 @@ struct FinanceEngineTests {
                 "excluded split pair cannot create an artificial gain in ordinary totals")
         require(splitPair.bankDebitKopecks == 12_000 && splitPair.bankCreditKopecks == 12_000,
                 "split pair is still visible in bank card turnover")
+
+        let saveSummary = FinancialEngine.saveAccountSummary([
+            saveOut, saveBack,
+            op(31, kind: "transfer", category: "Пополнение", description: "Начисление процентов по Сейву")
+        ], in: interval)
+        require(saveSummary.toSaveKopecks == 50_000, "Save incoming transfer total")
+        require(saveSummary.fromSaveKopecks == 20_000, "Save outgoing transfer total")
+        require(saveSummary.netTransferKopecks == 30_000, "Save net transfer")
+        require(saveSummary.interestIncomeKopecks == 31, "Save interest total")
 
         let summary = FinancialEngine.summarize([
             op(-10_000, kind: "expense"),

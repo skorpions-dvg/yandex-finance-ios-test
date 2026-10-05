@@ -372,8 +372,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
   assert.match(workflow, /swiftc (?:-warnings-as-errors )?-parse-as-library YandexFinance\/FinanceEngine\.swift Tests\/FinanceEngineTests\.swift/, 'GitHub build must execute the Swift finance tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 34\.6\.2;/g) || []).length, 2, 'Debug and Release build number must both be 34.6.2');
-  assert.match(readme, /Текущий номер сборки — 34\.6\.2/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 34\.6\.3;/g) || []).length, 2, 'Debug and Release build number must both be 34.6.3');
+  assert.match(readme, /Текущий номер сборки — 34\.6\.3/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const incrementalBlock = swift.match(/private func incrementalPolicy[\s\S]*?private static func operationDate/)[0];
@@ -599,7 +599,7 @@ const projectV25 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodep
 const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
-assert.match(projectV25, /CURRENT_PROJECT_VERSION = 34\.6\.2;/);
+assert.match(projectV25, /CURRENT_PROJECT_VERSION = 34\.6\.3;/);
 assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Банковские списания/);
 assert.match(appSwift, /DisclosureGroup/);
@@ -616,7 +616,10 @@ assert.match(financeTests, /cash withdrawal/);
 assert.match(appSwift, /let report = FinancialEngine\.report/);
 assert.match(appSwift, /resetLocalStorage/);
 assert.match(swift, /Не сохранено после проверки/);
-assert.match(source, /V34\.6\.2 keeps conservative verification/);
+assert.match(source, /V34\.6\.3 keeps conservative verification/);
+assert.match(source, /перевод между счетами одного клиента/);
+assert.match(appSwift, /Section\(\"Сейв\"\)/);
+assert.match(appSwift, /Карта ↔ Сейв/);
 console.log('v25: finance engine handles fractional ISO8601 dates, half-open periods, and surfaces invalid dates.');
 
 

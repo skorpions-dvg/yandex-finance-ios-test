@@ -114,6 +114,15 @@ struct FinanceReport {
     var differenceKopecks: Int64 { incomeKopecks - netExpenseKopecks }
 }
 
+struct SaveAccountSummary {
+    let toSaveKopecks: Int64
+    let fromSaveKopecks: Int64
+    let interestIncomeKopecks: Int64
+    let operationCount: Int
+
+    var netTransferKopecks: Int64 { toSaveKopecks - fromSaveKopecks }
+}
+
 struct SyncStatusInput {
     let occurredAt: String
     let status: String
@@ -241,8 +250,8 @@ enum FinancialEngine {
             return FinancialAssessment(type: .commission, reason: "Комиссия является расходом.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        let ownTransferText = containsAny(category, ["между своими счетами", "между моими счетами"]) ||
-            containsAny(combined, ["между своими счетами", "между моими счетами"])
+        let ownTransferText = containsAny(category, ["между своими счетами", "между моими счетами", "между счетами одного клиента"]) ||
+            containsAny(combined, ["между своими счетами", "между моими счетами", "перевод между счетами одного клиента"])
         if kind == "internal_transfer" || ownTransferText {
             return FinancialAssessment(type: .internalTransfer, reason: "Подтверждённое перемещение между своими счетами исключено из доходов и расходов.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
@@ -259,8 +268,10 @@ enum FinancialEngine {
         }
 
         let interestText = containsAny(combined, ["начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])
-        let explicitInterest = kind == "interest_income" || category == "проценты" || (amount > 0 && interestText)
-        if explicitInterest && amount > 0 && !transferHint {
+        // Explicit interest wording/category wins over a generic «Пополнение/Перевод» label.
+        // A stale collector kind alone still cannot override a real transfer category.
+        let explicitInterest = category == "проценты" || (amount > 0 && interestText) || (kind == "interest_income" && !transferHint)
+        if explicitInterest && amount > 0 {
             return FinancialAssessment(type: .interestIncome, reason: "Начисленные проценты считаются доходом.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
@@ -455,6 +466,29 @@ enum FinancialEngine {
                              expenseLines: lines(expenseGroups, order: expenseOrder, childOrder: expenseSubcategoryOrder),
                              movementLines: movementGroups.map { FinanceLine(id: $0.key, title: $0.key, count: $0.value.0, amountKopecks: $0.value.1, note: nil, children: []) }.sorted { $0.title < $1.title },
                              incompleteLines: incompleteLines)
+    }
+
+    static func saveAccountSummary(_ operations: [FinancialOperationInput], in interval: DateInterval) -> SaveAccountSummary {
+        var toSave: Int64 = 0
+        var fromSave: Int64 = 0
+        var interest: Int64 = 0
+        var tracked = 0
+
+        for operation in operations {
+            guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { continue }
+            let assessment = classify(operation)
+            if assessment.type == .internalTransfer && isSaveTransfer(operation) {
+                if operation.amountKopecks < 0 { toSave += -operation.amountKopecks }
+                if operation.amountKopecks > 0 { fromSave += operation.amountKopecks }
+                tracked += 1
+            } else if assessment.type == .interestIncome {
+                interest += assessment.incomeContributionKopecks
+                tracked += 1
+            }
+        }
+
+        return SaveAccountSummary(toSaveKopecks: toSave, fromSaveKopecks: fromSave,
+                                  interestIncomeKopecks: interest, operationCount: tracked)
     }
 
     static func incomeCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> String {
@@ -664,10 +698,22 @@ enum FinancialEngine {
         return FinanceCategoryPath(group: "Другое", subcategory: "Прочее")
     }
 
+    private static func isSaveTransfer(_ operation: FinancialOperationInput) -> Bool {
+        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))
+        return containsAny(combined, ["перевод между счетами одного клиента", "сейв", "накопитель"])
+    }
+
+    static func saveTransferDirection(for operation: FinancialOperationInput) -> String? {
+        guard classify(operation).type == .internalTransfer, isSaveTransfer(operation) else { return nil }
+        if operation.amountKopecks < 0 { return "Карта → Сейв" }
+        if operation.amountKopecks > 0 { return "Сейв → Карта" }
+        return nil
+    }
+
     static func movementCategory(for operation: FinancialOperationInput) -> String {
         let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))
         if containsAny(combined, ["снятие налич", "выдача налич", "банкомат"]) { return "Снятие наличных" }
-        if containsAny(combined, ["сейв", "накопитель"]) { return "Накопительные счета" }
+        if isSaveTransfer(operation) { return "Сейв" }
         return "Между своими счетами"
     }
 

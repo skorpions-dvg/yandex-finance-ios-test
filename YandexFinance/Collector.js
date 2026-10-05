@@ -1,4 +1,4 @@
-// Runs only on the bank history page. V34.6.2 keeps conservative verification and hardened mobile navigation/retry handling.
+// Runs only on the bank history page. V34.6.3 keeps conservative verification and hardened mobile navigation/retry handling.
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
@@ -553,7 +553,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
   if (dateMarks.length > 1) throw Error('Найдено несколько карточек. Не удалось выбрать активную.');
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 34.6.2).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 34.6.3).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -583,7 +583,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 34.6.2).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 34.6.3).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -634,16 +634,17 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const arrowParts = description.split('→').map(x => x.trim()).filter(Boolean);
   const internalTransfer = (arrowParts.length === 2 && ownAccountHint.test(arrowParts[0]) && ownAccountHint.test(arrowParts[1])) ||
     (hasDetailHeading('Перевод') && !!sourceAccount && !!destinationAccount &&
-      ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount));
-  const transfer = internalTransfer || /^(?:Переводы?|Пополнени[ея]|Переводы? между своими счетами)$/i.test(rawCategory || '') ||
-    hasDetailHeading('Перевод');
+      ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount)) ||
+    /перевод между счетами одного клиента/i.test(combined);
   const cashback = /к[эе]шб[эе]к|cashback/i.test(combined);
-  const interestIncome = kopecks > 0 && !transfer && !cashback &&
+  const interestIncome = kopecks > 0 && !internalTransfer && !cashback &&
     /(?:^|[^а-яёa-z])(?:начисление процентов|начислены проценты|выплата процентов|выплачены проценты|процентный доход)(?=$|[^а-яёa-z])/i.test(combined);
+  const transfer = internalTransfer || (!interestIncome && (/^(?:Переводы?|Пополнени[ея]|Переводы? между своими счетами)$/i.test(rawCategory || '') ||
+    hasDetailHeading('Перевод')));
   const category = rawCategory || (installment ? 'Платежи Сплита'
     : internalTransfer ? 'Переводы между своими счетами'
-    : hasDetailHeading('Перевод') ? 'Перевод'
     : interestIncome ? 'Проценты'
+    : hasDetailHeading('Перевод') ? 'Перевод'
     : hasDetailHeading('Пополнение') ? 'Пополнение'
     : 'Не определено');
 
@@ -652,7 +653,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     description, amountKopecks: kopecks, currency: 'RUB', status,
     category, mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты'), providers,
     kind: installment ? 'installment_payment' : refund ? 'refund' : internalTransfer ? 'internal_transfer'
-      : transfer ? 'transfer' : interestIncome ? 'interest_income' : kopecks > 0 ? 'unclassified_income' : 'expense'};
+      : interestIncome ? 'interest_income' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};
 }
 
 const found = new Map();
@@ -687,7 +688,7 @@ if (mode === 'card' || mode === 'retry_card') {
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 34.6.2).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 34.6.3).');
   }
   const operation = parseCard(location.href, cardText, '');
   if (retryIssue?.identity && operation.identity !== retryIssue.identity) throw Error('Открылась другая операция. Повторное чтение не сохранено.');
