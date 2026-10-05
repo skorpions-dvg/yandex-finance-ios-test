@@ -1,10 +1,17 @@
 name: Сборка приложения для iPhone
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -16,8 +23,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Проверка парсера
-        run: node Tests/parser.test.js
+      - name: Проверка JavaScript
+        run: |
+          node Tests/parser.test.js
+          node Tests/reliability.test.js
+
+      - name: Проверка финансового движка Swift
+        run: |
+          swiftc -parse-as-library -warnings-as-errors YandexFinance/FinanceEngine.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
+          /tmp/finance-tests
 
       - name: Сборка приложения
         run: bash scripts/build-ipa.sh
