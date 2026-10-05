@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ios-build-${{ github.ref }}
@@ -20,76 +20,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-
-      - name: Однократно завершить переход на архив из выписки
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_required(path, old, new, count=None):
-              p = Path(path)
-              text = p.read_text()
-              actual = text.count(old)
-              if actual == 0 or (count is not None and actual != count):
-                  raise SystemExit(f"{path}: unexpected occurrence count {actual} for {old!r}")
-              p.write_text(text.replace(old, new, count if count is not None else -1))
-
-          replace_required(
-              'YandexFinance/Collector.js',
-              'const cutoff = effectiveLookbackDays === null ? null : Date.now() - effectiveLookbackDays * 86400000;',
-              "const lookbackCutoff = effectiveLookbackDays === null ? null : Date.now() - effectiveLookbackDays * 86400000;\nconst archiveFloor = typeof archiveFloorISO === 'string' ? Date.parse(archiveFloorISO) : NaN;\nconst cutoff = Number.isFinite(archiveFloor)\n  ? (lookbackCutoff === null ? archiveFloor : Math.max(lookbackCutoff, archiveFloor))\n  : lookbackCutoff;",
-              1
-          )
-
-          replace_required(
-              'YandexFinance/BankBrowser.swift',
-              '"resumeMonthOrdinal": resume.map { NSNumber(value: $0) } ?? NSNull(), "runID": runID,\n            "retryIssueJson": retryData.flatMap { String(data: $0, encoding: .utf8) } ?? "null"]',
-              '"resumeMonthOrdinal": resume.map { NSNumber(value: $0) } ?? NSNull(), "runID": runID,\n            "archiveFloorISO": StatementImporter.archiveCutoffISO,\n            "retryIssueJson": retryData.flatMap { String(data: $0, encoding: .utf8) } ?? "null"]',
-              1
-          )
-
-          app = Path('YandexFinance/YandexFinanceApp.swift')
-          text = app.read_text()
-          replacements = [
-              ('Button("Обновить 30 дней")', 'Button("Обновить новые операции")'),
-              ('Button("Синхронизировать 6 месяцев")', 'Button("Импортировать выписку")'),
-              ('Text(browser.bootstrapComplete ? "Первичная загрузка завершена" : "Полнота первичной загрузки ещё не подтверждена")', 'Text(browser.bootstrapComplete ? "Архив и текущая история подготовлены" : "Архив до 01.10.2026 ещё не импортирован")'),
-              ('Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")', 'Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")'),
-              ('Text("Повторная попытка не помогла. Сброс удалит только локальную историю и ключ шифрования. Автообновление после сброса будет выключено, чтобы шестимесячная загрузка не началась неожиданно.")', 'Text("Повторная попытка не помогла. Сброс удалит только локальную историю и ключ шифрования. После сброса сначала импортируйте PDF-выписку для архива до 01.10.2026, затем обновите новые операции.")'),
-              ('Text("Полнота первичной загрузки не подтверждена. Итоги рассчитаны по сохранённым записям.")', 'Text("Архив до 01.10.2026 ещё не импортирован. Итоги за старые месяцы будут неполными до импорта PDF-выписки.")')
-          ]
-          for old, new in replacements:
-              if old not in text:
-                  raise SystemExit(f'YandexFinanceApp.swift missing expected text: {old}')
-              text = text.replace(old, new)
-
-          archive_marker = '                        Text("Сохранено операций: \\(browser.history.operations.count)")\n'
-          if archive_marker not in text:
-              raise SystemExit('YandexFinanceApp.swift archive marker not found')
-          archive_block = archive_marker + '                        if let imported = browser.history.statementImportedAt {\n                            Text("Архив из выписки: до 30.09.2026")\n                            Text("Импортировано из выписки: \\(browser.history.statementOperationCount ?? 0) операций · \\(imported.formatted(date: .abbreviated, time: .shortened))")\n                                .font(.caption).foregroundStyle(.secondary)\n                        } else {\n                            Text("Архив до 01.10.2026: выписка ещё не импортирована")\n                                .font(.caption).foregroundStyle(.orange)\n                        }\n'
-          text = text.replace(archive_marker, archive_block, 1)
-          app.write_text(text)
-
-          p = Path('Tests/reliability.test.js')
-          t = p.read_text().replace('Синхронизировать 6 месяцев', 'Импортировать выписку')
-          t = t.replace(r'\(batch\.issues \?\? \[\]\)\.isEmpty', r'acceptedIssues\.isEmpty')
-          if 'Импортировать выписку' not in t or r'acceptedIssues\.isEmpty' not in t:
-              raise SystemExit('reliability guards were not updated')
-          p.write_text(t)
-
-          p = Path('YandexFinance.xcodeproj/project.pbxproj')
-          t = p.read_text()
-          if t.count('CURRENT_PROJECT_VERSION = 34.6.1;') != 2 or t.count('MARKETING_VERSION = 34.6.1;') != 2:
-              raise SystemExit('unexpected project version before 34.6.2 bump')
-          p.write_text(t.replace('CURRENT_PROJECT_VERSION = 34.6.1;', 'CURRENT_PROJECT_VERSION = 34.6.2;').replace('MARKETING_VERSION = 34.6.1;', 'MARKETING_VERSION = 34.6.2;'))
-
-          p = Path('YandexFinance/Collector.js')
-          p.write_text(p.read_text().replace('34.6.1', '34.6.2'))
-          p = Path('Tests/reliability.test.js')
-          p.write_text(p.read_text().replace('34\\.6\\.1', '34\\.6\\.2').replace('34.6.1', '34.6.2'))
-          p = Path('README.md')
-          p.write_text(p.read_text().replace('34.6.1', '34.6.2'))
-          PY
+        with:
+          persist-credentials: false
 
       - name: Проверка JavaScript
         run: |
@@ -117,13 +49,3 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-
-      - name: Зафиксировать проверенные исходники
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add YandexFinance/Collector.js YandexFinance/BankBrowser.swift YandexFinance/YandexFinanceApp.swift YandexFinance.xcodeproj/project.pbxproj Tests/reliability.test.js README.md
-          if ! git diff --cached --quiet; then
-            git commit -m "Finish statement archive migration [skip ci]"
-            git push origin HEAD:main
-          fi
