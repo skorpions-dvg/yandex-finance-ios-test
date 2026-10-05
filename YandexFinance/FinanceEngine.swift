@@ -474,7 +474,7 @@ enum FinancialEngine {
         "Такси", "Общественный транспорт", "Топливо", "Авто",
         "Маркетплейсы", "Одежда", "Электроника", "Дом и быт",
         "ЖКХ", "Связь и интернет", "Подписки", "Здоровье",
-        "Развлечения", "Путешествия", "Подарки", "Переводы другим", "Комиссии", "Прочее"
+        "Развлечения", "Путешествия", "Подарки", "Доставка и курьеры", "Переводы другим", "Комиссии", "Прочее"
     ]
 
     static func expenseCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> FinanceCategoryPath {
@@ -491,6 +491,25 @@ enum FinancialEngine {
         if assessment.type == .commission {
             return FinanceCategoryPath(group: "Другое", subcategory: "Комиссии")
         }
+
+        // A few services are more specific than the bank's broad technical category/MCC.
+        // Keep these rules narrow so generic Yandex or transfer operations are not reclassified.
+        if containsAny(freeText, ["яндекс плюс", "yandex plus"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")
+        }
+        if containsAny(description, ["яндекс.доставка", "яндекс доставка", "yandex delivery"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Доставка и курьеры")
+        }
+
+        let hasPersonalAccount = containsAny(purpose, ["лицевой счет", "лицевой сч", "л/с"])
+        let housingRecipient = hasPersonalAccount
+            && (description.contains("жилищник") || containsAny(description, ["управляющ", "ооо ук ", " ук ", "тсж", "жск"]))
+        let gasUtilityRecipient = containsAny(description, ["горгаз", "межрегионгаз"])
+            && (hasPersonalAccount || category.contains("перевод"))
+        if housingRecipient || gasUtilityRecipient {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ")
+        }
+
         if kind == "transfer" || category.contains("перевод") {
             return FinanceCategoryPath(group: "Другое", subcategory: "Переводы другим")
         }

@@ -372,8 +372,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
   assert.match(workflow, /swiftc (?:-warnings-as-errors )?-parse-as-library YandexFinance\/FinanceEngine\.swift Tests\/FinanceEngineTests\.swift/, 'GitHub build must execute the Swift finance tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 34\.3;/g) || []).length, 2, 'Debug and Release build number must both be 34.3');
-  assert.match(readme, /Текущий номер сборки — 34\.3/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 34\.4;/g) || []).length, 2, 'Debug and Release build number must both be 34.4');
+  assert.match(readme, /Текущий номер сборки — 34\.4/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const incrementalBlock = swift.match(/private func incrementalPolicy[\s\S]*?private static func operationDate/)[0];
@@ -599,7 +599,7 @@ const projectV25 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodep
 const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
-assert.match(projectV25, /CURRENT_PROJECT_VERSION = 34\.3;/);
+assert.match(projectV25, /CURRENT_PROJECT_VERSION = 34\.4;/);
 assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Банковские списания/);
 assert.match(appSwift, /DisclosureGroup/);
@@ -616,7 +616,7 @@ assert.match(financeTests, /cash withdrawal/);
 assert.match(appSwift, /let report = FinancialEngine\.report/);
 assert.match(appSwift, /resetLocalStorage/);
 assert.match(swift, /Не сохранено после проверки/);
-assert.match(source, /V34\.3 keeps conservative verification/);
+assert.match(source, /V34\.4 keeps conservative verification/);
 console.log('v25: finance engine handles fractional ISO8601 dates, half-open periods, and surfaces invalid dates.');
 
 
@@ -642,7 +642,7 @@ assert.match(financeTests, /cashback with percent text remains cashback income/,
 assert.ok(appSwift.includes('Text("Сборка \\(buildNumber)")'), 'finance screen must expose the installed build number');
 assert.match(swift, /operationURL == operationURL/, 'identity-less issues should be deduplicated by operation URL');
 
-// v34.3: period changes cannot be inferred solely from dynamic row updates.
+// v34.4: period changes cannot be inferred solely from dynamic row updates.
 (async () => {
   let clock = 0;
   const ctrl = {innerText:'Октябрь',getAttribute:()=>null,getClientRects:()=>[{}],closest:()=>null};
@@ -652,7 +652,7 @@ assert.match(swift, /operationURL == operationURL/, 'identity-less issues should
   const change = vm.runInContext('(function(){'+helpers+';return applyHistoryMonthChoice;})()',context);
   const result = await change({el:{click(){}}},{month:8,year:2026},'old rows');
   assert.equal(result.status,'unavailable','Changed rows with unchanged October selector do not prove September');
-  console.log('v34.3: unrelated row update cannot confirm a different month.');
+  console.log('v34.4: unrelated row update cannot confirm a different month.');
 })().catch(e=>{console.error(e);process.exitCode=1;});
 const month35 = new Function(helpers+'\nreturn parseMonthLabel;')();
 assert.deepEqual(month35('01.10–04.10'),{month:9,year:null});

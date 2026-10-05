@@ -392,7 +392,7 @@ async function checkMobilePeriodSheetRequiresApply() {
 }
 checkMobilePeriodSheetRequiresApply().catch(error => {console.error(error); process.exitCode = 1;});
 
-// v34.3: collector classification must not poison the separate Swift engine.
+// v34.4: collector classification must not poison the separate Swift engine.
 const incoming343 = (title, details) => [title,'2 октября, 12:00','+100 ₽','Подробнее',...details,'Статус','Выполнено'].join('\n');
 const incomingURL343 = url([{...ref,chainId:'audit-incoming',operationTimestamp:'2026-10-02T06:00:00Z'}]);
 const debt343 = parse(incomingURL343,incoming343('Перевод от друга',['Перевод','Назначение','Отдал проценты по долгу']),'');
@@ -409,4 +409,4 @@ const month343 = new Function(source.split('\nconst found = new Map();')[0]+'\nr
 for(const merchant of ['Мартини бар','Мартовский магазин','Январьский','Кафе Март','Март магазин']) assert.equal(month343(merchant),null,merchant);
 for(const label of ['Март','Март 2026','Период: Март, 2026','Выбран Март · 2026']) assert.equal(month343(label).month,2,label);
 assert.equal(parse(incomingURL343,incoming343('Нулевая операция',[]).replace('+100 ₽','−0 ₽'),'').amountKopecks,0);
-console.log('v34.3: transfer/own transfer/cashback interest collisions, month-name boundaries and zero amount passed.');
+console.log('v34.4: transfer/own transfer/cashback interest collisions, month-name boundaries and zero amount passed.');
