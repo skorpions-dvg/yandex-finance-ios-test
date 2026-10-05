@@ -33,6 +33,11 @@ jobs:
           swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
           /tmp/finance-tests
 
+      - name: Проверка импорта выписки
+        run: |
+          swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift YandexFinance/Models.swift YandexFinance/StatementImporter.swift Tests/StatementImporterTests.swift -framework PDFKit -o /tmp/statement-tests
+          /tmp/statement-tests
+
       - name: Сборка приложения
         run: bash scripts/build-ipa.sh
 
