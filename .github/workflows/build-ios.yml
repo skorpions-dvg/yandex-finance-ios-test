@@ -33,6 +33,71 @@ jobs:
           swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
           /tmp/finance-tests
 
+      - name: Применить изменения интерфейса 34.5
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text()
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
+              p.write_text(text.replace(old, new))
+
+          replace_exact('YandexFinance/BankBrowser.swift', '@Published var selectedTab = 0', '@Published var selectedTab = 2')
+          replace_exact('YandexFinance/BankBrowser.swift', '@Published var message = "Войдите в банк, затем откройте историю."', '@Published var message = ""')
+          replace_exact(
+              'YandexFinance/BankBrowser.swift',
+              '} else { scheduleAutomaticUpdate() }',
+              '''} else {
+            if webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !busy {
+                message = ""
+            }
+            scheduleAutomaticUpdate()
+        }'''
+          )
+
+          replace_exact(
+              'YandexFinance/YandexFinanceApp.swift',
+              'Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")',
+              '''if !browser.message.isEmpty {
+                    Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")
+                }'''
+          )
+          replace_exact(
+              'YandexFinance/YandexFinanceApp.swift',
+              'Text(browser.message).font(.footnote)',
+              'if !browser.message.isEmpty { Text(browser.message).font(.footnote) }'
+          )
+          replace_exact(
+              'YandexFinance/YandexFinanceApp.swift',
+              '''Section("Состояние данных") {
+                    if let date = browser.history.lastCompletedSync {''',
+              '''Section("Состояние данных") {
+                    Toggle("Автообновление", isOn: $browser.autoUpdate)
+                        .disabled(browser.busy)
+                    if !browser.autoUpdate {
+                        Text("Автообновление выключено. Новые операции не будут проверяться автоматически при следующем открытии приложения.")
+                            .foregroundStyle(.orange)
+                    }
+                    if let date = browser.history.lastCompletedSync {'''
+          )
+
+          p = Path('YandexFinance.xcodeproj/project.pbxproj')
+          text = p.read_text()
+          if text.count('CURRENT_PROJECT_VERSION = 34.4;') != 2 or text.count('MARKETING_VERSION = 34.4;') != 2:
+              raise SystemExit('unexpected project version before 34.5 patch')
+          text = text.replace('CURRENT_PROJECT_VERSION = 34.4;', 'CURRENT_PROJECT_VERSION = 34.5;')
+          text = text.replace('MARKETING_VERSION = 34.4;', 'MARKETING_VERSION = 34.5;')
+          p.write_text(text)
+
+          p = Path('YandexFinance/Collector.js')
+          text = p.read_text().replace('V34.4 keeps conservative verification', 'V34.5 keeps conservative verification').replace('версия 34.4', 'версия 34.5')
+          p.write_text(text)
+          PY
+
       - name: Сборка приложения
         run: bash scripts/build-ipa.sh
 
