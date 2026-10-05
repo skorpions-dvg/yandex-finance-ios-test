@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ios-build-${{ github.ref }}
@@ -20,144 +20,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-
-      - name: Однократно добавить Сейв 34.6.3
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected exactly one occurrence, got {count}: {old[:120]!r}")
-              p.write_text(text.replace(old, new, 1))
-
-          def insert_before(path, marker, addition):
-              p = Path(path)
-              text = p.read_text()
-              if text.count(marker) != 1:
-                  raise SystemExit(f"{path}: marker count != 1: {marker[:120]!r}")
-              p.write_text(text.replace(marker, addition + marker, 1))
-
-          insert_before(
-              'YandexFinance/FinanceEngine.swift',
-              'struct SyncStatusInput {\n',
-              '''struct SaveAccountSummary {\n    let toSaveKopecks: Int64\n    let fromSaveKopecks: Int64\n    let interestIncomeKopecks: Int64\n    let operationCount: Int\n\n    var netTransferKopecks: Int64 { toSaveKopecks - fromSaveKopecks }\n}\n\n'''
-          )
-
-          replace_once(
-              'YandexFinance/FinanceEngine.swift',
-              '''        let ownTransferText = containsAny(category, ["между своими счетами", "между моими счетами"]) ||\n            containsAny(combined, ["между своими счетами", "между моими счетами"])\n''',
-              '''        let ownTransferText = containsAny(category, ["между своими счетами", "между моими счетами", "между счетами одного клиента"]) ||\n            containsAny(combined, ["между своими счетами", "между моими счетами", "перевод между счетами одного клиента"])\n'''
-          )
-
-          replace_once(
-              'YandexFinance/FinanceEngine.swift',
-              '''        let interestText = containsAny(combined, ["начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])\n        let explicitInterest = kind == "interest_income" || category == "проценты" || (amount > 0 && interestText)\n        if explicitInterest && amount > 0 && !transferHint {\n''',
-              '''        let interestText = containsAny(combined, ["начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])\n        // Explicit interest wording/category wins over a generic «Пополнение/Перевод» label.\n        // A stale collector kind alone still cannot override a real transfer category.\n        let explicitInterest = category == "проценты" || (amount > 0 && interestText) || (kind == "interest_income" && !transferHint)\n        if explicitInterest && amount > 0 {\n'''
-          )
-
-          insert_before(
-              'YandexFinance/FinanceEngine.swift',
-              '    static func incomeCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> String {\n',
-              '''    static func saveAccountSummary(_ operations: [FinancialOperationInput], in interval: DateInterval) -> SaveAccountSummary {\n        var toSave: Int64 = 0\n        var fromSave: Int64 = 0\n        var interest: Int64 = 0\n        var tracked = 0\n\n        for operation in operations {\n            guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { continue }\n            let assessment = classify(operation)\n            if assessment.type == .internalTransfer && isSaveTransfer(operation) {\n                if operation.amountKopecks < 0 { toSave += -operation.amountKopecks }\n                if operation.amountKopecks > 0 { fromSave += operation.amountKopecks }\n                tracked += 1\n            } else if assessment.type == .interestIncome {\n                interest += assessment.incomeContributionKopecks\n                tracked += 1\n            }\n        }\n\n        return SaveAccountSummary(toSaveKopecks: toSave, fromSaveKopecks: fromSave,\n                                  interestIncomeKopecks: interest, operationCount: tracked)\n    }\n\n'''
-          )
-
-          replace_once(
-              'YandexFinance/FinanceEngine.swift',
-              '''    static func movementCategory(for operation: FinancialOperationInput) -> String {\n        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))\n        if containsAny(combined, ["снятие налич", "выдача налич", "банкомат"]) { return "Снятие наличных" }\n        if containsAny(combined, ["сейв", "накопитель"]) { return "Накопительные счета" }\n        return "Между своими счетами"\n    }\n''',
-              '''    private static func isSaveTransfer(_ operation: FinancialOperationInput) -> Bool {\n        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))\n        return containsAny(combined, ["перевод между счетами одного клиента", "сейв", "накопитель"])\n    }\n\n    static func saveTransferDirection(for operation: FinancialOperationInput) -> String? {\n        guard classify(operation).type == .internalTransfer, isSaveTransfer(operation) else { return nil }\n        if operation.amountKopecks < 0 { return "Карта → Сейв" }\n        if operation.amountKopecks > 0 { return "Сейв → Карта" }\n        return nil\n    }\n\n    static func movementCategory(for operation: FinancialOperationInput) -> String {\n        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))\n        if containsAny(combined, ["снятие налич", "выдача налич", "банкомат"]) { return "Снятие наличных" }\n        if isSaveTransfer(operation) { return "Сейв" }\n        return "Между своими счетами"\n    }\n'''
-          )
-
-          replace_once(
-              'YandexFinance/Collector.js',
-              '''  const internalTransfer = (arrowParts.length === 2 && ownAccountHint.test(arrowParts[0]) && ownAccountHint.test(arrowParts[1])) ||\n    (hasDetailHeading('Перевод') && !!sourceAccount && !!destinationAccount &&\n      ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount));\n  const transfer = internalTransfer || /^(?:Переводы?|Пополнени[ея]|Переводы? между своими счетами)$/i.test(rawCategory || '') ||\n    hasDetailHeading('Перевод');\n  const cashback = /к[эе]шб[эе]к|cashback/i.test(combined);\n  const interestIncome = kopecks > 0 && !transfer && !cashback &&\n    /(?:^|[^а-яёa-z])(?:начисление процентов|начислены проценты|выплата процентов|выплачены проценты|процентный доход)(?=$|[^а-яёa-z])/i.test(combined);\n''',
-              '''  const internalTransfer = (arrowParts.length === 2 && ownAccountHint.test(arrowParts[0]) && ownAccountHint.test(arrowParts[1])) ||\n    (hasDetailHeading('Перевод') && !!sourceAccount && !!destinationAccount &&\n      ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount)) ||\n    /перевод между счетами одного клиента/i.test(combined);\n  const cashback = /к[эе]шб[эе]к|cashback/i.test(combined);\n  const interestIncome = kopecks > 0 && !internalTransfer && !cashback &&\n    /(?:^|[^а-яёa-z])(?:начисление процентов|начислены проценты|выплата процентов|выплачены проценты|процентный доход)(?=$|[^а-яёa-z])/i.test(combined);\n  const transfer = internalTransfer || (!interestIncome && (/^(?:Переводы?|Пополнени[ея]|Переводы? между своими счетами)$/i.test(rawCategory || '') ||\n    hasDetailHeading('Перевод')));\n'''
-          )
-
-          replace_once(
-              'YandexFinance/Collector.js',
-              '''  const category = rawCategory || (installment ? 'Платежи Сплита'\n    : internalTransfer ? 'Переводы между своими счетами'\n    : hasDetailHeading('Перевод') ? 'Перевод'\n    : interestIncome ? 'Проценты'\n    : hasDetailHeading('Пополнение') ? 'Пополнение'\n    : 'Не определено');\n''',
-              '''  const category = rawCategory || (installment ? 'Платежи Сплита'\n    : internalTransfer ? 'Переводы между своими счетами'\n    : interestIncome ? 'Проценты'\n    : hasDetailHeading('Перевод') ? 'Перевод'\n    : hasDetailHeading('Пополнение') ? 'Пополнение'\n    : 'Не определено');\n'''
-          )
-
-          replace_once(
-              'YandexFinance/Collector.js',
-              '''    kind: installment ? 'installment_payment' : refund ? 'refund' : internalTransfer ? 'internal_transfer'\n      : transfer ? 'transfer' : interestIncome ? 'interest_income' : kopecks > 0 ? 'unclassified_income' : 'expense'};\n''',
-              '''    kind: installment ? 'installment_payment' : refund ? 'refund' : internalTransfer ? 'internal_transfer'\n      : interestIncome ? 'interest_income' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};\n'''
-          )
-
-          replace_once(
-              'YandexFinance/YandexFinanceApp.swift',
-              '''                                LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)\n                                Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)\n''',
-              '''                                LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)\n                                if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {\n                                    LabeledContent("Счета", value: route)\n                                }\n                                Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)\n'''
-          )
-
-          replace_once(
-              'YandexFinance/YandexFinanceApp.swift',
-              '''                                LabeledContent("Категория банка", value: operation.category.isEmpty ? "Без категории" : operation.category)\n                                if let purpose = operation.purpose, !purpose.isEmpty { LabeledContent("Назначение", value: purpose) }\n''',
-              '''                                LabeledContent("Категория банка", value: operation.category.isEmpty ? "Без категории" : operation.category)\n                                if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {\n                                    LabeledContent("Счета", value: route)\n                                }\n                                if let purpose = operation.purpose, !purpose.isEmpty { LabeledContent("Назначение", value: purpose) }\n'''
-          )
-
-          replace_once(
-              'YandexFinance/YandexFinanceApp.swift',
-              '''        let interval = currentInterval\n        let report = FinancialEngine.report(browser.history.operations.map(\\.financialInput), in: interval)\n''',
-              '''        let interval = currentInterval\n        let inputs = browser.history.operations.map(\\.financialInput)\n        let report = FinancialEngine.report(inputs, in: interval)\n        let save = FinancialEngine.saveAccountSummary(inputs, in: interval)\n'''
-          )
-
-          insert_before(
-              'YandexFinance/YandexFinanceApp.swift',
-              '                incomeBlock(report, interval: interval)\n',
-              '''                Section("Сейв") {\n                    LabeledContent("В Сейв", value: rubles(save.toSaveKopecks))\n                    LabeledContent("Из Сейва", value: rubles(save.fromSaveKopecks))\n                    LabeledContent("Чистое пополнение", value: signed(save.netTransferKopecks))\n                    if save.interestIncomeKopecks > 0 {\n                        LabeledContent("Начисленные проценты", value: "+" + rubles(save.interestIncomeKopecks))\n                    }\n                    Text("Это движение по Сейву за текущий месяц, а не текущий остаток на счёте. Переводы Карта ↔ Сейв не входят в доходы и расходы; начисленные банком проценты входят в доходы.")\n                        .font(.caption).foregroundStyle(.secondary)\n                }\n\n'''
-          )
-
-          replace_once(
-              'YandexFinance/YandexFinanceApp.swift',
-              '                    Text("Возвраты уменьшают расходы и не считаются доходом. Подтверждённые переводы между своими счетами и снятие наличных относятся к перемещениям.")\n',
-              '                    Text("Возвраты уменьшают расходы и не считаются доходом. Переводы Карта ↔ Сейв и другие подтверждённые переводы между своими счетами относятся к перемещениям; проценты по Сейву считаются доходом.")\n'
-          )
-
-          replace_once(
-              'Tests/FinanceEngineTests.swift',
-              '''        require(FinancialEngine.classify(op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами")).type == .internalTransfer, "internal transfer")\n        require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")\n''',
-              '''        require(FinancialEngine.classify(op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами")).type == .internalTransfer, "internal transfer")\n        let saveOut = op(-50_000, kind: "transfer", category: "Перевод", description: "Перевод между счетами одного клиента")\n        let saveBack = op(20_000, kind: "transfer", category: "Перевод", description: "Перевод между счетами одного клиента")\n        require(FinancialEngine.classify(saveOut).type == .internalTransfer, "statement/live Save transfer must be internal")\n        require(FinancialEngine.movementCategory(for: saveOut) == "Сейв", "Save movement gets its own account bucket")\n        require(FinancialEngine.saveTransferDirection(for: saveOut) == "Карта → Сейв", "negative own transfer moves money to Save")\n        require(FinancialEngine.saveTransferDirection(for: saveBack) == "Сейв → Карта", "positive own transfer moves money back to card")\n        require(FinancialEngine.classify(op(31, kind: "transfer", category: "Пополнение", description: "Начисление процентов по Сейву")).type == .interestIncome, "explicit Save interest beats generic top-up label")\n        require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")\n'''
-          )
-
-          insert_before(
-              'Tests/FinanceEngineTests.swift',
-              '        let summary = FinancialEngine.summarize([\n',
-              '''        let saveSummary = FinancialEngine.saveAccountSummary([\n            saveOut, saveBack,\n            op(31, kind: "transfer", category: "Пополнение", description: "Начисление процентов по Сейву")\n        ], in: interval)\n        require(saveSummary.toSaveKopecks == 50_000, "Save incoming transfer total")\n        require(saveSummary.fromSaveKopecks == 20_000, "Save outgoing transfer total")\n        require(saveSummary.netTransferKopecks == 30_000, "Save net transfer")\n        require(saveSummary.interestIncomeKopecks == 31, "Save interest total")\n\n'''
-          )
-
-          p = Path('Tests/reliability.test.js')
-          t = p.read_text()
-          anchor = "assert.match(source, /V34\\.6\\.2 keeps conservative verification/);"
-          if anchor not in t:
-              raise SystemExit('reliability version anchor not found')
-          t = t.replace(anchor, anchor + "\nassert.match(source, /перевод между счетами одного клиента/);\nassert.match(appSwift, /Section\\(\\\"Сейв\\\"\\)/);\nassert.match(appSwift, /Карта ↔ Сейв/);", 1)
-          p.write_text(t)
-
-          p = Path('YandexFinance.xcodeproj/project.pbxproj')
-          t = p.read_text()
-          if t.count('CURRENT_PROJECT_VERSION = 34.6.2;') != 2 or t.count('MARKETING_VERSION = 34.6.2;') != 2:
-              raise SystemExit('unexpected project version before 34.6.3')
-          p.write_text(t.replace('CURRENT_PROJECT_VERSION = 34.6.2;', 'CURRENT_PROJECT_VERSION = 34.6.3;')
-                        .replace('MARKETING_VERSION = 34.6.2;', 'MARKETING_VERSION = 34.6.3;'))
-
-          for file in ['YandexFinance/Collector.js', 'Tests/parser.test.js', 'Tests/reliability.test.js', 'README.md']:
-              p = Path(file)
-              t = p.read_text().replace('34.6.2', '34.6.3').replace('34\\.6\\.2', '34\\.6\\.3')
-              p.write_text(t)
-
-          p = Path('README.md')
-          t = p.read_text()
-          marker = '- изменения 34.5–34.6.3 перенесены из временных CI-патчей непосредственно в исходники проекта.\n'
-          if marker in t:
-              t = t.replace(marker, marker + '- добавлен отдельный учёт Сейва: переводы Карта ↔ Сейв являются перемещениями, а явные начисления процентов — доходом; старый архив по-прежнему берётся из PDF-выписки.\n', 1)
-          p.write_text(t)
-          PY
+        with:
+          persist-credentials: false
 
       - name: Проверка JavaScript
         run: |
@@ -185,13 +49,3 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-
-      - name: Зафиксировать проверенные исходники
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add YandexFinance/FinanceEngine.swift YandexFinance/Collector.js YandexFinance/YandexFinanceApp.swift YandexFinance.xcodeproj/project.pbxproj Tests/FinanceEngineTests.swift Tests/parser.test.js Tests/reliability.test.js README.md
-          if ! git diff --cached --quiet; then
-            git commit -m "Add Save account tracking 34.6.3 [skip ci]"
-            git push origin HEAD:main
-          fi
