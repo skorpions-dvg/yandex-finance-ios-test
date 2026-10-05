@@ -117,7 +117,11 @@ struct FinanceEngineTests {
                 "largest growth ignores transfers to people and split")
         require(comparison.topExpenseGrowth?.change.relative == .percent(60), "grocery growth +60%")
 
-        let noGrowth = FinancialEngine.compareReports(operations, currentInterval: january, previousInterval: february)
+        let decline = [
+            taxi(-2_000, "2024-01-06T10:00:00Z"), groceries(-5_000, "2024-01-07T10:00:00Z"),
+            taxi(-1_000, "2024-02-06T10:00:00Z"), groceries(-5_000, "2024-02-07T10:00:00Z"),
+        ]
+        let noGrowth = FinancialEngine.compareReports(decline, currentInterval: february, previousInterval: january)
         require(noGrowth.topExpenseGrowth == nil, "no category grew, so there is no growth leader")
 
         let fromZero = FinancialEngine.compareReports([taxi(-1_500, "2024-02-06T10:00:00Z")], currentInterval: february, previousInterval: january)
