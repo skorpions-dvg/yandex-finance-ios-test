@@ -48,42 +48,11 @@ jobs:
 
           replace_exact('YandexFinance/BankBrowser.swift', '@Published var selectedTab = 0', '@Published var selectedTab = 2')
           replace_exact('YandexFinance/BankBrowser.swift', '@Published var message = "Войдите в банк, затем откройте историю."', '@Published var message = ""')
-          replace_exact(
-              'YandexFinance/BankBrowser.swift',
-              '} else { scheduleAutomaticUpdate() }',
-              '''} else {
-            if webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !busy {
-                message = ""
-            }
-            scheduleAutomaticUpdate()
-        }'''
-          )
+          replace_exact('YandexFinance/BankBrowser.swift', '} else { scheduleAutomaticUpdate() }', '} else {\n            if webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !busy {\n                message = ""\n            }\n            scheduleAutomaticUpdate()\n        }')
 
-          replace_exact(
-              'YandexFinance/YandexFinanceApp.swift',
-              'Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")',
-              '''if !browser.message.isEmpty {
-                    Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")
-                }'''
-          )
-          replace_exact(
-              'YandexFinance/YandexFinanceApp.swift',
-              'Text(browser.message).font(.footnote)',
-              'if !browser.message.isEmpty { Text(browser.message).font(.footnote) }'
-          )
-          replace_exact(
-              'YandexFinance/YandexFinanceApp.swift',
-              '''Section("Состояние данных") {
-                    if let date = browser.history.lastCompletedSync {''',
-              '''Section("Состояние данных") {
-                    Toggle("Автообновление", isOn: $browser.autoUpdate)
-                        .disabled(browser.busy)
-                    if !browser.autoUpdate {
-                        Text("Автообновление выключено. Новые операции не будут проверяться автоматически при следующем открытии приложения.")
-                            .foregroundStyle(.orange)
-                    }
-                    if let date = browser.history.lastCompletedSync {'''
-          )
+          replace_exact('YandexFinance/YandexFinanceApp.swift', 'Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")', 'if !browser.message.isEmpty {\n                    Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")\n                }')
+          replace_exact('YandexFinance/YandexFinanceApp.swift', 'Text(browser.message).font(.footnote)', 'if !browser.message.isEmpty { Text(browser.message).font(.footnote) }')
+          replace_exact('YandexFinance/YandexFinanceApp.swift', 'Section("Состояние данных") {\n                    if let date = browser.history.lastCompletedSync {', 'Section("Состояние данных") {\n                    Toggle("Автообновление", isOn: $browser.autoUpdate)\n                        .disabled(browser.busy)\n                    if !browser.autoUpdate {\n                        Text("Автообновление выключено. Новые операции не будут проверяться автоматически при следующем открытии приложения.")\n                            .foregroundStyle(.orange)\n                    }\n                    if let date = browser.history.lastCompletedSync {')
 
           p = Path('YandexFinance.xcodeproj/project.pbxproj')
           text = p.read_text()
