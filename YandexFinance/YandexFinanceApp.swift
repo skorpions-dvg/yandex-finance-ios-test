@@ -56,12 +56,12 @@ struct ContentView: View {
                     VStack(spacing: 8) {
                         HStack {
                             Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }.disabled(!browser.storageAvailable)
-                            Button("Обновить 30 дней") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent).disabled(!browser.storageAvailable)
+                            Button("Обновить новые операции") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent).disabled(!browser.storageAvailable)
                         }
                         if browser.canResume {
                             Button("Продолжить загрузку истории") { browser.continueInitialHistory() }.disabled(!browser.storageAvailable)
                         }
-                        Button("Синхронизировать 6 месяцев") { browser.syncSixMonthsHistory() }
+                        Button("Импортировать выписку") { browser.syncSixMonthsHistory() }
                             .font(.footnote)
                             .disabled(!browser.storageAvailable)
                     }.font(.footnote).padding(.bottom, 8)
@@ -75,7 +75,7 @@ struct ContentView: View {
                             Button("Повторить открытие") { browser.retryOpenStorage() }
                                 .disabled(browser.busy)
                             if browser.storageRetryFailed {
-                                Text("Повторная попытка не помогла. Сброс удалит только локальную историю и ключ шифрования. Автообновление после сброса будет выключено, чтобы шестимесячная загрузка не началась неожиданно.")
+                                Text("Повторная попытка не помогла. Сброс удалит только локальную историю и ключ шифрования. После сброса сначала импортируйте PDF-выписку для архива до 01.10.2026, затем обновите новые операции.")
                                     .font(.caption).foregroundStyle(.secondary)
                                 Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
                                     .disabled(browser.busy)
@@ -84,10 +84,18 @@ struct ContentView: View {
                     }
                     Section {
                         Text("Сохранено операций: \(browser.history.operations.count)")
+                        if let imported = browser.history.statementImportedAt {
+                            Text("Архив из выписки: до 30.09.2026")
+                            Text("Импортировано из выписки: \(browser.history.statementOperationCount ?? 0) операций · \(imported.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("Архив до 01.10.2026: выписка ещё не импортирована")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                         if let date = browser.history.lastSync {
                             Text("Последнее сохранение: \(date.formatted(date: .abbreviated, time: .shortened))")
                         }
-                        Text(browser.bootstrapComplete ? "Первичная загрузка завершена" : "Полнота первичной загрузки ещё не подтверждена")
+                        Text(browser.bootstrapComplete ? "Архив и текущая история подготовлены" : "Архив до 01.10.2026 ещё не импортирован")
                         Text("Не разобрано: \(browser.history.unresolvedIssues?.count ?? 0)")
                         if let date = browser.history.lastCompletedSync {
                             Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
@@ -101,7 +109,7 @@ struct ContentView: View {
                             Text("Автообновление выключено. После сброса хранилища это делается специально; включите его снова после ручной синхронизации, когда будете готовы.")
                                 .font(.caption).foregroundStyle(.orange)
                         }
-                        Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")
+                        Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
                             .font(.footnote).foregroundStyle(.secondary)
                         if !browser.message.isEmpty { Text(browser.message).font(.footnote) }
                         if browser.busy { ProgressView("Обновление операций…") }
@@ -380,7 +388,7 @@ struct FinanceDashboardView: View {
                         Text("Полнота обновления ещё не подтверждена").foregroundStyle(.orange)
                     }
                     if !browser.bootstrapComplete {
-                        Text("Полнота первичной загрузки не подтверждена. Итоги рассчитаны по сохранённым записям.")
+                        Text("Архив до 01.10.2026 ещё не импортирован. Итоги за старые месяцы будут неполными до импорта PDF-выписки.")
                     }
                     let issues = browser.history.unresolvedIssues?.count ?? 0
                     if issues > 0 { Text("Не прочитано операций: \(issues). Итоги могут быть неполными.").foregroundStyle(.orange) }

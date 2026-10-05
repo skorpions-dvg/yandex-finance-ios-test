@@ -261,6 +261,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let retryData = retryIssue.flatMap { try? JSONEncoder().encode($0) }
         let arguments: [String: Any] = ["mode": mode, "lookbackDays": effectiveLookback.map { NSNumber(value: $0) } ?? NSNull(),
             "resumeMonthOrdinal": resume.map { NSNumber(value: $0) } ?? NSNull(), "runID": runID,
+            "archiveFloorISO": StatementImporter.archiveCutoffISO,
             "retryIssueJson": retryData.flatMap { String(data: $0, encoding: .utf8) } ?? "null"]
         webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .defaultClient) { [weak self] result in
             Task { @MainActor [weak self] in

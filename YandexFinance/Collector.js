@@ -1,4 +1,4 @@
-// Runs only on the bank history page. V34.6.1 keeps conservative verification and hardened mobile navigation/retry handling.
+// Runs only on the bank history page. V34.6.2 keeps conservative verification and hardened mobile navigation/retry handling.
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
@@ -553,7 +553,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
   if (dateMarks.length > 1) throw Error('Найдено несколько карточек. Не удалось выбрать активную.');
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 34.6.1).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 34.6.2).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -583,7 +583,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 34.6.1).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 34.6.2).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -687,7 +687,7 @@ if (mode === 'card' || mode === 'retry_card') {
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 34.6.1).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 34.6.2).');
   }
   const operation = parseCard(location.href, cardText, '');
   if (retryIssue?.identity && operation.identity !== retryIssue.identity) throw Error('Открылась другая операция. Повторное чтение не сохранено.');
@@ -720,7 +720,11 @@ const parsedLookback = rawLookback == null ? null : Number(rawLookback);
 if (parsedLookback !== null && (!Number.isFinite(parsedLookback) || parsedLookback <= 0))
   throw Error('Некорректный период синхронизации.');
 effectiveLookbackDays = parsedLookback === null ? null : Math.floor(parsedLookback);
-const cutoff = effectiveLookbackDays === null ? null : Date.now() - effectiveLookbackDays * 86400000;
+const lookbackCutoff = effectiveLookbackDays === null ? null : Date.now() - effectiveLookbackDays * 86400000;
+const archiveFloor = typeof archiveFloorISO === 'string' ? Date.parse(archiveFloorISO) : NaN;
+const cutoff = Number.isFinite(archiveFloor)
+  ? (lookbackCutoff === null ? archiveFloor : Math.max(lookbackCutoff, archiveFloor))
+  : lookbackCutoff;
 const rawResumeOrdinal = typeof resumeMonthOrdinal === 'undefined' ? null : resumeMonthOrdinal;
 const parsedResumeOrdinal = rawResumeOrdinal == null ? null : Number(rawResumeOrdinal);
 if (parsedResumeOrdinal !== null && (!Number.isInteger(parsedResumeOrdinal) || parsedResumeOrdinal < 0))
