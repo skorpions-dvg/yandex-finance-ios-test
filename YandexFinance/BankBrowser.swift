@@ -1,8 +1,10 @@
 import SwiftUI
 import WebKit
+import UIKit
+import UniformTypeIdentifiers
 
 @MainActor
-final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate {
     let webView: WKWebView
     @Published var selectedTab = 2
     @Published var busy = false
@@ -33,8 +35,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             else { automaticTask?.cancel(); automaticTask = nil }
         }
     }
-    var bootstrapComplete: Bool { history.bootstrapCompleted == true }
-    var canResume: Bool { !bootstrapComplete && history.bootstrapResumeMonth != nil }
+    var bootstrapComplete: Bool { history.statementArchiveThrough != nil || history.bootstrapCompleted == true }
+    var canResume: Bool { false }
     var storageAvailable: Bool { readable }
     var stalePendingCount: Int { incrementalPolicy().stalePendingCount }
 
@@ -52,7 +54,6 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             storageError = error.localizedDescription
             message = "Хранилище не открыто: \(error.localizedDescription)"
         }
-        // Old UserDefaults completion flags do not prove coverage; legacy records remain intact.
         openHistory()
     }
     func becameActive() { foreground = true; scheduleAutomaticUpdate() }
@@ -78,9 +79,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                     guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
                     if value as? Bool == true {
                         self.automaticTask = nil
-                        // Fresh data first; older bootstrap work has an explicit continuation action.
-                        if self.history.operations.isEmpty { self.continueInitialHistory() }
-                        else { self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: self.history.lastCompletedSync == nil && self.history.bootstrapResumeMonth == nil, automaticRun: true) }
+                        self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: false, automaticRun: true)
                         return
                     }
                 } catch { continue }
@@ -95,22 +94,98 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             now: now
         )
     }
-    private func incrementalDays(now: Date = Date()) -> Int { incrementalPolicy(now: now).days }
+    private func incrementalDays(now: Date = Date()) -> Int {
+        if history.lastCompletedSync == nil, history.statementArchiveThrough != nil {
+            return max(7, Int(ceil(now.timeIntervalSince(StatementImporter.archiveCutoff) / 86400)) + 1)
+        }
+        return incrementalPolicy(now: now).days
+    }
     private static func operationDate(_ value: String) -> Date? { IncrementalSyncPolicy.operationDate(value) }
     func openHistory() {
         guard !busy else { return }
         webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
     }
-    func continueInitialHistory() { read(mode: "history", lookbackDays: 183, initialImport: true) }
+    func continueInitialHistory() { read(mode: "history", lookbackDays: incrementalDays(), initialImport: false) }
+
+    // Kept under the old method name so existing SwiftUI stays source-compatible.
+    // The button now opens a PDF statement instead of scrolling six months of WebView history.
     func syncSixMonthsHistory() {
         guard !busy, readable else { return }
-        var next = history
-        next.bootstrapResumeMonth = nil
-        next.bootstrapCompleted = false
-        do { try vault.save(next); history = next }
-        catch { message = "Не удалось сохранить состояние: \(error.localizedDescription)"; return }
-        continueInitialHistory()
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.pdf], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        guard let presenter = topViewController() else {
+            message = "Не удалось открыть выбор выписки."
+            return
+        }
+        presenter.present(picker, animated: true)
     }
+
+    private func topViewController() -> UIViewController? {
+        let roots = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .filter(\.isKeyWindow)
+            .compactMap(\.rootViewController)
+        guard var top = roots.first else { return nil }
+        while true {
+            if let presented = top.presentedViewController { top = presented; continue }
+            if let navigation = top as? UINavigationController, let visible = navigation.visibleViewController { top = visible; continue }
+            if let tab = top as? UITabBarController, let selected = tab.selectedViewController { top = selected; continue }
+            return top
+        }
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        importStatement(url)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        message = "Импорт выписки отменён."
+    }
+
+    private func importStatement(_ url: URL) {
+        guard !busy, readable else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try StatementImporter.importPDF(at: url)
+            var next = history
+            let cutoff = StatementImporter.archiveCutoff
+
+            // The statement is authoritative for the archive. Remove any partial WebView
+            // scan below the boundary so the same old movement cannot exist under two IDs.
+            next.operations.removeAll { operation in
+                guard let date = Self.operationDate(operation.occurredAt) else { return false }
+                return date < cutoff
+            }
+            let floorMonthOrdinal = 2026 * 12 + 9
+            next.unresolvedIssues = (next.unresolvedIssues ?? []).filter { issue in
+                if let raw = issue.bankDate, let date = Self.operationDate(raw) { return date >= cutoff }
+                if let month = issue.monthOrdinal { return month >= floorMonthOrdinal }
+                return true
+            }
+
+            let counts = apply(result.operations, to: &next)
+            guard counts.rejected == 0 else {
+                throw AppFailure(message: "Часть операций выписки не прошла проверку: \(counts.rejected). Архив не сохранён.")
+            }
+            next.statementArchiveThrough = cutoff.addingTimeInterval(-1)
+            next.statementImportedAt = Date()
+            next.statementOperationCount = result.operations.count
+            next.bootstrapCompleted = true
+            next.bootstrapResumeMonth = nil
+            next.lastStopReason = "statement_archive_imported"
+            next.lastSync = Date()
+            try vault.save(next)
+            history = next
+            message = "Выписка импортирована: \(result.operations.count) архивных операций до 01.10.2026. Операций с 01.10.2026 и новее оставлено сканеру: \(result.ignoredAtOrAfterCutoff). Старую историю через WebView больше листать не нужно."
+        } catch {
+            message = "Не удалось импортировать выписку: \(error.localizedDescription)"
+        }
+    }
+
     func retry(_ issue: ImportIssue) {
         guard !busy, readable else { return }
         selectedTab = 0
@@ -153,7 +228,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         activeRunID = runID
         let startedAt = Date()
         let resume = retryIssue?.monthOrdinal ?? (initialImport ? history.bootstrapResumeMonth : nil)
-        message = (mode == "card" || mode == "retry_card") ? "Читаю карточку…" : "Проверяю историю. Уже сохранённые записи остаются на телефоне."
+        message = (mode == "card" || mode == "retry_card") ? "Читаю карточку…" : "Проверяю историю с 01.10.2026. Архив до этой даты берётся из выписки."
         webView.isUserInteractionEnabled = false
         progressTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -165,11 +240,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let retryData = retryIssue.flatMap { try? JSONEncoder().encode($0) }
         let arguments: [String: Any] = ["mode": mode, "lookbackDays": lookbackDays.map { NSNumber(value: $0) } ?? NSNull(),
             "resumeMonthOrdinal": resume.map { NSNumber(value: $0) } ?? NSNull(), "runID": runID,
+            "archiveFloorISO": StatementImporter.archiveCutoffISO,
             "retryIssueJson": retryData.flatMap { String(data: $0, encoding: .utf8) } ?? "null"]
         webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .defaultClient) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self, self.activeRunID == runID else { return }
-                // Invalidate late snapshots before merging the authoritative final batch.
                 self.activeRunID = nil
                 self.progressTask?.cancel(); self.progressTask = nil
                 defer { self.busy = false; self.webView.isUserInteractionEnabled = true }
@@ -241,8 +316,6 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             next.bootstrapCompleted = boundaryReached && bootstrapClean
             if next.bootstrapCompleted == true { next.bootstrapResumeMonth = nil }
         }
-        // A resumed pass covers old months only; it must not advance the fresh-data watermark.
-        // Old unresolved issues are independent retry work and must not freeze fresh coverage.
         if mode == "history", boundaryReached, runClean, !resumed, (requestedDays == nil || requestedDays! >= incrementalDays(now: startedAt)) { next.lastCompletedSync = startedAt }
         next.lastSync = Date(); next.lastStopReason = batch.stopReason
         try vault.save(next); history = next
@@ -250,7 +323,6 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         if batch.stopReason == "issue_retry_completed" { ending = "Пропущенная операция прочитана." }
         else if batch.stopReason == "issue_not_found" { ending = "Операция не найдена в сохранённом месяце. Ошибка остаётся в списке." }
         else if batch.stopReason == "single_card" { ending = "Карточка прочитана." }
-        else if initialImport && boundaryReached && !bootstrapClean { ending = "Граница периода достигнута, но остаются непрочитанные операции." }
         else if boundaryReached && runClean { ending = "Граница выбранного периода достигнута." }
         else if batch.stopReason == "cancelled" { ending = "Остановлено. Прогресс сохранён." }
         else { ending = "Прогресс сохранён. Полнота периода не подтверждена." }
@@ -294,7 +366,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             window.__financeCheckpointQueue = (window.__financeCheckpointQueue || []).filter(x => x.sequence > throughSequence);
             return true;
             """, arguments: ["expectedRunID": runID, "throughSequence": snapshot.throughSequence], in: nil, contentWorld: .defaultClient)
-        } catch { /* Queue remains available to retry; final batch contains all parsed operations. */ }
+        } catch { }
     }
     func retryOpenStorage() {
         guard !busy else { return }
@@ -322,7 +394,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             storageError = nil
             storageRetryFailed = false
             autoUpdate = false
-            message = "Локальное хранилище сброшено. Автообновление выключено: после входа запустите «Синхронизировать 6 месяцев» вручную, затем при желании снова включите автообновление."
+            message = "Локальное хранилище сброшено. Сначала импортируйте PDF-выписку для архива до 01.10.2026, затем обновите текущую историю и включите автообновление."
         } catch {
             message = "Не удалось сбросить локальное хранилище: \(error.localizedDescription)"
         }
