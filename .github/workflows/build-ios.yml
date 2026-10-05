@@ -7,33 +7,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ios-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  migrate:
     if: ${{ github.event.repository.private == false }}
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
 
-      - name: Проверка JavaScript
-        run: |
-          node Tests/parser.test.js
-          node Tests/reliability.test.js
-
-      - name: Проверка финансового движка Swift
-        run: |
-          swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
-          /tmp/finance-tests
-
-      - name: Применить изменения 34.6.1
+      - name: Перенести 34.6.1 в исходники
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -46,53 +34,78 @@ jobs:
                   raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
               p.write_text(text.replace(old, new))
 
-          # UI changes from 34.5.
+          project = Path('YandexFinance.xcodeproj/project.pbxproj').read_text()
+          if 'CURRENT_PROJECT_VERSION = 34.6.1;' in project:
+              print('34.6.1 is already promoted into source; nothing to migrate.')
+              raise SystemExit(0)
+
+          if project.count('CURRENT_PROJECT_VERSION = 34.4;') != 2 or project.count('MARKETING_VERSION = 34.4;') != 2:
+              raise SystemExit('Unexpected project version before 34.6.1 migration')
+
+          # UI changes previously applied only inside CI.
           replace_exact('YandexFinance/BankBrowser.swift', '@Published var selectedTab = 0', '@Published var selectedTab = 2')
           replace_exact('YandexFinance/BankBrowser.swift', '@Published var message = "Войдите в банк, затем откройте историю."', '@Published var message = ""')
           replace_exact('YandexFinance/BankBrowser.swift', '} else { scheduleAutomaticUpdate() }', '} else {\n            if webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !busy {\n                message = ""\n            }\n            scheduleAutomaticUpdate()\n        }')
+
           replace_exact('YandexFinance/YandexFinanceApp.swift', 'Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")', 'if !browser.message.isEmpty {\n                    Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")\n                }')
           replace_exact('YandexFinance/YandexFinanceApp.swift', 'Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")\n                            .font(.footnote).foregroundStyle(.secondary)\n                        Text(browser.message).font(.footnote)', 'Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")\n                            .font(.footnote).foregroundStyle(.secondary)\n                        if !browser.message.isEmpty { Text(browser.message).font(.footnote) }')
           replace_exact('YandexFinance/YandexFinanceApp.swift', 'Section("Состояние данных") {\n                    if let date = browser.history.lastCompletedSync {', 'Section("Состояние данных") {\n                    Toggle("Автообновление", isOn: $browser.autoUpdate)\n                        .disabled(browser.busy)\n                    if !browser.autoUpdate {\n                        Text("Автообновление выключено. Новые операции не будут проверяться автоматически при следующем открытии приложения.")\n                            .foregroundStyle(.orange)\n                    }\n                    if let date = browser.history.lastCompletedSync {')
 
-          # 34.6: protected recovery copy of the encryption key inside the app container.
+          # Resilient local vault key storage. The recovery copy lives in the app
+          # container, while an existing encrypted history can never be overwritten
+          # when both the Keychain item and recovery copy are missing.
           replace_exact('YandexFinance/Vault.swift', '    private let account = "encryption-key"\n\n    private func fileURL() throws -> URL {', '''    private let account = "encryption-key"\n\n    private func supportFolder() throws -> URL {\n        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,\n                                               appropriateFor: nil, create: true)\n        var folder = base.appendingPathComponent("History", isDirectory: true)\n        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,\n                                                attributes: [.protectionKey: FileProtectionType.complete])\n        var values = URLResourceValues()\n        values.isExcludedFromBackup = true\n        try folder.setResourceValues(values)\n        return folder\n    }\n\n    private func recoveryKeyURL() throws -> URL {\n        try supportFolder().appendingPathComponent("vault-key.bin")\n    }\n\n    private func fileURL() throws -> URL {''')
-          replace_exact('YandexFinance/Vault.swift', '''        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,\n                                               appropriateFor: nil, create: true)\n        var folder = base.appendingPathComponent("History", isDirectory: true)\n        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,\n                                                attributes: [.protectionKey: FileProtectionType.complete])\n        var values = URLResourceValues()\n        values.isExcludedFromBackup = true\n        try folder.setResourceValues(values)\n        return folder.appendingPathComponent("operations.encrypted")''', '''        try supportFolder().appendingPathComponent("operations.encrypted")''')
+          replace_exact('YandexFinance/Vault.swift', '''        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,\n                                               appropriateFor: nil, create: true)\n        var folder = base.appendingPathComponent("History", isDirectory: true)\n        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,\n                                                attributes: [.protectionKey: FileProtectionType.complete])\n        var values = URLResourceValues()\n        values.isExcludedFromBackup = true\n        try folder.setResourceValues(values)\n        return folder.appendingPathComponent("operations.encrypted")''', '        try supportFolder().appendingPathComponent("operations.encrypted")')
           replace_exact('YandexFinance/Vault.swift', '''        if code == errSecSuccess, let bytes = result as? Data {\n            guard bytes.count == 32 else { throw AppFailure(message: "Неверный ключ хранилища.") }\n            return SymmetricKey(data: bytes)\n        }\n        guard code == errSecItemNotFound, create else {\n            throw AppFailure(message: "Ключ хранилища недоступен. Код: \\(code).")\n        }\n        let newKey = SymmetricKey(size: .bits256)\n        let bytes = newKey.withUnsafeBytes { Data($0) }''', '''        if code == errSecSuccess, let bytes = result as? Data {\n            guard bytes.count == 32 else { throw AppFailure(message: "Неверный ключ хранилища.") }\n            try? bytes.write(to: recoveryKeyURL(), options: [.atomic, .completeFileProtection])\n            return SymmetricKey(data: bytes)\n        }\n\n        let recoveryURL = try recoveryKeyURL()\n        if let bytes = try? Data(contentsOf: recoveryURL), bytes.count == 32 {\n            return SymmetricKey(data: bytes)\n        }\n\n        guard code == errSecItemNotFound, create else {\n            throw AppFailure(message: "Ключ хранилища недоступен. Код: \\(code).")\n        }\n        let existingHistory = try fileURL()\n        if FileManager.default.fileExists(atPath: existingHistory.path) {\n            throw AppFailure(message: "Ключ хранилища отсутствует. Существующая локальная история сохранена и не будет перезаписана.")\n        }\n        let newKey = SymmetricKey(size: .bits256)\n        let bytes = newKey.withUnsafeBytes { Data($0) }''')
           replace_exact('YandexFinance/Vault.swift', '''        guard added == errSecSuccess else { throw AppFailure(message: "Не удалось сохранить ключ. Код: \\(added).") }\n        return newKey''', '''        guard added == errSecSuccess else { throw AppFailure(message: "Не удалось сохранить ключ. Код: \\(added).") }\n        try bytes.write(to: recoveryKeyURL(), options: [.atomic, .completeFileProtection])\n        return newKey''')
           replace_exact('YandexFinance/Vault.swift', '''        if FileManager.default.fileExists(atPath: file.path) {\n            try FileManager.default.removeItem(at: file)\n        }\n        let query:''', '''        if FileManager.default.fileExists(atPath: file.path) {\n            try FileManager.default.removeItem(at: file)\n        }\n        let recoveryURL = try recoveryKeyURL()\n        if FileManager.default.fileExists(atPath: recoveryURL.path) {\n            try FileManager.default.removeItem(at: recoveryURL)\n        }\n        let query:''')
 
-          # 34.6.1: Yandex can expose the visible month as text plus an accessibility
-          # label, or wrap it in a non-button element. Parse visible text/ARIA/title
-          # separately and fall back to compact visible month labels in the header.
+          # Current Yandex mobile history can expose the month label in text, ARIA,
+          # title, or a compact non-button wrapper. Keep old controls compatible too.
           replace_exact('YandexFinance/Collector.js', '''function selectedMonthControl() {\n  const candidates = controls().filter(isVisible).map(el => {\n    const raw = controlName(el);\n    const parsed = parseMonthLabel(raw);\n    if (!parsed || moneyPattern.test(raw)) return null;\n    // Prefer compact controls: this avoids mistaking a large history row/container for the selector.\n    const score = (text(el).length <= 24 ? 0 : 10) + (raw.length <= 48 ? 0 : 10);\n    return {el, score};\n  }).filter(Boolean).sort((a, b) => a.score - b.score);\n  return candidates[0]?.el || null;\n}''', '''function monthLabelFromControl(el) {\n  if (!el) return null;\n  const values = [text(el), el.getAttribute?.('aria-label'), el.getAttribute?.('title')].filter(Boolean);\n  for (const value of values) {\n    const parsed = parseMonthLabel(value);\n    if (parsed) return parsed;\n  }\n  return null;\n}\nfunction monthControlElements() {\n  const primary = controls();\n  const fallback = [...document.querySelectorAll('div,span')].filter(el => {\n    if (!isVisible(el) || !monthLabelFromControl(el)) return false;\n    const rect = el.getBoundingClientRect?.();\n    return rect && rect.width >= 40 && rect.width <= 280 && rect.height >= 20 && rect.height <= 110 &&\n      rect.top >= 0 && rect.top <= Math.max(500, window.innerHeight * 0.55);\n  });\n  return [...new Set([...primary, ...fallback])];\n}\nfunction selectedMonthControl() {\n  const candidates = monthControlElements().filter(isVisible).map(el => {\n    const parsed = monthLabelFromControl(el);\n    const raw = text(el);\n    if (!parsed || moneyPattern.test(raw)) return null;\n    const rect = el.getBoundingClientRect?.() || {top: 9999, width: 9999, height: 9999};\n    const compactPenalty = raw.length <= 24 ? 0 : 10;\n    const headerPenalty = rect.top <= Math.max(420, window.innerHeight * 0.45) ? 0 : 20;\n    const sizePenalty = rect.width <= 280 && rect.height <= 110 ? 0 : 20;\n    return {el, score: compactPenalty + headerPenalty + sizePenalty, top: rect.top};\n  }).filter(Boolean).sort((a, b) => a.score - b.score || a.top - b.top);\n  return candidates[0]?.el || null;\n}''')
           replace_exact('YandexFinance/Collector.js', '  const parsed = parseMonthLabel(controlName(control));', '  const parsed = monthLabelFromControl(control);')
           replace_exact('YandexFinance/Collector.js', '''function visibleMonthChoices(exclude) {\n  return actionables().filter(el => el !== exclude && isVisible(el)).map(el => {\n    const parsed = parseMonthLabel(controlName(el));\n    if (!parsed || moneyPattern.test(controlName(el))) return null;\n    return {el, month: parsed.month, year: parsed.year};\n  }).filter(Boolean);\n}''', '''function visibleMonthChoices(exclude) {\n  const fallback = [...document.querySelectorAll('div,span')].filter(el => monthLabelFromControl(el));\n  return [...new Set([...actionables(), ...fallback])].filter(el => el !== exclude && isVisible(el)).map(el => {\n    const parsed = monthLabelFromControl(el);\n    if (!parsed || moneyPattern.test(text(el))) return null;\n    return {el, month: parsed.month, year: parsed.year};\n  }).filter(Boolean);\n}''')
           replace_exact('YandexFinance/Collector.js', '      const parsed = parseMonthLabel(controlName(current));', '      const parsed = monthLabelFromControl(current);')
 
-          p = Path('YandexFinance.xcodeproj/project.pbxproj')
-          text = p.read_text()
-          if text.count('CURRENT_PROJECT_VERSION = 34.4;') != 2 or text.count('MARKETING_VERSION = 34.4;') != 2:
-              raise SystemExit('unexpected project version before 34.6.1 patch')
-          text = text.replace('CURRENT_PROJECT_VERSION = 34.4;', 'CURRENT_PROJECT_VERSION = 34.6.1;')
-          text = text.replace('MARKETING_VERSION = 34.4;', 'MARKETING_VERSION = 34.6.1;')
-          p.write_text(text)
-
           p = Path('YandexFinance/Collector.js')
           text = p.read_text().replace('V34.4 keeps conservative verification', 'V34.6.1 keeps conservative verification').replace('версия 34.4', 'версия 34.6.1')
           p.write_text(text)
+
+          p = Path('YandexFinance.xcodeproj/project.pbxproj')
+          text = p.read_text().replace('CURRENT_PROJECT_VERSION = 34.4;', 'CURRENT_PROJECT_VERSION = 34.6.1;').replace('MARKETING_VERSION = 34.4;', 'MARKETING_VERSION = 34.6.1;')
+          p.write_text(text)
+
+          replace_exact('Tests/reliability.test.js', 'CURRENT_PROJECT_VERSION = 34\\.4;', 'CURRENT_PROJECT_VERSION = 34\\.6\\.1;')
+          replace_exact('Tests/reliability.test.js', 'Debug and Release build number must both be 34.4', 'Debug and Release build number must both be 34.6.1')
+          replace_exact('Tests/reliability.test.js', '/Текущий номер сборки — 34\\.4/', '/Текущий номер сборки — 34\\.6\\.1/')
+
+          p = Path('README.md')
+          text = p.read_text()
+          old = '# Обновление 34.4 — уточнение реальных категорий\n\nТекущий номер сборки — 34.4.\n'
+          new = '''# Обновление 34.6.1 — устойчивое хранилище и синхронизация\n\nТекущий номер сборки — 34.6.1.\n\n## Изменения 34.6.1\n\n- исправлено распознавание переключателя месяца в текущем мобильном интерфейсе истории Яндекс Банка;\n- ключ локального шифрованного хранилища теперь имеет защищённую резервную копию внутри контейнера приложения;\n- существующая зашифрованная история не перезаписывается, если ключ внезапно недоступен;\n- стартовый экран — «Финансы», устаревшие служебные сообщения скрыты, автообновление управляется из интерфейса;\n- изменения 34.5–34.6.1 перенесены из временных CI-патчей непосредственно в исходники проекта.\n\n## Изменения 34.4\n'''
+          if old not in text:
+              raise SystemExit('README header does not match expected 34.4 state')
+          p.write_text(text.replace(old, new, 1))
           PY
 
-      - name: Проверка парсера после патча
-        run: node Tests/parser.test.js
+      - name: Проверка JavaScript
+        run: |
+          node Tests/parser.test.js
+          node Tests/reliability.test.js
 
-      - name: Сборка приложения
-        run: bash scripts/build-ipa.sh
+      - name: Проверка финансового движка Swift
+        run: |
+          swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
+          /tmp/finance-tests
 
-      - name: Сохранение IPA
-        uses: actions/upload-artifact@v7
-        with:
-          name: YandexFinance-unsigned-IPA
-          path: dist/YandexFinance-unsigned.ipa
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+      - name: Зафиксировать актуальные исходники
+        run: |
+          if git diff --quiet; then
+            echo "Исходники уже актуальны"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add YandexFinance YandexFinance.xcodeproj/project.pbxproj Tests/reliability.test.js README.md
+          git commit -m "Promote 34.6.1 patches into source"
+          git push
