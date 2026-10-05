@@ -33,7 +33,7 @@ jobs:
           swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
           /tmp/finance-tests
 
-      - name: Применить изменения интерфейса 34.5
+      - name: Применить изменения 34.6
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -46,24 +46,33 @@ jobs:
                   raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
               p.write_text(text.replace(old, new))
 
+          # UI changes from 34.5.
           replace_exact('YandexFinance/BankBrowser.swift', '@Published var selectedTab = 0', '@Published var selectedTab = 2')
           replace_exact('YandexFinance/BankBrowser.swift', '@Published var message = "Войдите в банк, затем откройте историю."', '@Published var message = ""')
           replace_exact('YandexFinance/BankBrowser.swift', '} else { scheduleAutomaticUpdate() }', '} else {\n            if webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !busy {\n                message = ""\n            }\n            scheduleAutomaticUpdate()\n        }')
-
           replace_exact('YandexFinance/YandexFinanceApp.swift', 'Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")', 'if !browser.message.isEmpty {\n                    Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")\n                }')
           replace_exact('YandexFinance/YandexFinanceApp.swift', 'Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")\n                            .font(.footnote).foregroundStyle(.secondary)\n                        Text(browser.message).font(.footnote)', 'Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")\n                            .font(.footnote).foregroundStyle(.secondary)\n                        if !browser.message.isEmpty { Text(browser.message).font(.footnote) }')
           replace_exact('YandexFinance/YandexFinanceApp.swift', 'Section("Состояние данных") {\n                    if let date = browser.history.lastCompletedSync {', 'Section("Состояние данных") {\n                    Toggle("Автообновление", isOn: $browser.autoUpdate)\n                        .disabled(browser.busy)\n                    if !browser.autoUpdate {\n                        Text("Автообновление выключено. Новые операции не будут проверяться автоматически при следующем открытии приложения.")\n                            .foregroundStyle(.orange)\n                    }\n                    if let date = browser.history.lastCompletedSync {')
 
+          # 34.6: keep a protected recovery copy of the encryption key inside the
+          # application container. AltStore re-signing can make an old Keychain
+          # access group unavailable even though the app container survives.
+          replace_exact('YandexFinance/Vault.swift', '    private let account = "encryption-key"\n\n    private func fileURL() throws -> URL {', '''    private let account = "encryption-key"\n\n    private func supportFolder() throws -> URL {\n        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,\n                                               appropriateFor: nil, create: true)\n        let folder = base.appendingPathComponent("History", isDirectory: true)\n        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,\n                                                attributes: [.protectionKey: FileProtectionType.complete])\n        var values = URLResourceValues()\n        values.isExcludedFromBackup = true\n        try folder.setResourceValues(values)\n        return folder\n    }\n\n    private func recoveryKeyURL() throws -> URL {\n        try supportFolder().appendingPathComponent("vault-key.bin")\n    }\n\n    private func fileURL() throws -> URL {''')
+          replace_exact('YandexFinance/Vault.swift', '''        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,\n                                               appropriateFor: nil, create: true)\n        var folder = base.appendingPathComponent("History", isDirectory: true)\n        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,\n                                                attributes: [.protectionKey: FileProtectionType.complete])\n        var values = URLResourceValues()\n        values.isExcludedFromBackup = true\n        try folder.setResourceValues(values)\n        return folder.appendingPathComponent("operations.encrypted")''', '''        try supportFolder().appendingPathComponent("operations.encrypted")''')
+          replace_exact('YandexFinance/Vault.swift', '''        if code == errSecSuccess, let bytes = result as? Data {\n            guard bytes.count == 32 else { throw AppFailure(message: "Неверный ключ хранилища.") }\n            return SymmetricKey(data: bytes)\n        }\n        guard code == errSecItemNotFound, create else {\n            throw AppFailure(message: "Ключ хранилища недоступен. Код: \\(code).")\n        }\n        let newKey = SymmetricKey(size: .bits256)\n        let bytes = newKey.withUnsafeBytes { Data($0) }''', '''        if code == errSecSuccess, let bytes = result as? Data {\n            guard bytes.count == 32 else { throw AppFailure(message: "Неверный ключ хранилища.") }\n            try? bytes.write(to: recoveryKeyURL(), options: [.atomic, .completeFileProtection])\n            return SymmetricKey(data: bytes)\n        }\n\n        let recoveryURL = try recoveryKeyURL()\n        if let bytes = try? Data(contentsOf: recoveryURL), bytes.count == 32 {\n            return SymmetricKey(data: bytes)\n        }\n\n        guard code == errSecItemNotFound, create else {\n            throw AppFailure(message: "Ключ хранилища недоступен. Код: \\(code).")\n        }\n        let newKey = SymmetricKey(size: .bits256)\n        let bytes = newKey.withUnsafeBytes { Data($0) }''')
+          replace_exact('YandexFinance/Vault.swift', '''        guard added == errSecSuccess else { throw AppFailure(message: "Не удалось сохранить ключ. Код: \\(added).") }\n        return newKey''', '''        guard added == errSecSuccess else { throw AppFailure(message: "Не удалось сохранить ключ. Код: \\(added).") }\n        try bytes.write(to: recoveryKeyURL(), options: [.atomic, .completeFileProtection])\n        return newKey''')
+          replace_exact('YandexFinance/Vault.swift', '''        if FileManager.default.fileExists(atPath: file.path) {\n            try FileManager.default.removeItem(at: file)\n        }\n        let query:''', '''        if FileManager.default.fileExists(atPath: file.path) {\n            try FileManager.default.removeItem(at: file)\n        }\n        let recoveryURL = try recoveryKeyURL()\n        if FileManager.default.fileExists(atPath: recoveryURL.path) {\n            try FileManager.default.removeItem(at: recoveryURL)\n        }\n        let query:''')
+
           p = Path('YandexFinance.xcodeproj/project.pbxproj')
           text = p.read_text()
           if text.count('CURRENT_PROJECT_VERSION = 34.4;') != 2 or text.count('MARKETING_VERSION = 34.4;') != 2:
-              raise SystemExit('unexpected project version before 34.5 patch')
-          text = text.replace('CURRENT_PROJECT_VERSION = 34.4;', 'CURRENT_PROJECT_VERSION = 34.5;')
-          text = text.replace('MARKETING_VERSION = 34.4;', 'MARKETING_VERSION = 34.5;')
+              raise SystemExit('unexpected project version before 34.6 patch')
+          text = text.replace('CURRENT_PROJECT_VERSION = 34.4;', 'CURRENT_PROJECT_VERSION = 34.6;')
+          text = text.replace('MARKETING_VERSION = 34.4;', 'MARKETING_VERSION = 34.6;')
           p.write_text(text)
 
           p = Path('YandexFinance/Collector.js')
-          text = p.read_text().replace('V34.4 keeps conservative verification', 'V34.5 keeps conservative verification').replace('версия 34.4', 'версия 34.5')
+          text = p.read_text().replace('V34.4 keeps conservative verification', 'V34.6 keeps conservative verification').replace('версия 34.4', 'версия 34.6')
           p.write_text(text)
           PY
 
