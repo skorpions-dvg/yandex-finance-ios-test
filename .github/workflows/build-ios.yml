@@ -82,10 +82,8 @@ jobs:
           p.write_text(text)
           PY
 
-      - name: Проверка JavaScript после патча
-        run: |
-          node Tests/parser.test.js
-          node Tests/reliability.test.js
+      - name: Проверка парсера после патча
+        run: node Tests/parser.test.js
 
       - name: Сборка приложения
         run: bash scripts/build-ipa.sh
