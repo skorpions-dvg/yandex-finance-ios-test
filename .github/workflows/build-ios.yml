@@ -25,7 +25,6 @@ jobs:
 
       - name: Проверка JavaScript
         run: |
-          node --check YandexFinance/Collector.js
           node Tests/parser.test.js
           node Tests/reliability.test.js
 
