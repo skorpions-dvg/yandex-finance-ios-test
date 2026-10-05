@@ -449,8 +449,8 @@ struct FinanceDashboardView: View {
                     }
                 }
 
-                Section("Расходы по дням") {
-                    DailyExpenseChart(days: FinancialEngine.dailyNetExpense(inputs, in: periods.current))
+                Section("Расходы по категориям") {
+                    CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
                 }
 
                 Section("Состояние данных") {

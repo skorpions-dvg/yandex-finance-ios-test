@@ -547,6 +547,20 @@ enum FinancialEngine {
 
     // MARK: - Chart data
 
+    struct CategoryAmount: Equatable, Identifiable {
+        let title: String
+        let amountKopecks: Int64
+        var id: String { title }
+    }
+
+    /// Spending per top-level expense group, in taxonomy order, taken from the report's own lines.
+    /// Split and refunds are not groups, so the amounts add up to `grossExpenseKopecks`.
+    static func expenseByGroup(_ report: FinanceReport) -> [CategoryAmount] {
+        report.expenseLines
+            .filter { expenseGroupOrder.contains($0.title) && $0.amountKopecks > 0 }
+            .map { CategoryAmount(title: $0.title, amountKopecks: $0.amountKopecks) }
+    }
+
     struct DailyAmount: Equatable, Identifiable {
         let day: Date
         let amountKopecks: Int64

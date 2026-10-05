@@ -166,6 +166,25 @@ struct FinanceEngineTests {
         require(partial.map(\.amountKopecks) == [500], "a partial last day only counts operations inside the interval")
     }
 
+    static func testExpenseByGroup() {
+        let interval = DateInterval(start: BankDateParser.parse("2024-02-01T00:00:00Z")!, end: BankDateParser.parse("2024-03-01T00:00:00Z")!)
+        let operations = [
+            op(-1_000, kind: "expense", category: "Такси", date: "2024-02-01T10:00:00Z"),
+            op(-500, kind: "expense", category: "Супермаркеты", date: "2024-02-02T10:00:00Z"),
+            op(-300, kind: "expense", category: "Кафе", date: "2024-02-03T10:00:00Z"),
+            op(-9_000, kind: "installment_payment", category: "Сплит", date: "2024-02-04T10:00:00Z"),
+            op(200, kind: "refund", category: "Возврат", date: "2024-02-05T10:00:00Z"),
+            op(-4_000, kind: "internal_transfer", category: "Переводы между своими счетами", date: "2024-02-06T10:00:00Z"),
+        ]
+        let report = FinancialEngine.report(operations, in: interval)
+        let groups = FinancialEngine.expenseByGroup(report)
+        require(groups == [FinancialEngine.CategoryAmount(title: "Еда", amountKopecks: 800),
+                           FinancialEngine.CategoryAmount(title: "Транспорт", amountKopecks: 1_000)],
+                "groups in taxonomy order; split, refunds and own transfers are not groups")
+        require(groups.reduce(0) { $0 + $1.amountKopecks } == report.grossExpenseKopecks, "groups add up to gross expense")
+        require(FinancialEngine.expenseByGroup(FinancialEngine.report([], in: interval)).isEmpty, "no spending, no groups")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -538,6 +557,7 @@ struct FinanceEngineTests {
         testMonthComparisonPeriods()
         testMonthlyComparison()
         testDailyNetExpense()
+        testExpenseByGroup()
 
         print("Finance engine tests passed")
     }
