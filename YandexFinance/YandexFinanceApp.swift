@@ -447,6 +447,10 @@ struct FinanceDashboardView: View {
                     }
                 }
 
+                Section("Расходы по дням") {
+                    DailyExpenseChart(days: FinancialEngine.dailyNetExpense(inputs, in: periods.current))
+                }
+
                 Section("Состояние данных") {
                     Toggle("Автообновление", isOn: $browser.autoUpdate)
                         .disabled(browser.busy)

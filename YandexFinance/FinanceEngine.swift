@@ -545,6 +545,28 @@ enum FinancialEngine {
             topExpenseGrowth: best)
     }
 
+    // MARK: - Chart data
+
+    struct DailyAmount: Equatable, Identifiable {
+        let day: Date
+        let amountKopecks: Int64
+        var id: Date { day }
+    }
+
+    /// Net expense (after refunds) for every calendar day of the interval, built from `report` so the
+    /// same classification rules apply; the amounts add up to the interval's `netExpenseKopecks`.
+    static func dailyNetExpense(_ operations: [FinancialOperationInput], in interval: DateInterval, calendar: Calendar = .current) -> [DailyAmount] {
+        var days: [DailyAmount] = []
+        var day = calendar.startOfDay(for: interval.start)
+        while day < interval.end {
+            let next = calendar.date(byAdding: .day, value: 1, to: day)!
+            let slice = DateInterval(start: max(day, interval.start), end: min(next, interval.end))
+            days.append(DailyAmount(day: day, amountKopecks: report(operations, in: slice).netExpenseKopecks))
+            day = next
+        }
+        return days
+    }
+
     static func saveAccountSummary(_ operations: [FinancialOperationInput], in interval: DateInterval) -> SaveAccountSummary {
         var toSave: Int64 = 0
         var fromSave: Int64 = 0

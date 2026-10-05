@@ -142,6 +142,30 @@ struct FinanceEngineTests {
         require(boundaryComparison.netExpense.previous == 300, "operation right after the compared days is not counted")
     }
 
+    static func testDailyNetExpense() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ day: Int) -> Date { calendar.date(from: DateComponents(year: 2024, month: 2, day: day))! }
+
+        let operations = [
+            op(-1_000, kind: "expense", category: "Такси", date: "2024-02-01T10:00:00Z"),
+            op(-9_000, kind: "installment_payment", category: "Сплит", date: "2024-02-02T10:00:00Z"),
+            op(-500, kind: "expense", category: "Супермаркеты", date: "2024-02-03T09:00:00Z"),
+            op(200, kind: "refund", category: "Возврат", date: "2024-02-03T18:00:00Z"),
+            op(5_000, kind: "income", date: "2024-02-04T10:00:00Z"),
+            op(-700, kind: "expense", category: "Такси", date: "2024-02-05T00:00:00Z"),
+        ]
+        let interval = DateInterval(start: date(1), end: date(5))
+        let days = FinancialEngine.dailyNetExpense(operations, in: interval, calendar: calendar)
+        require(days.map(\.day) == [date(1), date(2), date(3), date(4)], "one entry per day of the half-open interval")
+        require(days.map(\.amountKopecks) == [1_000, 0, 300, 0], "daily net expense: split and income excluded, refund reduces its day")
+        require(days.reduce(0) { $0 + $1.amountKopecks } == FinancialEngine.report(operations, in: interval).netExpenseKopecks,
+                "daily amounts add up to the period's net expense")
+
+        let partial = FinancialEngine.dailyNetExpense(operations, in: DateInterval(start: date(3), end: date(3).addingTimeInterval(12 * 3600)), calendar: calendar)
+        require(partial.map(\.amountKopecks) == [500], "a partial last day only counts operations inside the interval")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -513,6 +537,7 @@ struct FinanceEngineTests {
         testPeriodSelection()
         testMonthComparisonPeriods()
         testMonthlyComparison()
+        testDailyNetExpense()
 
         print("Finance engine tests passed")
     }
