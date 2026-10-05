@@ -7,7 +7,7 @@ struct Vault {
     private let service = "YandexFinance.LocalVault.v1"
     private let account = "encryption-key"
 
-    private func fileURL() throws -> URL {
+    private func supportFolder() throws -> URL {
         let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                appropriateFor: nil, create: true)
         var folder = base.appendingPathComponent("History", isDirectory: true)
@@ -16,7 +16,15 @@ struct Vault {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try folder.setResourceValues(values)
-        return folder.appendingPathComponent("operations.encrypted")
+        return folder
+    }
+
+    private func recoveryKeyURL() throws -> URL {
+        try supportFolder().appendingPathComponent("vault-key.bin")
+    }
+
+    private func fileURL() throws -> URL {
+        try supportFolder().appendingPathComponent("operations.encrypted")
     }
 
     private func key(create: Bool) throws -> SymmetricKey {
@@ -29,10 +37,21 @@ struct Vault {
         let code = SecItemCopyMatching(query as CFDictionary, &result)
         if code == errSecSuccess, let bytes = result as? Data {
             guard bytes.count == 32 else { throw AppFailure(message: "Неверный ключ хранилища.") }
+            try? bytes.write(to: recoveryKeyURL(), options: [.atomic, .completeFileProtection])
             return SymmetricKey(data: bytes)
         }
+
+        let recoveryURL = try recoveryKeyURL()
+        if let bytes = try? Data(contentsOf: recoveryURL), bytes.count == 32 {
+            return SymmetricKey(data: bytes)
+        }
+
         guard code == errSecItemNotFound, create else {
             throw AppFailure(message: "Ключ хранилища недоступен. Код: \(code).")
+        }
+        let existingHistory = try fileURL()
+        if FileManager.default.fileExists(atPath: existingHistory.path) {
+            throw AppFailure(message: "Ключ хранилища отсутствует. Существующая локальная история сохранена и не будет перезаписана.")
         }
         let newKey = SymmetricKey(size: .bits256)
         let bytes = newKey.withUnsafeBytes { Data($0) }
@@ -43,6 +62,7 @@ struct Vault {
                                   kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
         let added = SecItemAdd(add as CFDictionary, nil)
         guard added == errSecSuccess else { throw AppFailure(message: "Не удалось сохранить ключ. Код: \(added).") }
+        try bytes.write(to: recoveryKeyURL(), options: [.atomic, .completeFileProtection])
         return newKey
     }
 
@@ -59,6 +79,10 @@ struct Vault {
         let file = try fileURL()
         if FileManager.default.fileExists(atPath: file.path) {
             try FileManager.default.removeItem(at: file)
+        }
+        let recoveryURL = try recoveryKeyURL()
+        if FileManager.default.fileExists(atPath: recoveryURL.path) {
+            try FileManager.default.removeItem(at: recoveryURL)
         }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,

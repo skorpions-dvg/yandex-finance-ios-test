@@ -1,4 +1,4 @@
-// Runs only on the bank history page. V34.4 keeps conservative verification and hardened mobile navigation/retry handling.
+// Runs only on the bank history page. V34.6.1 keeps conservative verification and hardened mobile navigation/retry handling.
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
@@ -239,21 +239,42 @@ function parseMonthLabel(value) {
   if (!canonical) return null;
   return {month: historyMonthNames.indexOf(canonical), year: match[2] ? Number(match[2]) : null};
 }
+function monthLabelFromControl(el) {
+  if (!el) return null;
+  const values = [text(el), el.getAttribute?.('aria-label'), el.getAttribute?.('title')].filter(Boolean);
+  for (const value of values) {
+    const parsed = parseMonthLabel(value);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+function monthControlElements() {
+  const primary = controls();
+  const fallback = [...document.querySelectorAll('div,span')].filter(el => {
+    if (!isVisible(el) || !monthLabelFromControl(el)) return false;
+    const rect = el.getBoundingClientRect?.();
+    return rect && rect.width >= 40 && rect.width <= 280 && rect.height >= 20 && rect.height <= 110 &&
+      rect.top >= 0 && rect.top <= Math.max(500, window.innerHeight * 0.55);
+  });
+  return [...new Set([...primary, ...fallback])];
+}
 function selectedMonthControl() {
-  const candidates = controls().filter(isVisible).map(el => {
-    const raw = controlName(el);
-    const parsed = parseMonthLabel(raw);
+  const candidates = monthControlElements().filter(isVisible).map(el => {
+    const parsed = monthLabelFromControl(el);
+    const raw = text(el);
     if (!parsed || moneyPattern.test(raw)) return null;
-    // Prefer compact controls: this avoids mistaking a large history row/container for the selector.
-    const score = (text(el).length <= 24 ? 0 : 10) + (raw.length <= 48 ? 0 : 10);
-    return {el, score};
-  }).filter(Boolean).sort((a, b) => a.score - b.score);
+    const rect = el.getBoundingClientRect?.() || {top: 9999, width: 9999, height: 9999};
+    const compactPenalty = raw.length <= 24 ? 0 : 10;
+    const headerPenalty = rect.top <= Math.max(420, window.innerHeight * 0.45) ? 0 : 20;
+    const sizePenalty = rect.width <= 280 && rect.height <= 110 ? 0 : 20;
+    return {el, score: compactPenalty + headerPenalty + sizePenalty, top: rect.top};
+  }).filter(Boolean).sort((a, b) => a.score - b.score || a.top - b.top);
   return candidates[0]?.el || null;
 }
 function parseMonthCursor(now = new Date()) {
   const control = selectedMonthControl();
   if (!control) throw Error('Не найден переключатель месяца истории.');
-  const parsed = parseMonthLabel(controlName(control));
+  const parsed = monthLabelFromControl(control);
   if (!parsed) throw Error('Не распознана подпись периода истории.');
   const month = parsed.month;
   let year = parsed.year ?? now.getFullYear();
@@ -264,9 +285,10 @@ function previousMonth(cursor) {
   return cursor.month === 0 ? {month: 11, year: cursor.year - 1} : {month: cursor.month - 1, year: cursor.year};
 }
 function visibleMonthChoices(exclude) {
-  return actionables().filter(el => el !== exclude && isVisible(el)).map(el => {
-    const parsed = parseMonthLabel(controlName(el));
-    if (!parsed || moneyPattern.test(controlName(el))) return null;
+  const fallback = [...document.querySelectorAll('div,span')].filter(el => monthLabelFromControl(el));
+  return [...new Set([...actionables(), ...fallback])].filter(el => el !== exclude && isVisible(el)).map(el => {
+    const parsed = monthLabelFromControl(el);
+    if (!parsed || moneyPattern.test(text(el))) return null;
     return {el, month: parsed.month, year: parsed.year};
   }).filter(Boolean);
 }
@@ -318,7 +340,7 @@ async function applyHistoryMonthChoice(candidate, target, previousRowsSignature)
     await waitFor(() => {
       const current = selectedMonthControl();
       if (!current) return false;
-      const parsed = parseMonthLabel(controlName(current));
+      const parsed = monthLabelFromControl(current);
       return parsed && parsed.month === target.month &&
         (parsed.year === null || parsed.year === target.year);
     }, 8000);
@@ -531,7 +553,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
   if (dateMarks.length > 1) throw Error('Найдено несколько карточек. Не удалось выбрать активную.');
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 34.4).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 34.6.1).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -561,7 +583,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 34.4).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 34.6.1).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -665,7 +687,7 @@ if (mode === 'card' || mode === 'retry_card') {
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 34.4).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 34.6.1).');
   }
   const operation = parseCard(location.href, cardText, '');
   if (retryIssue?.identity && operation.identity !== retryIssue.identity) throw Error('Открылась другая операция. Повторное чтение не сохранено.');

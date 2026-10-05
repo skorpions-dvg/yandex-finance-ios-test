@@ -43,7 +43,9 @@ struct ContentView: View {
                     .padding(.horizontal)
                 }
                 BankWebView(browser: browser)
-                Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")
+                if !browser.message.isEmpty {
+                    Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")
+                }
                 if !browser.autoUpdate {
                     Text("Автообновление выключено. Новые операции не будут проверяться при открытии, пока вы снова не включите его во вкладке «Операции».")
                         .font(.caption).foregroundStyle(.orange).padding(.horizontal)
@@ -101,7 +103,7 @@ struct ContentView: View {
                         }
                         Text("Автообновление проверяет период с последней успешной проверки с запасом 7 дней. После перерыва период расширяется. В этой версии первая проверка сохранённой истории охватывает 6 месяцев. Незавершённую первичную загрузку можно продолжить отдельной кнопкой. При закрытом приложении обновление не гарантируется.")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Text(browser.message).font(.footnote)
+                        if !browser.message.isEmpty { Text(browser.message).font(.footnote) }
                         if browser.busy { ProgressView("Обновление операций…") }
                         Text("Итоги, возвраты и категории считаются на вкладке «Финансы». Здесь полный список операций.")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -366,6 +368,12 @@ struct FinanceDashboardView: View {
                 }
 
                 Section("Состояние данных") {
+                    Toggle("Автообновление", isOn: $browser.autoUpdate)
+                        .disabled(browser.busy)
+                    if !browser.autoUpdate {
+                        Text("Автообновление выключено. Новые операции не будут проверяться автоматически при следующем открытии приложения.")
+                            .foregroundStyle(.orange)
+                    }
                     if let date = browser.history.lastCompletedSync {
                         Text("Последняя полная проверка выбранного окна: \(date.formatted(date: .abbreviated, time: .shortened))")
                     } else {

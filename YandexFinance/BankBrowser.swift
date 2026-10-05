@@ -4,9 +4,9 @@ import WebKit
 @MainActor
 final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let webView: WKWebView
-    @Published var selectedTab = 0
+    @Published var selectedTab = 2
     @Published var busy = false
-    @Published var message = "Войдите в банк, затем откройте историю."
+    @Published var message = ""
     @Published var host = "bank.yandex.ru"
     @Published var history = SavedHistory()
     @Published private(set) var storageError: String?
@@ -348,7 +348,12 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 message = "Войдите в банк и повторите чтение пропущенной операции."; return
             }
             read(mode: "retry_card", lookbackDays: nil, retryIssue: issue)
-        } else { scheduleAutomaticUpdate() }
+        } else {
+            if webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !busy {
+                message = ""
+            }
+            scheduleAutomaticUpdate()
+        }
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         handleNavigationError(error)
