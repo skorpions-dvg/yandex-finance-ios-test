@@ -72,6 +72,7 @@ jobs:
           replace_exact('Tests/reliability.test.js', 'CURRENT_PROJECT_VERSION = 34\\.4;', 'CURRENT_PROJECT_VERSION = 34\\.6\\.1;', count=2)
           replace_exact('Tests/reliability.test.js', 'Debug and Release build number must both be 34.4', 'Debug and Release build number must both be 34.6.1')
           replace_exact('Tests/reliability.test.js', '/Текущий номер сборки — 34\\.4/', '/Текущий номер сборки — 34\\.6\\.1/')
+          replace_exact('Tests/reliability.test.js', '/V34\\.4 keeps conservative verification/', '/V34\\.6\\.1 keeps conservative verification/')
 
           p = Path('README.md')
           text = p.read_text()
