@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 struct OperationComponent: Codable, Equatable {
     let displayDate: String
@@ -28,7 +27,7 @@ struct BankOperation: Codable, Equatable, Identifiable {
         lhs.verifiedAt = nil; rhs.verifiedAt = nil
         return lhs == rhs
     }
-    var id: String { SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined() }
+    var id: String { identity }
     var formattedAmount: String {
         let value = Decimal(amountKopecks) / 100
         return value.formatted(.currency(code: currency))
@@ -40,7 +39,7 @@ struct BankOperation: Codable, Equatable, Identifiable {
 extension BankOperation {
     var financialInput: FinancialOperationInput {
         FinancialOperationInput(occurredAt: occurredAt, description: description, amountKopecks: amountKopecks,
-                                status: status, category: category, purpose: purpose, providers: providers, kind: kind,
+                                status: status, category: category, mcc: mcc, purpose: purpose, providers: providers, kind: kind,
                                 componentAmountsKopecks: components?.map(\.amountKopecks) ?? [])
     }
 

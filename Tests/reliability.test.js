@@ -355,11 +355,6 @@ console.log('Swift/static reliability guards passed.');
   assert.equal(batch.fastSkippedCount, 0);
   assert.equal(batch.openedCardCount, 1);
 
-  const stable = new Function('URL', 'Date', helpers + '\nreturn stableKnownRow;')(URL, Date);
-  assert.equal(stable('Тестовый магазин −1 234,56 ₽', {...known[0], occurredAt: new Date(Date.now() - 3600000).toISOString()}), false,
-    'Recent operation must not use the fast skip path');
-  assert.equal(stable('Тестовый магазин −1 234,56 ₽', {...known[0], status: 'Не указан'}), false,
-    'Unknown/non-terminal status must not use the fast skip path');
   console.log('v20: saved linked operations reopen; no status change is hidden by the old fast path.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 
@@ -377,8 +372,8 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
   assert.match(workflow, /swiftc (?:-warnings-as-errors )?-parse-as-library YandexFinance\/FinanceEngine\.swift Tests\/FinanceEngineTests\.swift/, 'GitHub build must execute the Swift finance tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 33;/g) || []).length, 2, 'Debug and Release build number must both be 33');
-  assert.match(readme, /Текущий номер сборки — 33/);
+  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 34\.3;/g) || []).length, 2, 'Debug and Release build number must both be 34.3');
+  assert.match(readme, /Текущий номер сборки — 34\.3/);
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const incrementalBlock = swift.match(/private func incrementalPolicy[\s\S]*?private static func operationDate/)[0];
@@ -402,7 +397,7 @@ console.log('Swift/static reliability guards passed.');
   assert.match(source, /const status = detail\('Статус'\) \|\| 'Не указан'/, 'Status must be optional for operation cards');
   assert.match(source, /internal_transfer/, 'Internal own-account transfers must have a dedicated kind');
   assert.match(source, /interest_income/, 'Interest payouts must have a dedicated kind');
-  assert.match(swift, /knownOperationsJson/, 'Swift must pass saved operations to the fast-path verifier');
+  assert.ok(!swift.includes('knownOperationsJson') && !swift.includes('forceVerification'), 'Unused full-history payload must not be serialized');
   assert.match(models, /fastSkippedCount:\s*Int\?/, 'Batch must expose fast-path metrics');
   assert.match(models, /openedCardCount:\s*Int\?/, 'Batch must expose opened-card metrics');
   assert.match(source, /waitFor\(\(\) => onCard\(\) && currentCardText\(\), 8000\)/, 'Card readiness timeout must be capped at 8 seconds');
@@ -468,9 +463,6 @@ console.log('Swift/static reliability guards passed.');
 // v20: two simultaneously rendered cards with equal amounts must not mix details.
 assert.throws(() => parse(url([ref]), purchase + '\n' + purchase.replace('Тестовый магазин', 'Другой магазин'),
   'Другой магазин −1 234,56 ₽'), /несколько карточек/);
-const stable20 = new Function(helpers + '\nreturn stableKnownRow;')();
-assert.equal(stable20('Магазин −100 ₽ Отменено', {description: 'Магазин', amountKopecks: -10000,
-  occurredAt: '2026-09-01T00:00:00Z', status: 'Выполнено'}), false);
 assert.match(swift, /checkpointInFlight/);
 assert.match(swift, /activeRunID == runID/);
 assert.match(swift, /sequence > throughSequence/);
@@ -607,7 +599,7 @@ const projectV25 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodep
 const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
-assert.match(projectV25, /CURRENT_PROJECT_VERSION = 33;/);
+assert.match(projectV25, /CURRENT_PROJECT_VERSION = 34\.3;/);
 assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Банковские списания/);
 assert.match(appSwift, /DisclosureGroup/);
@@ -624,11 +616,11 @@ assert.match(financeTests, /cash withdrawal/);
 assert.match(appSwift, /let report = FinancialEngine\.report/);
 assert.match(appSwift, /resetLocalStorage/);
 assert.match(swift, /Не сохранено после проверки/);
-assert.match(source, /V33 keeps conservative verification/);
+assert.match(source, /V34\.3 keeps conservative verification/);
 console.log('v25: finance engine handles fractional ISO8601 dates, half-open periods, and surfaces invalid dates.');
 
 
-// v33: storage recovery, bounded incremental refresh, finance safety, and unknown diagnostics must stay wired.
+// v34.1: category hardening, storage recovery, bounded refresh, navigation, and diagnostics must stay wired.
 assert.match(swift, /func retryOpenStorage\(\)/, 'storage failure must offer a non-destructive retry');
 assert.match(swift, /storageRetryFailed/, 'destructive reset must be gated behind a failed retry');
 assert.match(swift, /counts\.rejected == 0 && \(batch\.skippedCount/, 'rejected operations must prevent a run from being marked clean');
@@ -637,9 +629,36 @@ assert.match(appSwift, /Повторить открытие/, 'storage retry mus
 assert.match(appSwift, /автообновление после сброса будет выключено/i, 'reset warning must explain that automatic bootstrap is suppressed');
 assert.match(financeEngine, /negative movement is an outflow/i, 'negative stale metadata must fall back by direction');
 assert.match(financeEngine, /unknownDetails\.append\(FinanceLine/, 'unknown operations must expose per-operation diagnostics');
+assert.match(financeEngine, /static func expenseCategory\(for operation:/, 'finance taxonomy must have one shared expense mapper');
+assert.match(financeEngine, /operation\.mcc/, 'expense taxonomy should use MCC as a high-confidence fallback');
+assert.match(financeEngine, /\"Еда\", \"Транспорт\", \"Покупки\", \"Обязательные\", \"Другое\"/, 'expense groups must use the agreed user-facing hierarchy');
+assert.match(appSwift, /FinanceCategoryOperationsView/, 'subcategory taps must open a filtered operations list');
+assert.match(appSwift, /selection: \.expense\(group: line\.title, subcategory: child\.title\)/, 'expense subcategory navigation must reuse the same taxonomy');
+assert.match(appSwift, /selection: \.income\(subcategory: line\.title\)/, 'income subcategories must open their operations');
 
 assert.match(financeEngine, /technical fallback into financial income|Collector uses .unclassified_income./s, 'unclassified positive movements must not be promoted blindly');
 assert.match(financeTests, /technical unclassified income must stay unknown/, 'Swift tests must cover positive unclassified safety');
 assert.match(financeTests, /cashback with percent text remains cashback income/, 'cashback must beat generic percent wording');
 assert.ok(appSwift.includes('Text("Сборка \\(buildNumber)")'), 'finance screen must expose the installed build number');
 assert.match(swift, /operationURL == operationURL/, 'identity-less issues should be deduplicated by operation URL');
+
+// v34.3: period changes cannot be inferred solely from dynamic row updates.
+(async () => {
+  let clock = 0;
+  const ctrl = {innerText:'Октябрь',getAttribute:()=>null,getClientRects:()=>[{}],closest:()=>null};
+  const row = {innerText:'Новая строка −100 ₽',getAttribute:()=>null,getClientRects:()=>[{}],closest:()=>null,contains:()=>false};
+  const document = {body:{innerText:'История'},querySelectorAll:sel=>sel==='button,[role="button"]'?[ctrl,row]:[]};
+  const context = vm.createContext({document,window:{},Date:{now:()=>clock},setTimeout:(fn,ms)=>{clock+=ms;fn();}});
+  const change = vm.runInContext('(function(){'+helpers+';return applyHistoryMonthChoice;})()',context);
+  const result = await change({el:{click(){}}},{month:8,year:2026},'old rows');
+  assert.equal(result.status,'unavailable','Changed rows with unchanged October selector do not prove September');
+  console.log('v34.3: unrelated row update cannot confirm a different month.');
+})().catch(e=>{console.error(e);process.exitCode=1;});
+const month35 = new Function(helpers+'\nreturn parseMonthLabel;')();
+assert.deepEqual(month35('01.10–04.10'),{month:9,year:null});
+assert.deepEqual(month35('01.10.2026 — 04.10.2026'),{month:9,year:2026});
+assert.equal(month35('29.09–04.10'),null);
+assert.equal(month35('01.13–04.13'),null);
+const noStamp35 = url([{type:'DEPOT',chainId:'synthetic-date'}]);
+assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','31 апреля, 06:11'),''),/календарная дата/);
+assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Сегодня, 24:61'),''),/время/);

@@ -130,7 +130,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    ForEach(browser.history.operations) { operation in
+                    ForEach(browser.history.operations, id: \.identity) { operation in
                         NavigationLink {
                             Form {
                                 LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
@@ -183,6 +183,144 @@ struct ContentView: View {
     }
 }
 
+enum FinanceOperationSelection: Hashable {
+    case expense(group: String, subcategory: String)
+    case income(subcategory: String)
+    case refund
+    case split
+    case movement(subcategory: String)
+
+    var title: String {
+        switch self {
+        case .expense(_, let subcategory), .income(let subcategory), .movement(let subcategory): return subcategory
+        case .refund: return "Возвраты"
+        case .split: return "Сплит"
+        }
+    }
+
+    var parentTitle: String {
+        switch self {
+        case .expense(let group, _): return group
+        case .income: return "Доходы"
+        case .refund, .split: return "Расходы"
+        case .movement: return "Перемещения"
+        }
+    }
+
+    func matches(_ operation: BankOperation) -> Bool {
+        let assessment = operation.financialAssessment
+        switch self {
+        case .expense(let group, let subcategory):
+            guard assessment.type == .expense || assessment.type == .commission else { return false }
+            let path = FinancialEngine.expenseCategory(for: operation.financialInput, assessment: assessment)
+            return path.group == group && path.subcategory == subcategory
+        case .income(let subcategory):
+            guard assessment.type == .income || assessment.type == .interestIncome else { return false }
+            return FinancialEngine.incomeCategory(for: operation.financialInput, assessment: assessment) == subcategory
+        case .refund:
+            return assessment.type == .refund
+        case .split:
+            return assessment.type == .split
+        case .movement(let subcategory):
+            guard assessment.type == .internalTransfer else { return false }
+            return FinancialEngine.movementCategory(for: operation.financialInput) == subcategory
+        }
+    }
+
+    func contribution(_ operation: BankOperation) -> Int64 {
+        let assessment = operation.financialAssessment
+        switch self {
+        case .expense:
+            return assessment.expenseContributionKopecks
+        case .income:
+            return assessment.incomeContributionKopecks
+        case .refund:
+            return assessment.refundContributionKopecks
+        case .split, .movement:
+            return abs(assessment.originalAmountKopecks)
+        }
+    }
+}
+
+@MainActor
+struct FinanceCategoryOperationsView: View {
+    @ObservedObject var browser: BankBrowser
+    let interval: DateInterval
+    let selection: FinanceOperationSelection
+
+    private var operations: [BankOperation] {
+        browser.history.operations
+            .filter { operation in
+                guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { return false }
+                return selection.matches(operation)
+            }
+            .sorted { lhs, rhs in
+                let left = BankDateParser.parse(lhs.occurredAt) ?? .distantPast
+                let right = BankDateParser.parse(rhs.occurredAt) ?? .distantPast
+                if left != right { return left > right }
+                return lhs.identity < rhs.identity
+            }
+    }
+
+    private func rubles(_ kopecks: Int64) -> String {
+        (Decimal(kopecks) / 100).formatted(.currency(code: "RUB"))
+    }
+
+    var body: some View {
+        let visibleOperations = operations
+        let visibleTotal = visibleOperations.reduce(Int64(0)) { $0 + selection.contribution($1) }
+        List {
+            Section {
+                LabeledContent("Итого", value: selection == .refund ? "−" + rubles(visibleTotal) : rubles(visibleTotal))
+                LabeledContent("Операций", value: String(visibleOperations.count))
+                LabeledContent("Раздел", value: selection.parentTitle)
+                Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Операции") {
+                if visibleOperations.isEmpty {
+                    Text("Операций в этой категории за выбранный период нет.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(visibleOperations, id: \.identity) { operation in
+                        NavigationLink {
+                            Form {
+                                LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
+                                LabeledContent("Дата", value: BankDateParser.parse(operation.occurredAt)?.formatted(date: .abbreviated, time: .shortened) ?? operation.occurredAt)
+                                LabeledContent("Статус", value: operation.status)
+                                LabeledContent("Категория приложения", value: selection.parentTitle + " → " + selection.title)
+                                LabeledContent("Категория банка", value: operation.category.isEmpty ? "Без категории" : operation.category)
+                                if let purpose = operation.purpose, !purpose.isEmpty { LabeledContent("Назначение", value: purpose) }
+                                if let mcc = operation.mcc, !mcc.isEmpty { LabeledContent("MCC", value: mcc) }
+                                Section("Почему здесь") {
+                                    Text(operation.financialAssessment.reason)
+                                }
+                            }
+                            .navigationTitle(operation.description)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(operation.description.isEmpty ? "Операция без названия" : operation.description)
+                                    Spacer()
+                                    Text(operation.formattedAmount)
+                                }
+                                HStack {
+                                    Text(BankDateParser.parse(operation.occurredAt)?.formatted(date: .abbreviated, time: .omitted) ?? operation.occurredAt)
+                                    Spacer()
+                                    Text(operation.category.isEmpty ? "Без категории" : operation.category)
+                                }
+                                .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(selection.title)
+    }
+}
+
 @MainActor
 struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
@@ -227,11 +365,26 @@ struct FinanceDashboardView: View {
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
 
-                incomeBlock(report)
-                expenseBlock(report)
+                Section("Состояние данных") {
+                    if let date = browser.history.lastCompletedSync {
+                        Text("Последняя полная проверка выбранного окна: \(date.formatted(date: .abbreviated, time: .shortened))")
+                    } else {
+                        Text("Полнота обновления ещё не подтверждена").foregroundStyle(.orange)
+                    }
+                    if !browser.bootstrapComplete {
+                        Text("Полнота первичной загрузки не подтверждена. Итоги рассчитаны по сохранённым записям.")
+                    }
+                    let issues = browser.history.unresolvedIssues?.count ?? 0
+                    if issues > 0 { Text("Не прочитано операций: \(issues). Итоги могут быть неполными.").foregroundStyle(.orange) }
+                    if browser.busy { ProgressView("Обновление данных…") }
+                    Text("Разница доходов и расходов не является остатком на банковских счетах.")
+                }.font(.footnote)
+
+                incomeBlock(report, interval: interval)
+                expenseBlock(report, interval: interval)
 
                 if !report.movementLines.isEmpty {
-                    movementBlock(report)
+                    movementBlock(report, interval: interval)
                 }
                 if !report.incompleteLines.isEmpty {
                     incompleteBlock(report)
@@ -240,7 +393,7 @@ struct FinanceDashboardView: View {
                 Section("Сверка с банком") {
                     LabeledContent("Банковские списания", value: rubles(report.bankDebitKopecks))
                     LabeledContent("Банковские поступления", value: rubles(report.bankCreditKopecks))
-                    Text("Это банковский оборот за период: все завершённые и находящиеся в обработке движения по знаку суммы, кроме отменённых. Он нужен для сверки с цифрами банка и не равен финансовым доходам/расходам: сюда могут входить свои переводы, снятие наличных, Сплит и возвраты.")
+                    Text("Это оборот сохранённых карточек за период: все завершённые и находящиеся в обработке движения по знаку суммы, кроме отменённых. Сводные карточки здесь учитываются по общему итогу; их внутренние списания и поступления могут отличаться от оборота банка. Этот показатель помогает при сверке и не равен финансовым доходам/расходам: сюда могут входить свои переводы, снятие наличных, Сплит и возвраты.")
                         .font(.caption).foregroundStyle(.secondary)
                     if report.invalidDateCount > 0 {
                         Text("В базе есть операции с нераспознанной датой. Их нельзя надёжно отнести к этому месяцу, поэтому сверка с банком может быть неполной.")
@@ -258,14 +411,18 @@ struct FinanceDashboardView: View {
         }
     }
 
-    private func incomeBlock(_ report: FinanceReport) -> some View {
+    private func incomeBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
         Section {
             DisclosureGroup {
                 if report.incomeLines.isEmpty {
                     Text("Доходов за месяц нет.").foregroundStyle(.secondary)
                 } else {
                     ForEach(report.incomeLines) { line in
-                        simpleFinanceRow(line, amount: rubles(line.amountKopecks))
+                        NavigationLink {
+                            FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .income(subcategory: line.title))
+                        } label: {
+                            simpleFinanceRow(line, amount: rubles(line.amountKopecks))
+                        }
                     }
                 }
             } label: {
@@ -274,14 +431,14 @@ struct FinanceDashboardView: View {
         }
     }
 
-    private func expenseBlock(_ report: FinanceReport) -> some View {
+    private func expenseBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
         Section {
             DisclosureGroup {
                 if report.expenseLines.isEmpty {
                     Text("Расходов за месяц нет.").foregroundStyle(.secondary)
                 } else {
                     ForEach(report.expenseLines) { line in
-                        expenseLine(line)
+                        expenseLine(line, interval: interval)
                     }
                     Text("Итог расходов уже уменьшен на возвраты.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -292,11 +449,15 @@ struct FinanceDashboardView: View {
         }
     }
 
-    private func movementBlock(_ report: FinanceReport) -> some View {
+    private func movementBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
         Section {
             DisclosureGroup {
                 ForEach(report.movementLines) { line in
-                    simpleFinanceRow(line, amount: rubles(line.amountKopecks))
+                    NavigationLink {
+                        FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .movement(subcategory: line.title))
+                    } label: {
+                        simpleFinanceRow(line, amount: rubles(line.amountKopecks))
+                    }
                 }
                 Text("Перемещения не входят ни в доходы, ни в расходы. Показанная сумма — оборот перемещений.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -359,19 +520,38 @@ struct FinanceDashboardView: View {
     }
 
     @ViewBuilder
-    private func expenseLine(_ line: FinanceLine) -> some View {
-        if line.children.isEmpty {
+    private func expenseLine(_ line: FinanceLine, interval: DateInterval) -> some View {
+        if line.title == "Возвраты" {
+            NavigationLink {
+                FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .refund)
+            } label: {
+                simpleFinanceRow(line, amount: expenseAmount(line))
+            }
+        } else if line.title == "Сплит" {
+            NavigationLink {
+                FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .split)
+            } label: {
+                simpleFinanceRow(line, amount: expenseAmount(line))
+            }
+        } else if line.children.isEmpty {
             simpleFinanceRow(line, amount: expenseAmount(line))
         } else {
             DisclosureGroup {
                 if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
                 ForEach(line.children) { child in
-                    HStack {
-                        Text(child.title)
-                        Spacer()
-                        Text(rubles(child.amountKopecks))
+                    NavigationLink {
+                        FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .expense(group: line.title, subcategory: child.title))
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(child.title)
+                                Text("Операций: \(child.count)").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(rubles(child.amountKopecks))
+                        }
+                        .font(.subheadline)
                     }
-                    .font(.subheadline)
                 }
             } label: {
                 financeRowLabel(line, amount: expenseAmount(line))

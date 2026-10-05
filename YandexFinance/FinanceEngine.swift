@@ -36,6 +36,7 @@ struct FinancialOperationInput {
     let amountKopecks: Int64
     let status: String
     let category: String
+    let mcc: String?
     let purpose: String?
     let providers: [String]
     let kind: String
@@ -86,6 +87,11 @@ struct FinanceLine: Identifiable {
     let amountKopecks: Int64
     let note: String?
     let children: [FinanceLine]
+}
+
+struct FinanceCategoryPath: Equatable, Hashable {
+    let group: String
+    let subcategory: String
 }
 
 struct FinanceReport {
@@ -178,6 +184,10 @@ enum FinancialEngine {
         fragments.contains { value.contains($0) }
     }
 
+    private static func containsWord(_ value: String, _ word: String) -> Bool {
+        value.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains { $0 == word }
+    }
+
     static func isPendingStatus(_ value: String) -> Bool {
         let status = normalized(value)
         // Keep this narrower than the generic Russian root "обраб":
@@ -206,14 +216,41 @@ enum FinancialEngine {
             return FinancialAssessment(type: .pending, reason: "Операция ещё не завершена и пока не входит в окончательные итоги.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        let explicitRefund = kind == "refund" || category.contains("возврат") || description.hasPrefix("возврат") || purpose.contains("возврат")
-        if explicitRefund && amount > 0 {
+        let split = kind == "installment_payment" || operation.providers.contains(where: { normalized($0) == "bnpl" }) || category.contains("сплит")
+        if amount == 0 {
+            return FinancialAssessment(type: .unknown, reason: "Нулевая сумма не создаёт доход или расход; природа операции требует проверки.", originalAmountKopecks: 0, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
+
+        let transferHint = kind == "transfer" || category.contains("перевод") || category.contains("пополн")
+        let refundText = !transferHint && containsAny([description, purpose].joined(separator: " "),
+                                     ["возврат покупки", "возврат средств", "возврат оплаты", "возврат платежа", "возврат по операции"])
+        let explicitRefund = kind == "refund" || category == "возврат" || category.contains("возврат покупки") || refundText
+        if explicitRefund && amount > 0 && !split {
             return FinancialAssessment(type: .refund, reason: "Возврат уменьшает расходы, а не считается заработком.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: amount)
         }
 
-        if kind == "internal_transfer" || category.contains("переводы между своими счетами") {
+        let strongCommission = kind == "commission" || category.contains("комисси")
+        let mentionsNoCommission = containsAny(combined, ["без комиссии", "комиссия 0", "комиссия: 0"])
+        let textCommission = !mentionsNoCommission && (description.hasPrefix("комиссия") || purpose.hasPrefix("комиссия") ||
+            containsAny(combined, ["комиссия банка", "комиссия за", "комиссия по"]))
+        let commission = strongCommission || textCommission
+        if commission {
+            guard amount < 0 else {
+                return FinancialAssessment(type: .unknown, reason: "Комиссия имеет неожиданное направление суммы и не включена в итог автоматически.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+            }
+            return FinancialAssessment(type: .commission, reason: "Комиссия является расходом.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
+
+        let ownTransferText = containsAny(category, ["между своими счетами", "между моими счетами"]) ||
+            containsAny(combined, ["между своими счетами", "между моими счетами"])
+        if kind == "internal_transfer" || ownTransferText {
             return FinancialAssessment(type: .internalTransfer, reason: "Подтверждённое перемещение между своими счетами исключено из доходов и расходов.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
+
+        if split {
+            return FinancialAssessment(type: .split, reason: "Сплит учитывается отдельно до связывания покупки и платежей, чтобы не задвоить расходы.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
+
 
         // Cashback wins over generic mentions of percentages (for example, “кэшбэк 5 процентов”).
         let cashback = amount > 0 && containsAny(combined, ["кэшбэк", "кешбэк", "cashback"])
@@ -221,9 +258,9 @@ enum FinancialEngine {
             return FinancialAssessment(type: .income, reason: "Кэшбэк считается доходом, а не возвратом покупки.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
-        let interestText = containsAny(combined, ["проценты", "начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])
+        let interestText = containsAny(combined, ["начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])
         let explicitInterest = kind == "interest_income" || category == "проценты" || (amount > 0 && interestText)
-        if explicitInterest && amount > 0 {
+        if explicitInterest && amount > 0 && !transferHint {
             return FinancialAssessment(type: .interestIncome, reason: "Начисленные проценты считаются доходом.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
@@ -232,26 +269,13 @@ enum FinancialEngine {
             return FinancialAssessment(type: .income, reason: "Поступление распознано как зарплата или выплата работодателя.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
-        let split = kind == "installment_payment" || operation.providers.contains(where: { normalized($0) == "bnpl" }) || category.contains("сплит")
-        if split {
-            return FinancialAssessment(type: .split, reason: "Сплит учитывается отдельно до связывания покупки и платежей, чтобы не задвоить расходы.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-        }
-
-        let commission = kind == "commission" || combined.contains("комисси")
-        if commission {
-            guard amount < 0 else {
-                return FinancialAssessment(type: .unknown, reason: "Комиссия имеет неожиданное направление суммы и не включена в итог автоматически.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
-            return FinancialAssessment(type: .commission, reason: "Комиссия является расходом.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-        }
 
         let cashWithdrawal = amount < 0 && containsAny(combined, ["снятие налич", "выдача налич", "банкомат"])
         if cashWithdrawal {
             return FinancialAssessment(type: .internalTransfer, reason: "Снятие наличных — перемещение денег, а не покупка.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
-        let explicitTransfer = kind == "transfer" || category == "перевод" || category == "пополнение"
-        if explicitTransfer {
+        if transferHint {
             if amount < 0 {
                 return FinancialAssessment(type: .expense, reason: "Перевод не подтверждён как перевод между своими счетами; отрицательная сумма учитывается как расход.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
             }
@@ -354,8 +378,6 @@ enum FinancialEngine {
             guard date >= interval.start && date < interval.end else { continue }
             operationCount += 1
             let assessment = classify(operation)
-            let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))
-            let category = operation.category.isEmpty ? "Без категории" : operation.category
             if assessment.type != .cancelled {
                 if operation.amountKopecks < 0 { bankDebit += -operation.amountKopecks }
                 if operation.amountKopecks > 0 { bankCredit += operation.amountKopecks }
@@ -363,12 +385,11 @@ enum FinancialEngine {
             switch assessment.type {
             case .income, .interestIncome:
                 income += assessment.incomeContributionKopecks
-                add(&incomeGroups, incomeTitle(operation, assessment, combined), nil, assessment.incomeContributionKopecks)
+                add(&incomeGroups, incomeCategory(for: operation, assessment: assessment), nil, assessment.incomeContributionKopecks)
             case .expense, .commission:
                 grossExpense += assessment.expenseContributionKopecks
-                let title = expenseTitle(operation, assessment, combined)
-                let child = title == "Покупки" ? category : nil
-                add(&expenseGroups, title, child, assessment.expenseContributionKopecks)
+                let path = expenseCategory(for: operation, assessment: assessment)
+                add(&expenseGroups, path.group, path.subcategory, assessment.expenseContributionKopecks)
             case .refund:
                 refunds += assessment.refundContributionKopecks
                 add(&expenseGroups, "Возвраты", nil, assessment.refundContributionKopecks)
@@ -376,7 +397,7 @@ enum FinancialEngine {
                 add(&expenseGroups, "Сплит", nil, abs(assessment.originalAmountKopecks))
             case .internalTransfer:
                 movement += abs(assessment.originalAmountKopecks)
-                let title = movementTitle(combined)
+                let title = movementCategory(for: operation)
                 var item = movementGroups[title] ?? (0, Int64(0))
                 item.0 += 1
                 item.1 += abs(assessment.originalAmountKopecks)
@@ -413,7 +434,7 @@ enum FinancialEngine {
         }
 
         let incomeOrder = ["Переводы от других", "Пополнения", "Зарплата и выплаты", "Кэшбэк", "Проценты", "Прочие доходы"]
-        let expenseOrder = ["Покупки", "Переводы другим", "Комиссии", "Сплит", "Прочие расходы", "Возвраты"]
+        let expenseOrder = expenseGroupOrder + ["Сплит", "Возвраты"]
         let incompleteOrder = ["В обработке", "Не определено", "Отменено"]
         let incompleteLines = incompleteOrder.compactMap { title -> FinanceLine? in
             guard let item = incompleteGroups[title], item.0 > 0 else { return nil }
@@ -431,40 +452,222 @@ enum FinancialEngine {
                              movementKopecks: movement, pendingDebitKopecks: pendingDebit,
                              bankDebitKopecks: bankDebit, bankCreditKopecks: bankCredit, unknownCount: unknownCount,
                              incomeLines: lines(incomeGroups, order: incomeOrder),
-                             expenseLines: lines(expenseGroups, order: expenseOrder),
+                             expenseLines: lines(expenseGroups, order: expenseOrder, childOrder: expenseSubcategoryOrder),
                              movementLines: movementGroups.map { FinanceLine(id: $0.key, title: $0.key, count: $0.value.0, amountKopecks: $0.value.1, note: nil, children: []) }.sorted { $0.title < $1.title },
                              incompleteLines: incompleteLines)
     }
 
-    private static func incomeTitle(_ operation: FinancialOperationInput, _ assessment: FinancialAssessment, _ combined: String) -> String {
+    static func incomeCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> String {
+        let assessment = assessment ?? classify(operation)
+        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))
         if containsAny(combined, ["кэшбэк", "кешбэк", "cashback"]) { return "Кэшбэк" }
         if assessment.type == .interestIncome { return "Проценты" }
         if containsAny(combined, ["зарплат", "заработная плата"]) { return "Зарплата и выплаты" }
-        if containsAny(combined, ["банкомат", "внесение налич", "пополнение"]) { return "Пополнения" }
-        if operation.kind == "transfer" || combined.contains("перевод") { return "Переводы от других" }
+        if containsAny(combined, ["банкомат", "внесение налич", "пополн"]) { return "Пополнения" }
+        if normalized(operation.kind) == "transfer" || combined.contains("перевод") { return "Переводы от других" }
         return "Прочие доходы"
     }
 
-    private static func expenseTitle(_ operation: FinancialOperationInput, _ assessment: FinancialAssessment, _ combined: String) -> String {
-        if assessment.type == .commission || combined.contains("комисси") { return "Комиссии" }
-        if operation.kind == "transfer" || combined.contains("перевод") { return "Переводы другим" }
-        if operation.category == "Не определено" || operation.category.isEmpty { return "Прочие расходы" }
-        return "Покупки"
+    static let expenseGroupOrder = ["Еда", "Транспорт", "Покупки", "Обязательные", "Другое"]
+    static let expenseSubcategoryOrder = [
+        "Супермаркеты", "Кафе и рестораны", "Доставка еды",
+        "Такси", "Общественный транспорт", "Топливо", "Авто",
+        "Маркетплейсы", "Одежда", "Электроника", "Дом и быт",
+        "ЖКХ", "Связь и интернет", "Подписки", "Здоровье",
+        "Развлечения", "Путешествия", "Подарки", "Переводы другим", "Комиссии", "Прочее"
+    ]
+
+    static func expenseCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> FinanceCategoryPath {
+        let assessment = assessment ?? classify(operation)
+        let category = normalized(operation.category)
+        let kind = normalized(operation.kind)
+        let description = normalized(operation.description)
+        let purpose = normalized(operation.purpose)
+        let freeText = [description, purpose].filter { !$0.isEmpty }.joined(separator: " ")
+        let mcc = (operation.mcc ?? "").filter(\.isNumber)
+
+        // Financial nature wins over merchant wording. A transfer or bank fee must never be
+        // swallowed by a merchant/category keyword.
+        if assessment.type == .commission {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Комиссии")
+        }
+        if kind == "transfer" || category.contains("перевод") {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Переводы другим")
+        }
+
+        // Bank category is the strongest taxonomy signal. Resolve it before free-text so phrases
+        // such as “интернет-магазин цветов” do not become “Связь и интернет”.
+        if containsAny(category, ["доставка еды", "доставка продуктов"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Доставка еды")
+        }
+        if containsAny(category, ["супермаркет", "продукт", "продоволь", "гипермаркет", "магазины продуктов"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")
+        }
+        if containsAny(category, ["кафе", "ресторан", "фастфуд", "кофейн", "общественное питание", "столов"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Кафе и рестораны")
+        }
+        if category.contains("такси") {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Такси")
+        }
+        if (containsWord(category, "метро") || containsAny(category, ["автобус", "трамвай", "троллейбус", "общественный транспорт", "проезд", "транспортная карта"])) {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")
+        }
+        if (containsWord(category, "азс") || containsAny(category, ["топлив", "бензин", "дизел"])) {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Топливо")
+        }
+        if containsAny(category, ["автосервис", "автомой", "парков", "запчаст", "шиномонтаж", "автомобил"]) {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Авто")
+        }
+        if category.contains("маркетплейс") {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Маркетплейсы")
+        }
+        if containsAny(category, ["одежд", "обув", "fashion", "модные аксессуары", "аксессуары для одежды"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Одежда")
+        }
+        if containsAny(category, ["электроник", "цифровая техника", "компьютер", "смартфон", "бытовая техника", "техника и электроника"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Электроника")
+        }
+        if containsAny(category, ["товары для дома", "дом и быт", "мебел", "стройматериал", "хозяйствен"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Дом и быт")
+        }
+        if containsAny(category, ["жкх", "коммунал", "квартплат", "электроэнерг", "водоснабж", "газоснабж"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ")
+        }
+        if containsAny(category, ["подписк", "subscription", "стриминг"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")
+        }
+        if containsAny(category, ["аптек", "медицин", "здоров", "клиник", "стоматолог", "врач"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Здоровье")
+        }
+        let categoryLooksLikeInternetShop = containsAny(category, ["интернет-магазин", "интернет магазин"])
+        if !categoryLooksLikeInternetShop && containsAny(category, ["связь", "телеком", "оператор связи", "интернет и тв", "домашний интернет", "мобильная связь"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")
+        }
+        if containsAny(category, ["развлеч", "кино", "театр", "концерт", "игры", "аттракцион"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")
+        }
+        if containsAny(category, ["путешеств", "туризм", "отел", "гостиниц", "авиабилет", "железнодорож"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")
+        }
+        if containsAny(category, ["подар", "цветы", "сувенир"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Подарки")
+        }
+
+        // High-confidence MCC fallback for common bank categories that arrive too generic.
+        switch mcc {
+        case "5411", "5422", "5441", "5451", "5462", "5499":
+            return FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")
+        case "5812", "5813", "5814":
+            return FinanceCategoryPath(group: "Еда", subcategory: "Кафе и рестораны")
+        case "4121":
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Такси")
+        case "4111", "4112", "4131":
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")
+        case "5541", "5542":
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Топливо")
+        case "4812":
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Электроника")
+        case "4814", "4816":
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")
+        case "4899":
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")
+        case "4900":
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ")
+        case "5912":
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Здоровье")
+        case "5815", "5816", "7832":
+            return FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")
+        case "4511", "4722", "7011":
+            return FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")
+        default:
+            break
+        }
+
+        // Merchant/purpose fallback. Keep generic web/mobile words narrow to avoid turning ordinary
+        // online purchases into telecom expenses.
+        if containsAny(freeText, ["яндекс еда", "yandex eats", "delivery club", "деливери", "доставка еды", "доставка продуктов", "food delivery"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Доставка еды")
+        }
+        if containsAny(freeText, ["супермаркет", "гипермаркет", "магазин продуктов"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")
+        }
+        if containsAny(freeText, ["кафе", "ресторан", "фастфуд", "кофейн", "столов"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Кафе и рестораны")
+        }
+        if freeText.contains("такси") {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Такси")
+        }
+        let metroRetail = containsAny(freeText, ["cash&carry", "cash & carry", "кэш энд керри", "кеш энд керри"])
+        if (!metroRetail && containsWord(freeText, "метро")) || containsAny(freeText, ["автобус", "трамвай", "троллейбус", "транспортная карта"]) {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")
+        }
+        if (containsWord(freeText, "азс") || containsAny(freeText, ["заправк", "бензин", "дизел", "gas station"])) {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Топливо")
+        }
+        if containsAny(freeText, ["автосервис", "автомой", "парков", "запчаст", "шиномонтаж"]) {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Авто")
+        }
+        if containsAny(freeText, ["wildberries", "вайлдберриз", "ozon", "озон", "яндекс маркет", "marketplace"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Маркетплейсы")
+        }
+        if containsAny(freeText, ["магазин одежды", "магазин обуви", "fashion store"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Одежда")
+        }
+        if containsAny(freeText, ["магазин электроники", "компьютерный магазин", "смартфон", "электроника"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Электроника")
+        }
+        if containsAny(freeText, ["товары для дома", "мебель", "стройматериал", "хозяйственный магазин"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Дом и быт")
+        }
+        if containsAny(freeText, ["коммунальные услуги", "квартплата", "электроэнергия", "водоснабжение", "газоснабжение"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ")
+        }
+        if containsAny(freeText, ["подписка", "subscription", "стриминг", "онлайн-сервис"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")
+        }
+        if containsAny(freeText, ["аптека", "клиника", "стоматолог", "медицинский центр"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Здоровье")
+        }
+        if containsAny(freeText, ["домашний интернет", "интернет-провайдер", "оплата интернета", "мобильная связь", "оператор связи", "телеком"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")
+        }
+        if containsAny(freeText, ["кинотеатр", "театр", "концерт", "аттракцион", "развлечения"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")
+        }
+        if containsAny(freeText, ["отель", "гостиница", "авиабилет", "ж/д билет", "железнодорожный билет"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")
+        }
+        if containsAny(freeText, ["магазин цветов", "цветочный", "подарок", "сувенир"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Подарки")
+        }
+
+        // Keep broad/ambiguous bank descriptions safe rather than guessing.
+        return FinanceCategoryPath(group: "Другое", subcategory: "Прочее")
     }
 
-    private static func movementTitle(_ combined: String) -> String {
+    static func movementCategory(for operation: FinancialOperationInput) -> String {
+        let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))
         if containsAny(combined, ["снятие налич", "выдача налич", "банкомат"]) { return "Снятие наличных" }
         if containsAny(combined, ["сейв", "накопитель"]) { return "Накопительные счета" }
         return "Между своими счетами"
     }
 
-    private static func lines(_ groups: [String: (Int, Int64, [String: (Int, Int64)])], order: [String]) -> [FinanceLine] {
-        order.compactMap { title in
+    private static func lines(_ groups: [String: (Int, Int64, [String: (Int, Int64)])], order: [String], childOrder: [String] = []) -> [FinanceLine] {
+        var childRank: [String: Int] = [:]
+        for (index, title) in childOrder.enumerated() where childRank[title] == nil { childRank[title] = index }
+        return order.compactMap { title in
             guard let group = groups[title], group.0 > 0 else { return nil }
             let children = group.2.map { FinanceLine(id: title + "/" + $0.key, title: $0.key, count: $0.value.0, amountKopecks: $0.value.1, note: nil, children: []) }
-                .sorted { $0.amountKopecks > $1.amountKopecks }
+                .sorted { lhs, rhs in
+                    let left = childRank[lhs.title] ?? Int.max
+                    let right = childRank[rhs.title] ?? Int.max
+                    if left != right { return left < right }
+                    if lhs.amountKopecks != rhs.amountKopecks { return lhs.amountKopecks > rhs.amountKopecks }
+                    return lhs.title < rhs.title
+                }
             let note = title == "Сплит" ? "Пока не входит в итог расходов, чтобы не задвоить покупку." : (title == "Возвраты" ? "Уменьшает расходы, это не заработок." : nil)
             return FinanceLine(id: title, title: title, count: group.0, amountKopecks: group.1, note: note, children: children)
         }
     }
+
 }

@@ -10,10 +10,10 @@ struct FinanceEngineTests {
     }
 
     static func op(_ amount: Int64, kind: String, status: String = "Выполнено", category: String = "Тест",
-                   description: String = "Синтетическая операция", purpose: String? = nil,
+                   description: String = "Синтетическая операция", mcc: String? = nil, purpose: String? = nil,
                    providers: [String] = [], components: [Int64] = [], date: String = "2032-06-02T10:00:00Z") -> FinancialOperationInput {
         FinancialOperationInput(occurredAt: date, description: description, amountKopecks: amount,
-                                status: status, category: category, purpose: purpose,
+                                status: status, category: category, mcc: mcc, purpose: purpose,
                                 providers: providers, kind: kind, componentAmountsKopecks: components)
     }
 
@@ -27,6 +27,8 @@ struct FinanceEngineTests {
         require(FinancialEngine.classify(op(50_000, kind: "internal_transfer", category: "Переводы между своими счетами")).type == .internalTransfer, "internal transfer")
         require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")
         require(FinancialEngine.classify(op(-199, kind: "expense", description: "Комиссия банка")).type == .commission, "commission")
+        require(FinancialEngine.classify(op(-200, kind: "expense", description: "Покупка без комиссии")).type == .expense, "no-commission phrase must not become a fee")
+        require(FinancialEngine.classify(op(-201, kind: "expense", description: "Комиссия за перевод между своими счетами")).type == .commission, "own-transfer fee stays commission")
         require(FinancialEngine.classify(op(-50_000, kind: "expense", description: "Снятие наличных в банкомате")).type == .internalTransfer, "cash withdrawal")
         require(FinancialEngine.classify(op(-250, kind: "expense", description: "Комиссия за снятие наличных в банкомате")).type == .commission, "cash withdrawal fee stays commission")
         require(FinancialEngine.classify(op(-20_000, kind: "installment_payment", providers: ["BNPL"])).type == .split, "split")
@@ -40,8 +42,30 @@ struct FinanceEngineTests {
         require(FinancialEngine.classify(op(6_000, kind: "legacy_kind")).type == .unknown, "positive unknown kind must not be guessed as income")
         require(FinancialEngine.classify(op(-7_000, kind: "transfer")).type == .expense, "external outgoing transfer")
         require(FinancialEngine.classify(op(8_000, kind: "transfer")).type == .income, "external incoming transfer")
+        require(FinancialEngine.classify(op(8_010, kind: "unclassified_income", category: "Переводы")).type == .income, "plural transfer category confirms income")
+        require(FinancialEngine.classify(op(8_020, kind: "unclassified_income", category: "Пополнения")).type == .income, "plural top-up category confirms income")
+        require(FinancialEngine.classify(op(-8_030, kind: "expense", category: "Перевод между своими счетами")).type == .internalTransfer, "singular own-transfer category remains internal")
+        require(FinancialEngine.classify(op(8_040, kind: "transfer", category: "Перевод", description: "Возврат долга")).type == .income, "debt repayment transfer is not a purchase refund")
+        require(FinancialEngine.classify(op(8_041, kind: "transfer", category: "Перевод", description: "Возврат средств от друга")).type == .income, "transfer metadata wins over generic refund wording")
+        require(FinancialEngine.classify(op(8_050, kind: "unclassified_income", description: "Проценты по кредиту")).type == .unknown, "generic interest wording must not invent interest income")
         require(FinancialEngine.classify(op(8_100, kind: "grouped_operation", category: "Перевод")).type == .income, "grouped positive transfer category remains income")
         require(FinancialEngine.classify(op(8_200, kind: "unclassified_income", category: "Проценты", description: "Проценты")).type == .interestIncome, "plain interest category remains interest income")
+
+        // v34.2: split refunds cannot reduce expenses while split purchases are excluded.
+        require(FinancialEngine.classify(op(12_000, kind: "refund", category: "Возврат", providers: ["BNPL"])).type == .split,
+                "BNPL refund stays with excluded split movements")
+        require(FinancialEngine.classify(op(12_000, kind: "installment_payment", description: "Кэшбэк Сплита")).type == .split,
+                "explicit split kind wins over unverified income wording")
+
+        require(FinancialEngine.classify(op(100, kind: "interest_income", category: "Перевод", purpose: "Отдал проценты по долгу")).type == .income,
+                "explicit bank transfer outranks stale collector interest kind")
+        require(FinancialEngine.classify(op(0, kind: "expense")).reason.contains("Нулевая"), "zero amount has an accurate explanation")
+        for name in ["Метрополис", "МЕТРО Cash&Carry", "METRO Cash&Carry", "Газсервис"] {
+            require(FinancialEngine.expenseCategory(for: op(-100, kind: "expense", category: "Не определено", description: name)).subcategory == "Прочее", "merchant substring must not invent transport/fuel: " + name)
+        }
+        require(FinancialEngine.expenseCategory(for: op(-100, kind: "expense", category: "Аксессуары для телефона")).subcategory == "Прочее", "generic accessories are not automatically clothing")
+        require(FinancialEngine.expenseCategory(for: op(-100, kind: "expense", description: "Проезд в метро")).subcategory == "Общественный транспорт", "whole-word metro remains transport")
+        require(FinancialEngine.expenseCategory(for: op(-100, kind: "expense", description: "АЗС номер 1")).subcategory == "Топливо", "whole-word fuel station remains fuel")
 
         let grouped = op(-146_800, kind: "grouped_operation", components: [-178_000, 31_200])
         let groupedAssessment = FinancialEngine.classify(grouped)
@@ -52,6 +76,15 @@ struct FinanceEngineTests {
         let formatter = ISO8601DateFormatter()
         let interval = DateInterval(start: formatter.date(from: "2032-06-01T00:00:00Z")!,
                                     end: formatter.date(from: "2032-07-01T00:00:00Z")!)
+        let splitPair = FinancialEngine.report([
+            op(-12_000, kind: "installment_payment", providers: ["BNPL"]),
+            op(12_000, kind: "refund", category: "Возврат", providers: ["BNPL"])
+        ], in: interval)
+        require(splitPair.grossExpenseKopecks == 0 && splitPair.refundsKopecks == 0 && splitPair.incomeKopecks == 0,
+                "excluded split pair cannot create an artificial gain in ordinary totals")
+        require(splitPair.bankDebitKopecks == 12_000 && splitPair.bankCreditKopecks == 12_000,
+                "split pair is still visible in bank card turnover")
+
         let summary = FinancialEngine.summarize([
             op(-10_000, kind: "expense"),
             op(3_000, kind: "refund", category: "Возврат"),
@@ -116,7 +149,7 @@ struct FinanceEngineTests {
         require(unknownLine?.children.first?.title == "Непонятное поступление", "unknown diagnostic shows operation title")
         require(unknownLine?.children.first?.amountKopecks == 33_300, "unknown diagnostic shows operation amount")
         require(unknownLine?.children.first?.note?.contains("может быть перевод между своими счетами") == true, "unknown diagnostic shows classification reason")
-        require(report.expenseLines.contains { $0.title == "Покупки" && $0.children.contains { $0.title == "Супермаркеты" } }, "purchase category expands")
+        require(report.expenseLines.contains { $0.title == "Еда" && $0.children.contains { $0.title == "Супермаркеты" } }, "food category expands to supermarkets")
         require(report.expenseLines.contains { $0.title == "Возвраты" }, "refund is shown inside expenses")
         require(report.expenseLines.contains { $0.title == "Сплит" }, "split is shown separately")
         require(report.incomeLines.contains { $0.title == "Проценты" }, "interest subgroup")
@@ -147,9 +180,106 @@ struct FinanceEngineTests {
             op(-300, kind: "expense", description: "Комиссия за снятие наличных")
         ], in: interval)
         require(withdrawalReport.movementLines.contains { $0.title == "Снятие наличных" && $0.amountKopecks == 75_000 }, "cash withdrawal is shown as movement")
-        require(withdrawalReport.expenseLines.contains { $0.title == "Комиссии" && $0.amountKopecks == 300 }, "cash withdrawal fee remains expense")
+        require(withdrawalReport.expenseLines.contains { $0.title == "Другое" && $0.children.contains { $0.title == "Комиссии" && $0.amountKopecks == 300 } }, "cash withdrawal fee remains expense")
         require(withdrawalReport.netExpenseKopecks == 300, "cash withdrawal itself is excluded from financial expense")
 
+        let categoryCases: [(FinancialOperationInput, FinanceCategoryPath)] = [
+            (op(-1_000, kind: "expense", category: "Супермаркеты"), FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")),
+            (op(-1_000, kind: "expense", category: "Кафе и рестораны"), FinanceCategoryPath(group: "Еда", subcategory: "Кафе и рестораны")),
+            (op(-1_000, kind: "expense", description: "Доставка еды"), FinanceCategoryPath(group: "Еда", subcategory: "Доставка еды")),
+            (op(-1_000, kind: "expense", category: "Такси"), FinanceCategoryPath(group: "Транспорт", subcategory: "Такси")),
+            (op(-1_000, kind: "expense", category: "Метро"), FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")),
+            (op(-1_000, kind: "expense", category: "АЗС"), FinanceCategoryPath(group: "Транспорт", subcategory: "Топливо")),
+            (op(-1_000, kind: "expense", category: "Автосервис"), FinanceCategoryPath(group: "Транспорт", subcategory: "Авто")),
+            (op(-1_000, kind: "expense", category: "Маркетплейсы"), FinanceCategoryPath(group: "Покупки", subcategory: "Маркетплейсы")),
+            (op(-1_000, kind: "expense", category: "Одежда и обувь"), FinanceCategoryPath(group: "Покупки", subcategory: "Одежда")),
+            (op(-1_000, kind: "expense", category: "Электроника"), FinanceCategoryPath(group: "Покупки", subcategory: "Электроника")),
+            (op(-1_000, kind: "expense", category: "Товары для дома"), FinanceCategoryPath(group: "Покупки", subcategory: "Дом и быт")),
+            (op(-1_000, kind: "expense", category: "ЖКХ"), FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ")),
+            (op(-1_000, kind: "expense", category: "Мобильная связь"), FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")),
+            (op(-1_000, kind: "expense", category: "Подписки"), FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")),
+            (op(-1_000, kind: "expense", category: "Аптеки"), FinanceCategoryPath(group: "Обязательные", subcategory: "Здоровье")),
+            (op(-1_000, kind: "expense", category: "Развлечения"), FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")),
+            (op(-1_000, kind: "expense", category: "Путешествия"), FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")),
+            (op(-1_000, kind: "expense", category: "Подарки"), FinanceCategoryPath(group: "Другое", subcategory: "Подарки")),
+            (op(-1_000, kind: "transfer", category: "Перевод"), FinanceCategoryPath(group: "Другое", subcategory: "Переводы другим")),
+            (op(-1_000, kind: "expense", description: "Комиссия банка"), FinanceCategoryPath(group: "Другое", subcategory: "Комиссии")),
+            (op(-1_000, kind: "expense", category: "Цветы", description: "Интернет-магазин цветов"), FinanceCategoryPath(group: "Другое", subcategory: "Подарки")),
+            (op(-1_000, kind: "expense", category: "Товары", description: "Покупка в интернет-магазине"), FinanceCategoryPath(group: "Другое", subcategory: "Прочее")),
+            (op(-1_000, kind: "expense", category: "Мобильные приложения", description: "Подписка на сервис"), FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")),
+            (op(-1_000, kind: "expense", category: "Товары", mcc: "5411"), FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")),
+            (op(-1_000, kind: "expense", category: "Товары", mcc: "MCC 4812"), FinanceCategoryPath(group: "Покупки", subcategory: "Электроника")),
+            (op(-1_000, kind: "expense", category: "Товары", mcc: "MCC 4814"), FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")),
+            (op(-1_000, kind: "expense", category: "Товары", mcc: "4816"), FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")),
+            (op(-1_000, kind: "expense", category: "Товары", mcc: "4899"), FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")),
+            (op(-1_000, kind: "expense", category: "Товары", mcc: "5816"), FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")),
+            (op(-1_000, kind: "expense", category: "Такси", mcc: "5411"), FinanceCategoryPath(group: "Транспорт", subcategory: "Такси")),
+            (op(-1_000, kind: "expense", category: "Неизвестная категория"), FinanceCategoryPath(group: "Другое", subcategory: "Прочее"))
+        ]
+        for (operation, expected) in categoryCases {
+            require(FinancialEngine.expenseCategory(for: operation) == expected, "expense category mapping: \(expected.group) / \(expected.subcategory)")
+        }
+        require(FinancialEngine.expenseCategory(for: op(-200, kind: "expense", description: "Покупка без комиссии")) == FinanceCategoryPath(group: "Другое", subcategory: "Прочее"), "no-commission purchase must not enter commission category")
+        require(FinancialEngine.expenseCategory(for: op(-201, kind: "expense", description: "Комиссия за перевод между своими счетами")) == FinanceCategoryPath(group: "Другое", subcategory: "Комиссии"), "own-transfer fee uses commission category")
+
+        let mccCases: [(String, FinanceCategoryPath)] = [
+            ("5411", FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")),
+            ("5812", FinanceCategoryPath(group: "Еда", subcategory: "Кафе и рестораны")),
+            ("4121", FinanceCategoryPath(group: "Транспорт", subcategory: "Такси")),
+            ("4111", FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")),
+            ("5541", FinanceCategoryPath(group: "Транспорт", subcategory: "Топливо")),
+            ("4812", FinanceCategoryPath(group: "Покупки", subcategory: "Электроника")),
+            ("4814", FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")),
+            ("4816", FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")),
+            ("4899", FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")),
+            ("4900", FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ")),
+            ("5912", FinanceCategoryPath(group: "Обязательные", subcategory: "Здоровье")),
+            ("5815", FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")),
+            ("5816", FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")),
+            ("7832", FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")),
+            ("4511", FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")),
+            ("4722", FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")),
+            ("7011", FinanceCategoryPath(group: "Другое", subcategory: "Путешествия"))
+        ]
+        for (mcc, expected) in mccCases {
+            let actual = FinancialEngine.expenseCategory(for: op(-999, kind: "expense", category: "Товары", mcc: mcc))
+            require(actual == expected, "MCC category mapping: \(mcc) -> \(expected.group) / \(expected.subcategory)")
+        }
+
+        require(FinancialEngine.incomeCategory(for: op(8_010, kind: "unclassified_income", category: "Переводы")) == "Переводы от других", "plural transfer uses transfer income subgroup")
+        require(FinancialEngine.incomeCategory(for: op(8_020, kind: "unclassified_income", category: "Пополнения")) == "Пополнения", "plural top-up uses top-up income subgroup")
+
+        let taxonomyReport = FinancialEngine.report([
+            op(-12_000, kind: "expense", category: "Супермаркеты"),
+            op(-8_000, kind: "expense", category: "Кафе и рестораны"),
+            op(-6_000, kind: "expense", category: "Такси"),
+            op(-4_000, kind: "expense", category: "Подписки"),
+            op(-2_000, kind: "transfer", category: "Перевод")
+        ], in: interval)
+        require(taxonomyReport.expenseLines.first?.title == "Еда", "expense groups use stable user-facing order")
+        require(taxonomyReport.expenseLines.first?.children.map(\.title) == ["Супермаркеты", "Кафе и рестораны"], "food subcategories use stable order")
+        require(taxonomyReport.expenseLines.contains { $0.title == "Транспорт" && $0.children.contains { $0.title == "Такси" } }, "transport group exists")
+        require(taxonomyReport.expenseLines.contains { $0.title == "Обязательные" && $0.children.contains { $0.title == "Подписки" } }, "required group exists")
+        require(taxonomyReport.expenseLines.contains { $0.title == "Другое" && $0.children.contains { $0.title == "Переводы другим" } }, "other group includes external transfers")
+        let taxonomyGroupSum = taxonomyReport.expenseLines
+            .filter { FinancialEngine.expenseGroupOrder.contains($0.title) }
+            .reduce(Int64(0)) { $0 + $1.amountKopecks }
+        require(taxonomyGroupSum == taxonomyReport.grossExpenseKopecks, "user-facing expense groups must reconcile to gross expense")
+        for line in taxonomyReport.expenseLines where FinancialEngine.expenseGroupOrder.contains(line.title) {
+            let childSum = line.children.reduce(Int64(0)) { $0 + $1.amountKopecks }
+            let childCount = line.children.reduce(0) { $0 + $1.count }
+            require(childSum == line.amountKopecks, "expense group child amounts must reconcile: \(line.title)")
+            require(childCount == line.count, "expense group child counts must reconcile: \(line.title)")
+        }
+
+        let incomeTaxonomy = FinancialEngine.report([
+            op(1_000, kind: "transfer", category: "Переводы"),
+            op(2_000, kind: "unclassified_income", category: "Пополнения"),
+            op(3_000, kind: "unclassified_income", category: "Зарплата", description: "Зарплата"),
+            op(4_000, kind: "unclassified_income", description: "Кэшбэк"),
+            op(5_000, kind: "interest_income", category: "Проценты")
+        ], in: interval)
+        require(incomeTaxonomy.incomeLines.reduce(Int64(0)) { $0 + $1.amountKopecks } == incomeTaxonomy.incomeKopecks, "income subgroups must reconcile to income total")
 
         let policyNow = ISO8601DateFormatter().date(from: "2033-03-20T12:00:00Z")!
         let recentCompleted = policyNow.addingTimeInterval(-1 * 86400)

@@ -1,4 +1,4 @@
-// Runs only on the bank history page. V33 keeps conservative verification and hardened mobile navigation/retry handling.
+// Runs only on the bank history page. V34.3 keeps conservative verification and hardened mobile navigation/retry handling.
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const text = el => (el?.innerText || '').replace(/\u200b/g, '').trim();
 const controls = () => [...document.querySelectorAll('button,[role="button"]')];
@@ -221,11 +221,20 @@ async function nextHistoryWindow(list) {
 
 const historyMonthNames = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 const monthNameSource = '(Январь|Февраль|Март|Апрель|Май|Июнь|Июль|Август|Сентябрь|Октябрь|Ноябрь|Декабрь)';
-const monthLabelPattern = new RegExp(monthNameSource + '(?:[^0-9]{0,8}(\\d{4}))?', 'i');
+const monthLabelPattern = new RegExp('^(?:(?:Период|Месяц)\\s*:\\s*|Выбран(?:о)?\\s+)?' + monthNameSource + '(?:[\\s,·]+(\\d{4}))?$', 'i');
 const actionables = () => [...document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],[role="gridcell"]')];
 function parseMonthLabel(value) {
   const match = String(value || '').replace(/\s+/g, ' ').trim().match(monthLabelPattern);
-  if (!match) return null;
+  if (!match) {
+    // Mobile UI can display a date range instead of the month name.
+    const numeric = String(value || '').trim().match(/^(?:Период:\s*)?(\d{1,2})\.(\d{2})(?:\.(\d{4}))?\s*[–—-]\s*(\d{1,2})\.(\d{2})(?:\.(\d{4}))?$/i);
+    if (!numeric || numeric[2] !== numeric[5]) return null;
+    const firstYear = numeric[3], lastYear = numeric[6];
+    if (firstYear && lastYear && firstYear !== lastYear) return null;
+    const month = Number(numeric[2]);
+    if (month < 1 || month > 12 || Number(numeric[1]) < 1 || Number(numeric[4]) > 31 || Number(numeric[1]) > Number(numeric[4])) return null;
+    return {month: month - 1, year: firstYear || lastYear ? Number(firstYear || lastYear) : null};
+  }
   const canonical = historyMonthNames.find(name => name.toLowerCase() === match[1].toLowerCase());
   if (!canonical) return null;
   return {month: historyMonthNames.indexOf(canonical), year: match[2] ? Number(match[2]) : null};
@@ -316,19 +325,21 @@ async function applyHistoryMonthChoice(candidate, target, previousRowsSignature)
     periodConfirmed = true;
   } catch { }
 
-  let rowsChanged = false;
+  if (!periodConfirmed) { await dismissHistoryPeriodSheet(); return {status: 'unavailable'}; }
   try {
     await waitFor(() => {
       const nextRows = rows();
       return nextRows.length && (!previousRowsSignature || rowSignature(nextRows) !== previousRowsSignature);
     }, 15000);
-    rowsChanged = true;
-  } catch { }
-
-  if (!periodConfirmed && !rowsChanged) {
-    await dismissHistoryPeriodSheet();
-    return {status: 'unavailable'};
+  } catch {
+    // A new selector with old nonempty rows may still be loading. Never read them
+    // under the requested month after a timeout.
+    if (previousRowsSignature && rows().length && rowSignature(rows()) === previousRowsSignature) {
+      await dismissHistoryPeriodSheet();
+      return {status: 'unavailable'};
+    }
   }
+
   await dismissHistoryPeriodSheet();
   return {status: 'moved', cursor: target};
 }
@@ -440,7 +451,7 @@ function amount(value) {
   if (!match) throw Error('Не распознана сумма.');
   const result = (Number(match[2]) * 100 + Number((match[3] || '').padEnd(2, '0'))) * (match[1] === '-' ? -1 : 1);
   if (!Number.isSafeInteger(result)) throw Error('Сумма вне допустимого диапазона.');
-  return result;
+  return result === 0 ? 0 : result;
 }
 function parseOperationReference(url) {
   const base = typeof location !== 'undefined' && location && location.href ? location.href : 'https://bank.yandex.ru/';
@@ -479,29 +490,6 @@ function operationURLFromRow(row) {
     if (route.hostname !== 'bank.yandex.ru' || route.pathname !== '/my/transactions-history/operation') return null;
     return route.href;
   } catch { return null; }
-}
-function parseKnownOperations(value) {
-  let list = [];
-  try { list = JSON.parse(typeof value === 'string' ? value : '[]'); } catch { return new Map(); }
-  if (!Array.isArray(list)) return new Map();
-  const result = new Map();
-  for (const item of list) {
-    if (!item || typeof item.identity !== 'string' || !item.identity) continue;
-    result.set(item.identity, item);
-  }
-  return result;
-}
-function rowAmountKopecks(rowText) {
-  try {
-    const values = [...String(rowText || '').matchAll(/[+−–-]\s*\d[\d\s.,]*\s*₽/g)].map(x => amount(x[0]));
-    const distinct = [...new Set(values)];
-    return distinct.length === 1 ? distinct[0] : null;
-  } catch { return null; }
-}
-function stableKnownRow(rowText, known, nowMs = Date.now()) {
-  // v20: identity + amount cannot prove unchanged status/category.
-  // Reopen cards until the bank exposes a verified revision contract.
-  return false;
 }
 // A bank group is one identity with an explicit N-operations section. Components
 // have no bank IDs here: keep them nested and replace the entire snapshot on reread.
@@ -543,7 +531,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const datePattern = /(?:Сегодня|Вчера|\d{1,2} [а-яё]+(?: \d{4})?),\s*\d{2}:\d{2}/gi;
   const dateMarks = [...normalized.matchAll(datePattern)];
   if (dateMarks.length > 1) throw Error('Найдено несколько карточек. Не удалось выбрать активную.');
-  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 33).');
+  if (!dateMarks.length) throw Error('Не удалось найти дату карточки (версия 34.3).');
 
   // The list row is the strongest amount disambiguator during history import.
   // This lets us tolerate cashback/fee values in the same rendered card header.
@@ -573,7 +561,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     selected = matching.find(x => x.kopecks === distinctMatching[0]);
   } else {
     if (amountCandidates.length !== 1)
-      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 33).');
+      throw Error('В карточке найдено сумм: ' + amountCandidates.length + '. Ожидалась одна (версия 34.3).');
     selected = amountCandidates[0];
   }
   const kopecks = selected.kopecks;
@@ -596,7 +584,13 @@ function parseCard(url, cardText, rowText, now = new Date()) {
       occurred = new Date(Number(parts[2] || now.getFullYear()), month, Number(parts[0]));
       if (!parts[2] && occurred > now) occurred.setFullYear(occurred.getFullYear() - 1);
     }
-    occurred.setHours(Number(displayed[2]), Number(displayed[3]), 0, 0);
+    const hours = Number(displayed[2]), minutes = Number(displayed[3]);
+    if (hours > 23 || minutes > 59) throw Error('Некорректное время операции.');
+    if (day !== 'Сегодня' && day !== 'Вчера') {
+      const expectedDay = Number(day.split(' ')[0]);
+      if (occurred.getDate() !== expectedDay) throw Error('Некорректная календарная дата операции.');
+    }
+    occurred.setHours(hours, minutes, 0, 0);
   }
   const providers = [...new Set(identities.map(x => x[0]))].sort();
   const rawCategory = detail('Категория');
@@ -612,7 +606,6 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const combined = [description, rowText, ...details].filter(Boolean).join(' ');
   const installment = providers.includes('BNPL') && /Плат[её]ж/i.test(rowText + ' ' + (purpose || ''));
   const refund = rawCategory === 'Возврат' || summary.includes('Возврат');
-  const interestIncome = kopecks > 0 && /(?:выплат[аы]?|начислени[ея])\s+процент|процент(?:ы|ов|ный доход)/i.test(combined);
   const sourceAccount = detail('Со счёта');
   const destinationAccount = detail('Куда');
   const ownAccountHint = /(?:сейв|карт[ау]\s+п[эе]й|сч[её]т(?:\s+в)?\s+п[эе]й|яндекс\s+п[эе]й)/i;
@@ -620,12 +613,15 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const internalTransfer = (arrowParts.length === 2 && ownAccountHint.test(arrowParts[0]) && ownAccountHint.test(arrowParts[1])) ||
     (hasDetailHeading('Перевод') && !!sourceAccount && !!destinationAccount &&
       ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount));
-  const transfer = internalTransfer || ['Перевод','Пополнение','Переводы между своими счетами'].includes(rawCategory) ||
+  const transfer = internalTransfer || /^(?:Переводы?|Пополнени[ея]|Переводы? между своими счетами)$/i.test(rawCategory || '') ||
     hasDetailHeading('Перевод');
+  const cashback = /к[эе]шб[эе]к|cashback/i.test(combined);
+  const interestIncome = kopecks > 0 && !transfer && !cashback &&
+    /(?:^|[^а-яёa-z])(?:начисление процентов|начислены проценты|выплата процентов|выплачены проценты|процентный доход)(?=$|[^а-яёa-z])/i.test(combined);
   const category = rawCategory || (installment ? 'Платежи Сплита'
-    : interestIncome ? 'Проценты'
     : internalTransfer ? 'Переводы между своими счетами'
     : hasDetailHeading('Перевод') ? 'Перевод'
+    : interestIncome ? 'Проценты'
     : hasDetailHeading('Пополнение') ? 'Пополнение'
     : 'Не определено');
 
@@ -633,8 +629,8 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     timePrecision: dates.length ? 'source_timestamp' : 'display_minute',
     description, amountKopecks: kopecks, currency: 'RUB', status,
     category, mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты'), providers,
-    kind: installment ? 'installment_payment' : refund ? 'refund' : interestIncome ? 'interest_income'
-      : internalTransfer ? 'internal_transfer' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};
+    kind: installment ? 'installment_payment' : refund ? 'refund' : internalTransfer ? 'internal_transfer'
+      : transfer ? 'transfer' : interestIncome ? 'interest_income' : kopecks > 0 ? 'unclassified_income' : 'expense'};
 }
 
 const found = new Map();
@@ -652,7 +648,6 @@ window.__financeCancelled = false;
 window.__financeCheckpointQueue = [];
 window.__financeCheckpointMonth = null;
 window.__financeIssues = [];
-const knownOperationMap = parseKnownOperations(typeof knownOperationsJson === 'undefined' ? '[]' : knownOperationsJson);
 
 try {
 assertHistory();
@@ -670,7 +665,7 @@ if (mode === 'card' || mode === 'retry_card') {
   try { cardText = await waitFor(currentCardText, 3500); }
   catch (error) {
     if (window.__financeCancelled) throw error;
-    throw Error('Не найдены дата и сумма в тексте карточки (версия 33).');
+    throw Error('Не найдены дата и сумма в тексте карточки (версия 34.3).');
   }
   const operation = parseCard(location.href, cardText, '');
   if (retryIssue?.identity && operation.identity !== retryIssue.identity) throw Error('Открылась другая операция. Повторное чтение не сохранено.');
@@ -812,26 +807,9 @@ mainLoop: while (opened < maxOpened && scrollSteps < maxScrollSteps && monthsVis
 
   // Direct links verify identity, but do not establish unchanged details.
   const linkedURL = operationURLFromRow(row);
-  let known = null;
-  if (linkedURL) {
-    try { known = knownOperationMap.get(parseOperationReference(linkedURL).identity) || null; } catch { known = null; }
-  }
   if (mode === 'retry' && linkedURL && retryIssue?.identity) {
     try { if (parseOperationReference(linkedURL).identity !== retryIssue.identity) { index++; continue; } } catch {}
   }
-  if (known && stableKnownRow(rowText, known)) {
-    const knownTime = Date.parse(known.occurredAt || '');
-    if (cutoff !== null && Number.isFinite(knownTime) && knownTime < cutoff) {
-      stopReason = 'lookback_reached';
-      break mainLoop;
-    }
-    fastSkippedCount++;
-    index++;
-    window.__financeProgress = 'Проверено ' + (found.size + fastSkippedCount) + ': быстро ' + fastSkippedCount +
-      ', карточек ' + openedCardCount + (skippedCount ? ', пропущено ' + skippedCount : '') + '…';
-    continue;
-  }
-
   row.click();
   opened++;
   openedCardCount++;

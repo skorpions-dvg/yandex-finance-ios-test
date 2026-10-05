@@ -162,13 +162,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 await self.flushCheckpointFromWebView()
             }
         }
-        let knownData = (try? JSONEncoder().encode(history.operations)) ?? Data("[]".utf8)
         let retryData = retryIssue.flatMap { try? JSONEncoder().encode($0) }
         let arguments: [String: Any] = ["mode": mode, "lookbackDays": lookbackDays.map { NSNumber(value: $0) } ?? NSNull(),
             "resumeMonthOrdinal": resume.map { NSNumber(value: $0) } ?? NSNull(), "runID": runID,
-            "retryIssueJson": retryData.flatMap { String(data: $0, encoding: .utf8) } ?? "null",
-            "forceVerification": !initialImport,
-            "knownOperationsJson": String(data: knownData, encoding: .utf8) ?? "[]"]
+            "retryIssueJson": retryData.flatMap { String(data: $0, encoding: .utf8) } ?? "null"]
         webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .defaultClient) { [weak self] result in
             Task { @MainActor [weak self] in
                 guard let self, self.activeRunID == runID else { return }
@@ -187,7 +184,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
     private func apply(_ operations: [BankOperation], to next: inout SavedHistory) -> (added: Int, changed: Int, rejected: Int) {
         var byID: [String: BankOperation] = [:]
-        for operation in next.operations { byID[operation.id] = operation }
+        for operation in next.operations { byID[operation.identity] = operation }
         var added = 0, changed = 0, rejected = 0
         var resolved = Set<String>()
         for operation in operations {
@@ -196,10 +193,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 rejected += 1
                 continue
             }
-            if let old = byID[operation.id] {
+            if let old = byID[operation.identity] {
                 if !old.sameFinancialContent(as: operation) { changed += 1 }
             } else { added += 1 }
-            byID[operation.id] = operation
+            byID[operation.identity] = operation
             resolved.insert(operation.identity)
         }
         next.operations = byID.values.sorted { lhs, rhs in

@@ -391,3 +391,22 @@ async function checkMobilePeriodSheetRequiresApply() {
   console.log('Mobile period sheet: previous month is applied with the bottom «Выбрать» button.');
 }
 checkMobilePeriodSheetRequiresApply().catch(error => {console.error(error); process.exitCode = 1;});
+
+// v34.3: collector classification must not poison the separate Swift engine.
+const incoming343 = (title, details) => [title,'2 октября, 12:00','+100 ₽','Подробнее',...details,'Статус','Выполнено'].join('\n');
+const incomingURL343 = url([{...ref,chainId:'audit-incoming',operationTimestamp:'2026-10-02T06:00:00Z'}]);
+const debt343 = parse(incomingURL343,incoming343('Перевод от друга',['Перевод','Назначение','Отдал проценты по долгу']),'');
+assert.equal(debt343.kind,'transfer');
+assert.notEqual(debt343.category,'Проценты');
+const own343 = parse(incomingURL343,incoming343('Сейв → Карта Пэй',['Перевод','Со счёта','Сейв','Куда','Карта Пэй','Назначение','Выплата процентов']),'');
+assert.equal(own343.kind,'internal_transfer');
+const cash343 = parse(incomingURL343,incoming343('Кэшбэк 5 процентов',[]),'');
+assert.equal(cash343.kind,'unclassified_income');
+assert.notEqual(cash343.category,'Проценты');
+const interest343 = parse(incomingURL343,incoming343('Начисление процентов',[]),'');
+assert.equal(interest343.kind,'interest_income');
+const month343 = new Function(source.split('\nconst found = new Map();')[0]+'\nreturn parseMonthLabel;')();
+for(const merchant of ['Мартини бар','Мартовский магазин','Январьский','Кафе Март','Март магазин']) assert.equal(month343(merchant),null,merchant);
+for(const label of ['Март','Март 2026','Период: Март, 2026','Выбран Март · 2026']) assert.equal(month343(label).month,2,label);
+assert.equal(parse(incomingURL343,incoming343('Нулевая операция',[]).replace('+100 ₽','−0 ₽'),'').amountKopecks,0);
+console.log('v34.3: transfer/own transfer/cashback interest collisions, month-name boundaries and zero amount passed.');
