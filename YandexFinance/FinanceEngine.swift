@@ -231,6 +231,11 @@ enum FinancialEngine {
         }
 
         let transferHint = kind == "transfer" || category.contains("перевод") || category.contains("пополн")
+        // Cash brought to the card is money coming in, never a purchase refund, even if the card was tagged as one.
+        let cashDeposit = amount > 0 && !split && kind != "internal_transfer" && containsAny(combined, ["пополнение налич", "внесение налич", "взнос налич"])
+        if cashDeposit {
+            return FinancialAssessment(type: .income, reason: "Внесение наличных считается доходом (пополнение), а не возвратом покупки.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
         let refundText = !transferHint && containsAny([description, purpose].joined(separator: " "),
                                      ["возврат покупки", "возврат средств", "возврат оплаты", "возврат платежа", "возврат по операции"])
         let explicitRefund = kind == "refund" || category == "возврат" || category.contains("возврат покупки") || refundText
