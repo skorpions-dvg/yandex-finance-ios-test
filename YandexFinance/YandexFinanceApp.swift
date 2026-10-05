@@ -414,6 +414,8 @@ struct FinanceDashboardView: View {
                         Button(action: nextMonth) { Image(systemName:"chevron.right") }
                             .disabled(nextMonthIfAllowed(selectedStart: selectedMonthStart) == nil)
                     }
+                    // In a List row every default-style button fires on any tap in the row.
+                    .buttonStyle(.borderless)
                 Section("Выбранный месяц") {
                     LabeledContent("Доходы", value: rubles(report.incomeKopecks))
                     LabeledContent("Расходы", value: rubles(report.netExpenseKopecks))
