@@ -93,6 +93,9 @@ struct SavedHistory: Codable {
     var bootstrapResumeMonth: Int?
     var bootstrapCompleted: Bool?
     var unresolvedIssues: [ImportIssue]?
+    var statementArchiveThrough: Date?
+    var statementImportedAt: Date?
+    var statementOperationCount: Int?
 }
 
 struct AppFailure: LocalizedError {
