@@ -371,9 +371,19 @@ console.log('Swift/static reliability guards passed.');
   assert.match(models, /oldestMonthOrdinal:\s*Int\?/, 'Batch must carry the oldest reached month');
   assert.match(models, /monthsVisited:\s*Int\?/, 'Batch must carry month traversal evidence');
   assert.match(workflow, /node Tests\/reliability\.test\.js/, 'GitHub build must execute reliability tests, not only parser tests');
-  assert.match(workflow, /swiftc (?:-warnings-as-errors )?-parse-as-library YandexFinance\/FinanceEngine\.swift Tests\/FinanceEngineTests\.swift/, 'GitHub build must execute the Swift finance tests');
-  assert.equal((project.match(/CURRENT_PROJECT_VERSION = 34\.6\.3;/g) || []).length, 2, 'Debug and Release build number must both be 34.6.3');
-  assert.match(readme, /Текущий номер сборки — 34\.6\.3/);
+  const financeCompileLine = workflow.split('\n').find(line => /^\s*swiftc\s/.test(line) && line.includes('Tests/FinanceEngineTests.swift'));
+  assert.ok(financeCompileLine, 'GitHub build must compile the Swift finance tests');
+  const financeCompileArgs = financeCompileLine.trim().split(/\s+/);
+  for (const required of ['-warnings-as-errors', '-parse-as-library', 'YandexFinance/FinanceEngine.swift',
+                          'YandexFinance/PeriodSelectionLogic.swift', 'Tests/FinanceEngineTests.swift']) {
+    assert.ok(financeCompileArgs.includes(required), `Finance test compilation is missing ${required}`);
+  }
+  assert.match(financeCompileLine, /-o \/tmp\/finance-tests\s*$/);
+  assert.match(workflow, /^\s*\/tmp\/finance-tests\s*$/m, 'GitHub build must execute the compiled finance tests');
+  const buildVersions = [...project.matchAll(/CURRENT_PROJECT_VERSION = ([0-9.]+);/g)].map(match => match[1]);
+  assert.equal(buildVersions.length, 2, 'Debug and Release must both declare a build number');
+  assert.equal(buildVersions[0], buildVersions[1], 'Debug and Release build numbers must agree');
+  assert.ok(readme.includes(`Текущий номер сборки — ${buildVersions[0]}.`), 'README must match the actual build number');
   assert.ok(!/первый запуск Actions ещё не выполнен/.test(freeSetup));
 
   const incrementalBlock = swift.match(/private func incrementalPolicy[\s\S]*?private static func operationDate/)[0];
@@ -599,7 +609,7 @@ const projectV25 = fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodep
 const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinanceEngine.swift'), 'utf8');
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
-assert.match(projectV25, /CURRENT_PROJECT_VERSION = 34\.6\.3;/);
+// Build numbers and README consistency are checked together above.
 assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Банковские списания/);
 assert.match(appSwift, /DisclosureGroup/);

@@ -468,6 +468,78 @@ enum FinancialEngine {
                              incompleteLines: incompleteLines)
     }
 
+    // MARK: - Month-over-month comparison
+
+    struct MonthlyChange: Equatable {
+        enum Relative: Equatable {
+            case percent(Double)
+            /// Growth from a zero base.
+            case new
+            /// No meaningful base: both values are zero, the value fell to zero from nothing, or the base is negative.
+            case notApplicable
+        }
+
+        let current: Int64
+        let previous: Int64
+        var delta: Int64 { current - previous }
+        var relative: Relative {
+            if previous > 0 { return .percent(Double(delta) * 100 / Double(previous)) }
+            if previous == 0 && current > 0 { return .new }
+            return .notApplicable
+        }
+    }
+
+    struct CategoryGrowth: Equatable {
+        let group: String
+        let subcategory: String
+        let change: MonthlyChange
+    }
+
+    struct MonthlyComparison {
+        let income: MonthlyChange
+        let netExpense: MonthlyChange
+        let difference: MonthlyChange
+        /// Expense subcategory with the largest growth in rubles; nil when nothing grew.
+        let topExpenseGrowth: CategoryGrowth?
+    }
+
+    /// Subcategories that are not spending on goods or services and stay out of the growth ranking.
+    static let comparisonExcludedSubcategories: Set<String> = ["Переводы другим"]
+
+    static func compareReports(_ operations: [FinancialOperationInput], currentInterval: DateInterval, previousInterval: DateInterval) -> MonthlyComparison {
+        let current = report(operations, in: currentInterval)
+        let previous = report(operations, in: previousInterval)
+
+        func subcategoryAmounts(_ report: FinanceReport) -> [String: Int64] {
+            var amounts: [String: Int64] = [:]
+            for group in report.expenseLines {
+                for line in group.children { amounts[line.id] = line.amountKopecks }
+            }
+            return amounts
+        }
+        let currentAmounts = subcategoryAmounts(current)
+        let previousAmounts = subcategoryAmounts(previous)
+
+        // Walk the fixed taxonomy so equal growth always picks the same category. Split and refunds
+        // are not part of it, so they never enter the ranking.
+        var best: CategoryGrowth?
+        for group in expenseGroupOrder {
+            for subcategory in expenseSubcategoryOrder where !comparisonExcludedSubcategories.contains(subcategory) {
+                let id = group + "/" + subcategory
+                let change = MonthlyChange(current: currentAmounts[id] ?? 0, previous: previousAmounts[id] ?? 0)
+                if change.delta > 0 && change.delta > (best?.change.delta ?? 0) {
+                    best = CategoryGrowth(group: group, subcategory: subcategory, change: change)
+                }
+            }
+        }
+
+        return MonthlyComparison(
+            income: MonthlyChange(current: current.incomeKopecks, previous: previous.incomeKopecks),
+            netExpense: MonthlyChange(current: current.netExpenseKopecks, previous: previous.netExpenseKopecks),
+            difference: MonthlyChange(current: current.differenceKopecks, previous: previous.differenceKopecks),
+            topExpenseGrowth: best)
+    }
+
     static func saveAccountSummary(_ operations: [FinancialOperationInput], in interval: DateInterval) -> SaveAccountSummary {
         var toSave: Int64 = 0
         var fromSave: Int64 = 0

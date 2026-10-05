@@ -340,9 +340,21 @@ struct FinanceCategoryOperationsView: View {
 @MainActor
 struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
+    // Selected month start date (first day of the month). Defaults to current month.
+    @State private var selectedMonthStart: Date = monthStart(of: Date())
 
-    private var currentInterval: DateInterval {
-        Calendar.current.dateInterval(of: .month, for: Date()) ?? DateInterval(start: .distantPast, end: .distantFuture)
+    // Helper to go to previous month.
+    private func previousMonth() {
+        if let newDate = Calendar.current.date(byAdding: .month, value: -1, to: selectedMonthStart) {
+            selectedMonthStart = newDate
+        }
+    }
+
+    // Helper to go to next month (not into future months).
+    private func nextMonth() {
+        if let newDate = nextMonthIfAllowed(selectedStart: selectedMonthStart) {
+            selectedMonthStart = newDate
+        }
     }
 
     private func rubles(_ kopecks: Int64) -> String {
@@ -354,18 +366,55 @@ struct FinanceDashboardView: View {
         return prefix + rubles(kopecks)
     }
 
+    private func relativeText(_ change: FinancialEngine.MonthlyChange) -> String {
+        switch change.relative {
+        case .percent(let value):
+            return (value / 100).formatted(.percent.precision(.fractionLength(1)).sign(strategy: .always()))
+        case .new:
+            return "новое"
+        case .notApplicable:
+            return "—"
+        }
+    }
+
+    private func periodText(_ period: DateInterval) -> String {
+        let last = period.end.addingTimeInterval(-1)
+        return "\(period.start.formatted(.dateTime.day().month())) — \(last.formatted(.dateTime.day().month()))"
+    }
+
+    private func changeRow(_ title: String, _ change: FinancialEngine.MonthlyChange) -> some View {
+        LabeledContent(title) {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(rubles(change.current))
+                Text("было \(rubles(change.previous)) · \(signed(change.delta)) · \(relativeText(change))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private var buildNumber: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
     }
 
     var body: some View {
-        let interval = currentInterval
+        // Compute the interval based on the selected month.
+        let monthStart = selectedMonthStart
+        let interval = DateInterval(start: monthStart, end: Calendar.current.date(byAdding: .month, value: 1, to: monthStart)!)
         let inputs = browser.history.operations.map(\.financialInput)
         let report = FinancialEngine.report(inputs, in: interval)
         let save = FinancialEngine.saveAccountSummary(inputs, in: interval)
+        let periods = monthComparisonPeriods(selectedStart: monthStart)
+        let comparison = FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous)
         NavigationStack {
             List {
-                Section("Текущий месяц") {
+                    HStack {
+                        Button(action: previousMonth) { Image(systemName:"chevron.left") }
+                        Text(selectedMonthStart.formatted(.dateTime.month().year()))
+                            .fontWeight(.semibold)
+                        Button(action: nextMonth) { Image(systemName:"chevron.right") }
+                            .disabled(nextMonthIfAllowed(selectedStart: selectedMonthStart) == nil)
+                    }
+                Section("Выбранный месяц") {
                     LabeledContent("Доходы", value: rubles(report.incomeKopecks))
                     LabeledContent("Расходы", value: rubles(report.netExpenseKopecks))
                     LabeledContent("Разница", value: signed(report.differenceKopecks))
@@ -381,6 +430,21 @@ struct FinanceDashboardView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text("Сборка \(buildNumber)")
                         .font(.caption2).foregroundStyle(.tertiary)
+                }
+
+                Section("К предыдущему месяцу") {
+                    if periods.isPartial {
+                        Text("Месяц неполный: \(periodText(periods.current)) против \(periodText(periods.previous))")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    changeRow("Доходы", comparison.income)
+                    changeRow("Расходы", comparison.netExpense)
+                    changeRow("Разница", comparison.difference)
+                    if let growth = comparison.topExpenseGrowth {
+                        changeRow("Рост: \(growth.group) › \(growth.subcategory)", growth.change)
+                    } else {
+                        LabeledContent("Рост расходов", value: "—")
+                    }
                 }
 
                 Section("Состояние данных") {
@@ -411,7 +475,7 @@ struct FinanceDashboardView: View {
                     if save.interestIncomeKopecks > 0 {
                         LabeledContent("Начисленные проценты", value: "+" + rubles(save.interestIncomeKopecks))
                     }
-                    Text("Это движение по Сейву за текущий месяц, а не текущий остаток на счёте. Переводы Карта ↔ Сейв не входят в доходы и расходы; начисленные банком проценты входят в доходы.")
+                    Text("Это движение по Сейву за выбранный месяц, а не текущий остаток на счёте. Переводы Карта ↔ Сейв не входят в доходы и расходы; начисленные банком проценты входят в доходы.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

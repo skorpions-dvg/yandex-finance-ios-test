@@ -17,6 +17,127 @@ struct FinanceEngineTests {
                                 providers: providers, kind: kind, componentAmountsKopecks: components)
     }
 
+    static func testPeriodSelection() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ year: Int, _ month: Int, _ day: Int = 1) -> Date {
+            calendar.date(from: DateComponents(year: year, month: month, day: day))!
+        }
+
+        let dec2023 = date(2023, 12)
+        let jan2024 = date(2024, 1)
+        let feb2024 = date(2024, 2)
+        let mar2024 = date(2024, 3)
+
+        require(nextMonthIfAllowed(selectedStart: feb2024, currentDate: feb2024, calendar: calendar) == nil,
+                "current month must not allow moving forward")
+        require(nextMonthIfAllowed(selectedStart: feb2024, currentDate: date(2024, 2, 15), calendar: calendar) == nil,
+                "current month must stay blocked in the middle of the month")
+        require(nextMonthIfAllowed(selectedStart: mar2024, currentDate: feb2024, calendar: calendar) == nil,
+                "future month must not allow moving forward")
+        require(nextMonthIfAllowed(selectedStart: jan2024, currentDate: feb2024, calendar: calendar) == feb2024,
+                "January must advance to February")
+        require(nextMonthIfAllowed(selectedStart: dec2023, currentDate: jan2024, calendar: calendar) == jan2024,
+                "December 2023 must advance to January 2024")
+        require(nextMonthIfAllowed(selectedStart: date(2024, 1, 31), currentDate: feb2024, calendar: calendar) == feb2024,
+                "navigation must return the next month start, not the same day number")
+        require(nextMonthIfAllowed(selectedStart: date(2024, 2, 29), currentDate: mar2024, calendar: calendar) == mar2024,
+                "leap February must advance to March 1")
+    }
+
+    static func testMonthComparisonPeriods() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ year: Int, _ month: Int, _ day: Int = 1, _ hour: Int = 0) -> Date {
+            calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
+        }
+        func interval(_ start: Date, _ end: Date) -> DateInterval { DateInterval(start: start, end: end) }
+
+        let finished = monthComparisonPeriods(selectedStart: date(2024, 1), currentDate: date(2024, 3, 10), calendar: calendar)
+        require(!finished.isPartial, "finished month is not partial")
+        require(finished.current == interval(date(2024, 1), date(2024, 2)), "finished month covers the whole month")
+        require(finished.previous == interval(date(2023, 12), date(2024, 1)), "previous of January is the whole December, not two months")
+
+        let partial = monthComparisonPeriods(selectedStart: date(2024, 2), currentDate: date(2024, 2, 6, 10), calendar: calendar)
+        require(partial.isPartial, "month in progress is partial")
+        require(partial.current == interval(date(2024, 2), date(2024, 2, 7)), "partial month covers elapsed days including today")
+        require(partial.previous == interval(date(2024, 1), date(2024, 1, 7)), "previous month uses the same 6 calendar days")
+
+        let firstDay = monthComparisonPeriods(selectedStart: date(2024, 2), currentDate: date(2024, 2), calendar: calendar)
+        require(firstDay.previous == interval(date(2024, 1), date(2024, 1, 2)), "first day compares with the first day")
+
+        let yearBoundary = monthComparisonPeriods(selectedStart: date(2024, 1), currentDate: date(2024, 1, 15, 12), calendar: calendar)
+        require(yearBoundary.previous == interval(date(2023, 12), date(2023, 12, 16)), "January compares with December of the previous year")
+
+        let longerThanFebruary = monthComparisonPeriods(selectedStart: date(2024, 3), currentDate: date(2024, 3, 31, 23), calendar: calendar)
+        require(longerThanFebruary.current == interval(date(2024, 3), date(2024, 4)), "31 elapsed days cover all of March")
+        require(longerThanFebruary.previous == interval(date(2024, 2), date(2024, 3)), "shorter February is used whole and does not spill into March")
+
+        let leapDayCount = monthComparisonPeriods(selectedStart: date(2024, 3), currentDate: date(2024, 3, 29), calendar: calendar)
+        require(leapDayCount.previous == interval(date(2024, 2), date(2024, 3)), "29 days of leap February is the whole month")
+        let nonLeap = monthComparisonPeriods(selectedStart: date(2023, 3), currentDate: date(2023, 3, 29), calendar: calendar)
+        require(nonLeap.previous == interval(date(2023, 2), date(2023, 3)), "28-day February is used whole for day 29")
+    }
+
+    static func testMonthlyComparison() {
+        let january = DateInterval(start: BankDateParser.parse("2024-01-01T00:00:00Z")!, end: BankDateParser.parse("2024-02-01T00:00:00Z")!)
+        let february = DateInterval(start: BankDateParser.parse("2024-02-01T00:00:00Z")!, end: BankDateParser.parse("2024-03-01T00:00:00Z")!)
+
+        let taxi = { (amount: Int64, date: String) in op(amount, kind: "expense", category: "Такси", date: date) }
+        let groceries = { (amount: Int64, date: String) in op(amount, kind: "expense", category: "Супермаркеты", date: date) }
+        let transferToPerson = op(-20_000, kind: "transfer", category: "Перевод", description: "Перевод Ивану", date: "2024-02-10T10:00:00Z")
+        let split = op(-9_000, kind: "installment_payment", category: "Сплит", date: "2024-02-11T10:00:00Z")
+        let refund = op(1_000, kind: "refund", category: "Возврат", date: "2024-01-20T10:00:00Z")
+
+        require(FinancialEngine.expenseCategory(for: taxi(-1, "2024-01-01T00:00:00Z")) == FinanceCategoryPath(group: "Транспорт", subcategory: "Такси"), "fixture: taxi category")
+        require(FinancialEngine.expenseCategory(for: groceries(-1, "2024-01-01T00:00:00Z")) == FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты"), "fixture: grocery category")
+        require(FinancialEngine.classify(transferToPerson).type == .expense, "fixture: transfer to a person is an expense")
+        require(FinancialEngine.expenseCategory(for: transferToPerson).subcategory == "Переводы другим", "fixture: transfer category")
+        require(FinancialEngine.classify(split).type == .split, "fixture: split")
+
+        let operations = [
+            op(10_000, kind: "income", date: "2024-01-05T10:00:00Z"),
+            taxi(-2_000, "2024-01-06T10:00:00Z"),
+            groceries(-5_000, "2024-01-07T10:00:00Z"),
+            refund,
+            op(12_000, kind: "income", date: "2024-02-05T10:00:00Z"),
+            taxi(-1_000, "2024-02-06T10:00:00Z"),
+            groceries(-8_000, "2024-02-07T10:00:00Z"),
+            transferToPerson,
+            split,
+        ]
+        let comparison = FinancialEngine.compareReports(operations, currentInterval: february, previousInterval: january)
+        require(comparison.income == FinancialEngine.MonthlyChange(current: 12_000, previous: 10_000), "income for both months")
+        require(comparison.income.delta == 2_000, "income absolute change")
+        require(comparison.income.relative == .percent(20), "income +20%")
+        require(comparison.netExpense == FinancialEngine.MonthlyChange(current: 29_000, previous: 6_000), "net expense after refunds, split excluded")
+        require(comparison.difference == FinancialEngine.MonthlyChange(current: -17_000, previous: 4_000), "income minus net expense")
+        require(comparison.topExpenseGrowth == FinancialEngine.CategoryGrowth(group: "Еда", subcategory: "Супермаркеты",
+                                                                             change: FinancialEngine.MonthlyChange(current: 8_000, previous: 5_000)),
+                "largest growth ignores transfers to people and split")
+        require(comparison.topExpenseGrowth?.change.relative == .percent(60), "grocery growth +60%")
+
+        let noGrowth = FinancialEngine.compareReports(operations, currentInterval: january, previousInterval: february)
+        require(noGrowth.topExpenseGrowth == nil, "no category grew, so there is no growth leader")
+
+        let fromZero = FinancialEngine.compareReports([taxi(-1_500, "2024-02-06T10:00:00Z")], currentInterval: february, previousInterval: january)
+        require(fromZero.topExpenseGrowth?.change == FinancialEngine.MonthlyChange(current: 1_500, previous: 0), "growth from an empty month")
+        require(fromZero.topExpenseGrowth?.change.relative == .new, "growth from zero is new, not a division by zero")
+        require(fromZero.income.relative == .notApplicable, "zero against zero is not applicable")
+        require(fromZero.difference.relative == .notApplicable, "negative or zero base is not applicable")
+        require(FinancialEngine.MonthlyChange(current: 0, previous: 3_000).relative == .percent(-100), "drop to zero is -100%")
+
+        let tie = [taxi(-1_000, "2024-02-06T10:00:00Z"), groceries(-1_000, "2024-02-07T10:00:00Z")]
+        require(FinancialEngine.compareReports(tie, currentInterval: february, previousInterval: january).topExpenseGrowth?.subcategory == "Супермаркеты",
+                "equal growth is resolved by the fixed category order")
+
+        // Half-open partial periods: the first moment after the compared days is excluded.
+        let partialPrevious = DateInterval(start: january.start, end: BankDateParser.parse("2024-01-07T00:00:00Z")!)
+        let boundary = [taxi(-300, "2024-01-06T23:59:59Z"), taxi(-700, "2024-01-07T00:00:00Z")]
+        let boundaryComparison = FinancialEngine.compareReports(boundary, currentInterval: february, previousInterval: partialPrevious)
+        require(boundaryComparison.netExpense.previous == 300, "operation right after the compared days is not counted")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -379,6 +500,10 @@ struct FinanceEngineTests {
             SyncStatusInput(occurredAt: iso.string(from: policyNow.addingTimeInterval(-15 * 86400)), status: "Обработана")
         ], lastCompletedSync: recentCompleted, now: policyNow)
         require(processedStatus.days == 8, "completed 'Обработана' status must not widen refresh")
+
+        testPeriodSelection()
+        testMonthComparisonPeriods()
+        testMonthlyComparison()
 
         print("Finance engine tests passed")
     }
