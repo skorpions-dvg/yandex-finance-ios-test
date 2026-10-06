@@ -288,7 +288,10 @@ enum StatementImporter {
         // Keep explicit spaces: some fonts have a space narrower than a glyph's
         // bounding-box tolerance. Page text order is irrelevant once words have coordinates.
         for index in 0..<min(page.numberOfCharacters, text.length) {
-            let character = text.substring(with: NSRange(location: index, length: 1))
+            let range = NSRange(location: index, length: 1)
+            // PDFKit may insert reading-order separators in page.string. A one-character
+            // selection uses the same character index as characterBounds, including ligatures.
+            let character = page.selection(for: range)?.string ?? text.substring(with: range)
             if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if let word { words.append(word) }; word = nil
                 continue
