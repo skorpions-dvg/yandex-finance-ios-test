@@ -70,9 +70,14 @@ struct AccountsView: View {
             .environment(\.editMode, $editMode)
             .listStyle(.plain)
             .font(usesGlass ? .subheadline : .body)
-            .scrollContentBackground(usesGlass ? .hidden : .visible)
-            .containerBackground(usesGlass ? Color.clear : Color(uiColor: .systemBackground), for: .navigation)
+            .scrollContentBackground(.hidden)
+            .containerBackground(Color.clear, for: .navigation)
+            .background { if !usesGlass { WallpaperBackground() } }
             .toolbarBackground(usesGlass ? .hidden : .automatic, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if usesGlass { compactHeader }
+            }
+            .toolbar(usesGlass ? .hidden : .visible, for: .navigationBar)
             .navigationTitle("Счета")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -119,6 +124,34 @@ struct AccountsView: View {
         .alert("Не удалось сохранить", isPresented: $saveError) {
             Button("OK", role: .cancel) { }
         } message: { Text(browser.message) }
+    }
+
+    private var compactHeader: some View {
+        HStack(spacing: 8) {
+            Button("Закрыть", systemImage: "xmark") {
+                if let onClose { onClose() } else { dismiss() }
+            }
+            .labelStyle(.iconOnly)
+            .frame(width: 36, height: 40)
+            Text("Счета").font(.headline).lineLimit(1)
+            Spacer(minLength: 0)
+            Menu {
+                Button("Новый счёт", systemImage: "wallet.pass") { newAccount = true }
+                Button("Новая группа", systemImage: "folder") { newGroup = true }
+            } label: { Image(systemName: "plus").frame(width: 32, height: 40) }
+            .accessibilityLabel("Добавить")
+            Button(editMode.isEditing ? "Готово" : "Изменить", systemImage: editMode.isEditing ? "checkmark" : "pencil") {
+                withAnimation { editMode = editMode.isEditing ? .inactive : .active }
+            }
+            .labelStyle(.iconOnly)
+            .frame(width: 32, height: 40)
+        }
+        .foregroundStyle(.primary)
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var accountList: some View {
@@ -353,7 +386,7 @@ struct AccountFormView: View {
                 if infoVisible { infoBanner }
                 Section {
                     TextField("Название", text: $name)
-                } footer: { Text("Например, «Наличные» или «Карта».") }
+                } footer: { Text("Например, «Наличные» или «Карта».") }.listRowBackground(GlassRowBackground())
                 Section {
                     Button { showsIcons.toggle() } label: {
                         HStack {
@@ -368,7 +401,7 @@ struct AccountFormView: View {
                         Text("Цвет")
                         colorPicker
                     }
-                }
+                }.listRowBackground(GlassRowBackground())
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(account == nil ? "Начальный баланс" : "Остаток на момент создания")
@@ -381,13 +414,13 @@ struct AccountFormView: View {
                     if parsedBalance == nil {
                         Text("Введите сумму с точностью до копеек.").font(.footnote).foregroundStyle(.red)
                     }
-                } footer: { Text("Остаток на счёте сейчас. Дальше он меняется операциями.") }
+                } footer: { Text("Остаток на счёте сейчас. Дальше он меняется операциями.") }.listRowBackground(GlassRowBackground())
                 Section {
                     Toggle("Учитывать счёт в текущем остатке", isOn: $showsBalance)
-                }
+                }.listRowBackground(GlassRowBackground())
                 Section {
                     Toggle("Карта Яндекс Банка", isOn: $tracksBankCard)
-                } footer: { Text("Операции, загруженные из банка, будут менять остаток этого счёта.") }
+                } footer: { Text("Операции, загруженные из банка, будут менять остаток этого счёта.") }.listRowBackground(GlassRowBackground())
                 Section {
                     Picker("Группа", selection: $groupID) {
                         Text("Без группы").tag(nil as UUID?)
@@ -395,14 +428,15 @@ struct AccountFormView: View {
                             Text(group.name).tag(Optional(group.id))
                         }
                     }
-                }
+                }.listRowBackground(GlassRowBackground())
                 if account != nil {
                     Section {
                         Button("Удалить счёт", role: .destructive) { confirmDeletion = true }
-                    }
+                    }.listRowBackground(GlassRowBackground())
                 }
             }
             .tint(.orange)
+            .appSurface()
             .navigationTitle(account == nil ? "Новый счёт" : "Счёт")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -546,8 +580,9 @@ struct AccountGroupFormView: View {
                     Toggle("Учитывать в текущем остатке", isOn: $includesInBalance)
                 } footer: {
                     Text("Настройка влияет на текущий остаток и запас на главном экране. Суммы на странице счетов остаются видимыми.")
-                }
+                }.listRowBackground(GlassRowBackground())
             }
+                .appSurface()
                 .navigationTitle(group == nil ? "Новая группа" : "Группа")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {

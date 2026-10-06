@@ -5,10 +5,12 @@ import UniformTypeIdentifiers
 @MainActor
 struct YandexFinanceApp: App {
     @StateObject private var browser = BankBrowser()
+    @StateObject private var wallpaper = WallpaperStore()
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
             ContentView(browser: browser)
+                .environmentObject(wallpaper)
                 .onAppear { if scenePhase == .active { browser.becameActive() } }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { browser.becameActive() }
@@ -31,13 +33,26 @@ struct ContentView: View {
                 .allowsHitTesting(browser.bankPageVisible)
                 .accessibilityHidden(!browser.bankPageVisible)
             TabView(selection: $selectedTab) {
-                OperationsHomeView(browser: browser, presentation: presentation, onTabSwipe: switchTab)
+                OperationsHomeView(browser: browser, presentation: presentation)
                     .tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
-                FinanceDashboardView(browser: browser, presentation: presentation, onTabSwipe: switchTab)
+                FinanceDashboardView(browser: browser, presentation: presentation)
                     .tabItem { Label("Отчёты", systemImage: "chart.pie") }.tag(2)
-                SettingsView(browser: browser, presentation: presentation, onTabSwipe: switchTab)
+                SettingsView(browser: browser, presentation: presentation)
                     .tabItem { Label("Настройки", systemImage: "gearshape") }.tag(3)
             }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack(spacing: 4) {
+                    tabButton(1, title: "Операции", symbol: "list.bullet.rectangle")
+                    tabButton(2, title: "Отчёты", symbol: "chart.pie")
+                    tabButton(3, title: "Настройки", symbol: "gearshape")
+                }
+                .padding(6)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.horizontal, 40)
+                .padding(.bottom, 8)
+            }
+            .background { WallpaperBackground() }
             .opacity(browser.bankPageVisible ? 0 : 1)
             .allowsHitTesting(!browser.bankPageVisible)
             if browser.bankPageVisible {
@@ -68,22 +83,21 @@ struct ContentView: View {
             if busy && browser.signInRequested { browser.finishSignIn() }
         }
     }
-    private func switchTab(_ direction: Int) {
-        selectedTab = min(3, max(1, selectedTab + direction))
-    }
-}
-
-/// Root lists handle tab swipes; pushed cards keep the system's back gesture.
-struct TabSwipeModifier: ViewModifier {
-    var onSwipe: (Int) -> Void
-
-    func body(content: Content) -> some View {
-        content.simultaneousGesture(DragGesture(minimumDistance: 60).onEnded { drag in
-            guard abs(drag.translation.width) > 100,
-                  abs(drag.translation.height) < 50,
-                  drag.startLocation.x > 24 else { return }
-            onSwipe(drag.translation.width < 0 ? 1 : -1)
-        })
+    private func tabButton(_ tab: Int, title: String, symbol: String) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.3)) { selectedTab = tab }
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: symbol).font(.title3)
+                Text(title).font(.caption2.weight(.medium))
+            }
+            .foregroundStyle(selectedTab == tab ? Color.blue : Color.primary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(selectedTab == tab ? Color.primary.opacity(0.08) : Color.clear, in: .capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
     }
 }
 
@@ -107,7 +121,7 @@ struct OperationDetailView: View {
                         }
                     }
                     Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
-                }
+                }.listRowBackground(GlassRowBackground())
             }
             if let id = browser.history.expenseCategoryID(for: operation),
                let pair = browser.history.expenseCategory(id: id) {
@@ -129,7 +143,7 @@ struct OperationDetailView: View {
             if let mcc = operation.mcc { LabeledContent("MCC", value: mcc) }
             if let purpose = operation.purpose { LabeledContent("Назначение", value: purpose) }
             if let method = operation.paymentMethod { LabeledContent("Способ оплаты", value: method) }
-        }.navigationTitle(operation.description)
+        }.appSurface().navigationTitle(operation.description)
     }
 }
 
@@ -138,7 +152,6 @@ struct OperationDetailView: View {
 struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
-    var onTabSwipe: (Int) -> Void
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
@@ -162,7 +175,7 @@ struct SettingsView: View {
                             Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
                                 .disabled(browser.busy)
                         }
-                    }
+                    }.listRowBackground(GlassRowBackground())
                 }
                 Section {
                     Toggle("История всегда развёрнута", isOn: $historyAlwaysExpanded)
@@ -173,15 +186,16 @@ struct SettingsView: View {
                     }
                     Text("Ниже этой суммы запас до конца месяца показывается жёлтым.")
                         .font(.caption).foregroundStyle(.secondary)
-                } header: { Text("Отображение") }
+                    NavigationLink("Обои", destination: WallpaperSettingsView())
+                } header: { Text("Отображение") }.listRowBackground(GlassRowBackground())
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
-                }
+                }.listRowBackground(GlassRowBackground())
                 Section {
                     Button("Страница банка") { browser.bankPageVisible = true }
                     Text("Откройте, чтобы войти в банк или посмотреть, что происходит при проверке. Обычно страница скрыта: проверка идёт без неё.")
                         .font(.caption).foregroundStyle(.secondary)
-                } header: { Text("Банк") }
+                } header: { Text("Банк") }.listRowBackground(GlassRowBackground())
                 Section {
                     if browser.busy {
                         HStack { ProgressView(); Text("Обновление операций…"); Spacer(); Button("Остановить") { browser.cancel() } }
@@ -211,7 +225,7 @@ struct SettingsView: View {
                         Text("Автообновление выключено. Новые операции не будут проверяться при открытии приложения. После сброса хранилища это делается специально; включите его после ручной синхронизации.")
                             .font(.caption).foregroundStyle(.orange)
                     }
-                } header: { Text("Обновление") }
+                } header: { Text("Обновление") }.listRowBackground(GlassRowBackground())
                 Section {
                     Text("Сохранено операций: \(browser.history.operations.count)")
                     if let imported = browser.history.statementImportedAt {
@@ -236,7 +250,7 @@ struct SettingsView: View {
                     }
                     Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
                         .font(.footnote).foregroundStyle(.secondary)
-                } header: { Text("Журнал проверок") }
+                } header: { Text("Журнал проверок") }.listRowBackground(GlassRowBackground())
                 Section {
                     Button("Экспортировать резервную копию") {
                         do { exportedBackup = BackupDocument(data: try browser.backupData()) }
@@ -247,7 +261,7 @@ struct SettingsView: View {
                         .disabled(browser.busy)
                     Text("Копия — файл со всеми операциями, счетами и группами. Сохраните его в «Файлы» или iCloud Drive. В нём ваши финансовые данные в открытом виде: не пересылайте его другим.")
                         .font(.caption).foregroundStyle(.secondary)
-                } header: { Text("Резервная копия") }
+                } header: { Text("Резервная копия") }.listRowBackground(GlassRowBackground())
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
                             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -270,7 +284,7 @@ struct SettingsView: View {
                                     }
                                 }.padding(.vertical, 4)
                             }
-                        }
+                        }.listRowBackground(GlassRowBackground())
                     }
                 Section {
                     EmptyView()
@@ -281,9 +295,9 @@ struct SettingsView: View {
                         .minimumScaleFactor(0.8)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
-                }
+                }.listRowBackground(GlassRowBackground())
             }
-            .modifier(TabSwipeModifier(onSwipe: onTabSwipe))
+            .appSurface()
             .navigationTitle("Настройки")
         }
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
@@ -408,7 +422,7 @@ struct FinanceCategoryOperationsView: View {
                 LabeledContent("Раздел", value: selection.parentTitle)
                 Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
                     .font(.caption).foregroundStyle(.secondary)
-            }
+            }.listRowBackground(GlassRowBackground())
 
             Section("Операции") {
                 if visibleOperations.isEmpty {
@@ -432,8 +446,9 @@ struct FinanceCategoryOperationsView: View {
                         }
                     }
                 }
-            }
+            }.listRowBackground(GlassRowBackground())
         }
+        .appSurface()
         .navigationTitle(selection.title)
         .sheet(item: $editedManualOperation) { ManualOperationFormView(browser: browser, operation: $0) }
     }
@@ -464,7 +479,6 @@ struct FinanceCategoryOperationsView: View {
 struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
-    var onTabSwipe: (Int) -> Void
     // Selected month start date (first day of the month). Defaults to current month.
     @State private var selectedMonthStart: Date = monthStart(of: Date())
 
@@ -566,7 +580,7 @@ struct FinanceDashboardView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text("Сборка \(buildNumber)")
                         .font(.caption2).foregroundStyle(.tertiary)
-                }
+                }.listRowBackground(GlassRowBackground())
 
                 Section("К предыдущему месяцу") {
                     if periods.isPartial {
@@ -581,11 +595,11 @@ struct FinanceDashboardView: View {
                     } else {
                         LabeledContent("Рост расходов", value: "—")
                     }
-                }
+                }.listRowBackground(GlassRowBackground())
 
                 Section("Расходы по категориям") {
                     CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
-                }
+                }.listRowBackground(GlassRowBackground())
 
                 Section("Состояние данных") {
                     Toggle("Автообновление", isOn: $browser.autoUpdate)
@@ -606,7 +620,7 @@ struct FinanceDashboardView: View {
                     if issues > 0 { Text("Не прочитано операций: \(issues). Итоги могут быть неполными.").foregroundStyle(.orange) }
                     if browser.busy { ProgressView("Обновление данных…") }
                     Text("Разница доходов и расходов не является остатком на банковских счетах.")
-                }.font(.footnote)
+                }.listRowBackground(GlassRowBackground()).font(.footnote)
 
                 Section("Сейв") {
                     LabeledContent("В Сейв", value: rubles(save.toSaveKopecks))
@@ -617,7 +631,7 @@ struct FinanceDashboardView: View {
                     }
                     Text("Это движение по Сейву за выбранный месяц, а не текущий остаток на счёте. Переводы Карта ↔ Сейв не входят в доходы и расходы; начисленные банком проценты входят в доходы.")
                         .font(.caption).foregroundStyle(.secondary)
-                }
+                }.listRowBackground(GlassRowBackground())
 
 
                 Section("Сверка с банком") {
@@ -629,15 +643,15 @@ struct FinanceDashboardView: View {
                         Text("В базе есть операции с нераспознанной датой. Их нельзя надёжно отнести к этому месяцу, поэтому сверка с банком может быть неполной.")
                             .font(.caption).foregroundStyle(.orange)
                     }
-                }
+                }.listRowBackground(GlassRowBackground())
 
                 Section("Правила") {
                     Text("Возвраты уменьшают расходы и не считаются доходом. Переводы Карта ↔ Сейв и другие подтверждённые переводы между своими счетами относятся к перемещениям; проценты по Сейву считаются доходом.")
                     Text("Сплит показывается отдельно и пока не входит в итог расходов, пока исходная покупка и платежи не связаны — так мы не создаём двойной расход.")
                     Text("Старое завершённое списание без современного типа считается расходом. Непонятное положительное поступление автоматически доходом не назначается.")
-                }.font(.footnote).foregroundStyle(.secondary)
+                }.listRowBackground(GlassRowBackground()).font(.footnote).foregroundStyle(.secondary)
             }
-            .modifier(TabSwipeModifier(onSwipe: onTabSwipe))
+            .appSurface()
             .navigationTitle("Отчёты")
         }
     }
@@ -659,7 +673,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Доходы", value: rubles(report.incomeKopecks))
             }
-        }
+        }.listRowBackground(GlassRowBackground())
     }
 
     private func expenseBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
@@ -677,7 +691,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Расходы", value: rubles(report.netExpenseKopecks))
             }
-        }
+        }.listRowBackground(GlassRowBackground())
     }
 
     private func movementBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
@@ -695,7 +709,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Перемещения", value: rubles(report.movementKopecks))
             }
-        }
+        }.listRowBackground(GlassRowBackground())
     }
 
     private func incompleteBlock(_ report: FinanceReport) -> some View {
@@ -727,7 +741,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Не завершено", value: "\(incompleteCount(report)) оп.")
             }
-        }
+        }.listRowBackground(GlassRowBackground())
     }
 
     private func incompleteCount(_ report: FinanceReport) -> Int {

@@ -22,9 +22,10 @@ struct ForecastDetailView: View {
                         Text("Добавьте счета, чтобы считать запас из остатка")
                             .foregroundStyle(.secondary)
                     }
-                }
+                }.listRowBackground(GlassRowBackground())
                 forecastSection
             }
+            .appSurface()
             .navigationTitle("Прогноз на месяц")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -110,7 +111,7 @@ struct ForecastDetailView: View {
                 Text("Истории пока мало (\(f.historyMonths) мес.), прогноз приблизительный.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-        }
+        }.listRowBackground(GlassRowBackground())
     }
     
     private func balanceLine(_ balance: Int64, scenario: String) -> some View {

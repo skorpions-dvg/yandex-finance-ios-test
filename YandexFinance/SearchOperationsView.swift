@@ -46,13 +46,14 @@ struct SearchOperationsView: View {
                                 }
                             }
                         }
-                    }
+                    }.listRowBackground(GlassRowBackground())
                 }
             }
             .sheet(item: $editedOperation) { operation in
                 ManualOperationFormView(browser: browser, operation: operation)
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Поиск")
+            .appSurface()
             .navigationTitle("Поиск операций")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

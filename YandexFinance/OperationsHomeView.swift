@@ -4,13 +4,14 @@ import SwiftUI
 struct OperationsHomeView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
-    var onTabSwipe: (Int) -> Void
     
     @State private var period: HistoryPeriod = .lastDays(30)
     @State private var historyExpanded: Bool? = nil
     @State private var showForecast = false
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var showAccounts = false
+    @State private var drawerTranslation: CGFloat = 0
+    @State private var drawerMounted = false
     @State private var showSearch = false
     @State private var showAdd = false
     @State private var pendingSavedOperation: ManualOperation?
@@ -63,14 +64,14 @@ struct OperationsHomeView: View {
                                 Button("Скрыть", systemImage: "xmark") { lastSavedOperationID = nil }
                                     .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
                             }
-                        }
+                        }.listRowBackground(GlassRowBackground())
                     }
                     if browser.busy {
                         busyRow
                     }
                     Section {
                         historyHeader
-                    }
+                    }.listRowBackground(GlassRowBackground())
                     if historyCount == 0 {
                         Text("За этот период операций нет")
                             .foregroundStyle(.secondary)
@@ -78,13 +79,21 @@ struct OperationsHomeView: View {
                         daySections
                     }
                 }
+                .appSurface()
                 .listStyle(.insetGrouped)
-                // Swipe right on the main screen opens the accounts, like in Money Flow.
-                .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
-                    guard abs(drag.translation.width) > 100, abs(drag.translation.height) < 50,
-                          drag.startLocation.y > 70 else { return }
-                    if drag.translation.width > 0 { showAccounts = true }
-                    else if drag.startLocation.x > 24 { onTabSwipe(1) }
+                // The first page's right swipe reveals the drawer continuously.
+                .simultaneousGesture(DragGesture(minimumDistance: 18).onChanged { drag in
+                    guard !showAccounts, drag.startLocation.y > 70,
+                          drag.translation.width > 0,
+                          abs(drag.translation.width) > abs(drag.translation.height) * 1.5 else { return }
+                    drawerMounted = true
+                    drawerTranslation = drag.translation.width
+                }.onEnded { drag in
+                    guard drawerTranslation > 0 else { return }
+                    withAnimation(.smooth(duration: 0.3)) {
+                        showAccounts = drag.predictedEndTranslation.width > 120
+                        drawerTranslation = 0
+                    }
                 })
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -141,30 +150,41 @@ struct OperationsHomeView: View {
             }
         }
         .overlay(alignment: .leading) {
-            if showAccounts {
-                GeometryReader { geometry in
+            GeometryReader { geometry in
+                let width = max(0, (geometry.size.width - 24) * 0.7)
+                let progress = showAccounts ? max(0, 1 + drawerTranslation / max(1, width)) : min(1, drawerTranslation / max(1, width))
+                if drawerMounted || showAccounts || drawerTranslation > 0 {
                     ZStack(alignment: .leading) {
-                        Color.black.opacity(0.12)
+                        Color.black.opacity(0.18 * progress)
                             .ignoresSafeArea()
-                            .onTapGesture { showAccounts = false }
-                        AccountsView(browser: browser, onClose: { showAccounts = false }, usesGlass: true)
-                            .frame(width: max(0, (geometry.size.width - 24) * 0.7))
+                            .onTapGesture { withAnimation(.smooth(duration: 0.3)) { showAccounts = false } }
+                        AccountsView(browser: browser, onClose: {
+                            withAnimation(.smooth(duration: 0.3)) { showAccounts = false; drawerTranslation = 0 }
+                        }, usesGlass: true)
+                            .frame(width: width)
                             .glassEffect(.regular, in: .rect(cornerRadius: 24))
                             .clipShape(.rect(cornerRadius: 24))
-                            .padding(.leading, 8)
                             .shadow(radius: 12)
-                            .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
-                                if drag.translation.width < -100 && abs(drag.translation.height) < 60 {
-                                    showAccounts = false
+                            .offset(x: -(width + 8) + (width + 16) * progress)
+                            .simultaneousGesture(DragGesture(minimumDistance: 18).onChanged { drag in
+                                guard showAccounts, abs(drag.translation.width) > abs(drag.translation.height) * 1.5 else { return }
+                                drawerTranslation = min(0, drag.translation.width)
+                            }.onEnded { drag in
+                                guard showAccounts else { return }
+                                withAnimation(.smooth(duration: 0.3)) {
+                                    if drag.predictedEndTranslation.width < -width * 0.4 { showAccounts = false }
+                                    drawerTranslation = 0
                                 }
                             })
                     }
+                    .allowsHitTesting(showAccounts)
+                    .accessibilityHidden(!showAccounts)
                 }
-                .transition(.move(edge: .leading))
             }
         }
-        .animation(.snappy(duration: 0.25), value: showAccounts)
-        .onDisappear { if showAccounts { showAccounts = false } }
+        .onChange(of: showAccounts) { _, open in if open { drawerMounted = true } }
+        .animation(.smooth(duration: 0.3), value: showAccounts)
+        .onDisappear { showAccounts = false; drawerTranslation = 0 }
     }
 
     private func revealSavedOperation() {
@@ -211,7 +231,7 @@ struct OperationsHomeView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-        }
+        }.listRowBackground(GlassRowBackground())
     }
     
     private var periodIsCustom: Bool {
@@ -314,7 +334,7 @@ struct OperationsHomeView: View {
                 }
                 .buttonStyle(.plain)
             }
-        }
+        }.listRowBackground(GlassRowBackground())
     }
     
     private func reserveColor(_ reserve: Int64) -> Color {
@@ -421,7 +441,7 @@ struct OperationsHomeView: View {
                     Spacer()
                     Text(signedRubles(dayTotal(group.operations)))
                 }
-            }
+            }.listRowBackground(GlassRowBackground())
         }
     }
 
@@ -455,6 +475,7 @@ private struct CustomDatesSheet: View {
                 DatePicker("С", selection: $from, displayedComponents: .date)
                 DatePicker("По", selection: $through, displayedComponents: .date)
             }
+            .appSurface()
             .navigationTitle("Выбрать даты")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

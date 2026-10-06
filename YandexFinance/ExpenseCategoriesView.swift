@@ -46,7 +46,7 @@ struct ExpenseCategoriesView: View {
             Section {
                 Text(Date().formatted(.dateTime.month(.wide).year()))
                     .font(.subheadline).foregroundStyle(.secondary)
-            }
+            }.listRowBackground(GlassRowBackground())
             Section {
                 ForEach(visibleItems, id: \.self) { item in
                     switch item {
@@ -69,7 +69,7 @@ struct ExpenseCategoriesView: View {
                 }
                 .moveDisabled(!editMode.isEditing)
                 .deleteDisabled(!editMode.isEditing)
-            }
+            }.listRowBackground(GlassRowBackground())
             if !(browser.history.categoryRules ?? []).isEmpty {
                 Section("Правила") {
                     ForEach(browser.history.categoryRules ?? []) { rule in
@@ -85,11 +85,12 @@ struct ExpenseCategoriesView: View {
                             error = browser.message
                         }
                     }
-                }
+                }.listRowBackground(GlassRowBackground())
             }
         }
         .listStyle(.plain)
         .environment(\.editMode, $editMode)
+        .appSurface()
         .navigationTitle("Категории расходов")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -233,7 +234,7 @@ private struct ExpenseCategoryFormView: View {
                 if createsGroup {
                     Section {
                         Toggle("Обязательные платежи", isOn: $fixedCosts)
-                    } footer: { Text("Крупные платежи этой группы не считаются разовыми в прогнозе") }
+                    } footer: { Text("Крупные платежи этой группы не считаются разовыми в прогнозе") }.listRowBackground(GlassRowBackground())
                 } else if category == nil {
                     Picker("Группа", selection: $groupID) {
                         Text("Выберите группу").tag(nil as UUID?)
@@ -242,6 +243,7 @@ private struct ExpenseCategoryFormView: View {
                 }
             }
             .tint(.orange)
+            .appSurface()
             .navigationTitle(createsGroup ? (group == nil ? "Новая группа" : "Группа") : (category == nil ? "Новая категория" : "Категория"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -304,10 +306,11 @@ private struct ExpenseCategoryMergeView: View {
                                     Text(category.name).foregroundStyle(.primary)
                                 }
                             }
-                        }
+                        }.listRowBackground(GlassRowBackground())
                     }
                 }
             }
+            .appSurface()
             .navigationTitle("Куда перенести операции?")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Отмена", systemImage: "xmark") { dismiss() } } }
@@ -356,15 +359,16 @@ struct OperationExpenseCategoryView: View {
                             }
                         }
                     }
-                }
+                }.listRowBackground(GlassRowBackground())
             }
             Section {
                 Toggle("Для всех операций „\(operation.description)“", isOn: $forPayee)
             } footer: {
                 Text("Прошлые и будущие расходы этого получателя тоже перейдут в эту категорию")
-            }
+            }.listRowBackground(GlassRowBackground())
         }
         .tint(.orange)
+        .appSurface()
         .navigationTitle("Категория")
         .navigationBarTitleDisplayMode(.inline)
         .alert("Не удалось изменить", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
