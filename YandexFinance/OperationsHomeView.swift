@@ -202,13 +202,25 @@ struct OperationsHomeView: View {
         Section(header: Text("Прогноз на месяц")) {
             let f = FinancialEngine.monthForecast(inputs)
             LabeledContent("Потрачено за \(f.elapsedDays) из \(f.daysInMonth) дн.", value: rubles(f.spentKopecks))
-            LabeledContent("Если тратить так же", value: "≈ " + rubles(f.projectedKopecks))
             VStack(alignment: .leading, spacing: 2) {
-                LabeledContent("Ожидаемый доход", value: "≈ " + rubles(f.expectedIncomeKopecks))
-                Text("В этом месяце пока \(rubles(f.incomeKopecks)) · в прошлом \(rubles(f.previousMonthIncomeKopecks)) · в среднем за 3 мес. \(rubles(f.averageIncomeKopecks))")
+                LabeledContent("Расходы к концу месяца", value: "≈ " + rubles(f.projectedExpenseKopecks))
+                Text("обычно от \(rubles(f.projectedExpenseLowKopecks)) до \(rubles(f.projectedExpenseHighKopecks))")
                     .font(.caption).foregroundStyle(.secondary)
+                if f.oneOffKopecks > 0 {
+                    Text("Разовые покупки \(rubles(f.oneOffKopecks)) учтены как потраченные, но не в темпе")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
-            if f.expectedIncomeKopecks == 0 {
+            VStack(alignment: .leading, spacing: 2) {
+                LabeledContent("Доход за месяц", value: "≈ " + rubles(f.projectedIncomeKopecks))
+                Text("пришло пока \(rubles(f.incomeKopecks)) + ожидаемая зарплата · в прошлом месяце \(rubles(f.previousMonthIncomeKopecks))")
+                    .font(.caption).foregroundStyle(.secondary)
+                if f.typicalIrregularIncomeKopecks > 0 {
+                    Text("Нерегулярные поступления обычно ≈ \(rubles(f.typicalIrregularIncomeKopecks)) в месяц — в итог не включены")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if f.projectedIncomeKopecks == 0 {
                 Label("Доходов пока нет — сравнить не с чем", systemImage: "questionmark.circle")
                     .foregroundStyle(.secondary)
                     .font(.subheadline)
@@ -217,9 +229,36 @@ struct OperationsHomeView: View {
                     .foregroundStyle(.green)
                     .font(.subheadline)
             } else {
-                Label("Не хватит ≈ \(rubles(-f.projectedBalanceKopecks)), если тратить так же", systemImage: "exclamationmark.triangle")
+                Label("Не хватит ≈ \(rubles(-f.projectedBalanceKopecks)), если тратить как обычно", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .font(.subheadline)
+            }
+            if !f.upcoming.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Ещё ожидается").font(.caption).foregroundStyle(.secondary)
+                    ForEach(f.upcoming) { payment in
+                        HStack {
+                            Image(systemName: payment.isIncome ? "arrow.down.circle" : "arrow.up.circle")
+                                .foregroundStyle(payment.isIncome ? .green : .secondary)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(payment.title).lineLimit(1)
+                                Text(payment.overdue
+                                     ? "ожидался \(payment.date.formatted(.dateTime.day().month())), не пришёл"
+                                     : payment.date.formatted(.dateTime.day().month()))
+                                    .font(.caption)
+                                    .foregroundStyle(payment.overdue ? .orange : .secondary)
+                            }
+                            Spacer()
+                            Text((payment.isIncome ? "+" : "−") + rubles(payment.amountKopecks))
+                                .foregroundStyle(payment.isIncome ? .green : .primary)
+                        }
+                        .font(.subheadline)
+                    }
+                }
+            }
+            if f.historyMonths < 3 {
+                Text("Истории пока мало (\(f.historyMonths) мес.), прогноз приблизительный.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }

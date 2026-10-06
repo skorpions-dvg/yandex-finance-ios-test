@@ -547,48 +547,233 @@ enum FinancialEngine {
 
     // MARK: - Month forecast
 
+    /// A payment or income that repeats with a steady period and amount.
+    struct RecurringPattern: Equatable {
+        let title: String
+        let isIncome: Bool
+        /// 7, 14, 30 (calendar month) or 365 (calendar year).
+        let intervalDays: Int
+        let typicalAmountKopecks: Int64
+        let lastDate: Date
+    }
+
+    /// A recurring payment or income still expected this month.
+    struct UpcomingPayment: Equatable, Identifiable {
+        let title: String
+        let amountKopecks: Int64
+        let date: Date
+        let isIncome: Bool
+        /// Its usual day has already passed this month and it has not shown up yet.
+        let overdue: Bool
+        var id: String { "\(isIncome)|\(title)|\(date.timeIntervalSince1970)" }
+    }
+
     struct MonthForecast: Equatable {
         /// Net expense (after refunds) from the first day of the month through today.
         let spentKopecks: Int64
-        /// Spending at the same daily pace for the whole month.
-        let projectedKopecks: Int64
         /// Income from the first day of the month through today.
         let incomeKopecks: Int64
-        /// Income of the whole previous month.
+        let projectedExpenseKopecks: Int64
+        let projectedExpenseLowKopecks: Int64
+        let projectedExpenseHighKopecks: Int64
+        /// Income already received plus recurring income (salary) still expected. Irregular income is not guessed.
+        let projectedIncomeKopecks: Int64
         let previousMonthIncomeKopecks: Int64
-        /// Average income of the last three full months that have any saved operations.
-        let averageIncomeKopecks: Int64
+        /// Usual non-recurring income per month (median), shown separately and not counted in the balance.
+        let typicalIrregularIncomeKopecks: Int64
+        /// One-off purchases this month: counted as spent, left out of the baseline and the pace.
+        let oneOffKopecks: Int64
+        let upcoming: [UpcomingPayment]
+        /// Full months the variable spending baseline is built from (0 means the current pace alone).
+        let historyMonths: Int
         let elapsedDays: Int
         let daysInMonth: Int
 
-        /// What the month is expected to bring: the usual income, or more if it has already come in.
-        var expectedIncomeKopecks: Int64 { max(incomeKopecks, averageIncomeKopecks) }
         /// Expected income minus projected spending; negative means the money is not expected to last.
-        var projectedBalanceKopecks: Int64 { expectedIncomeKopecks - projectedKopecks }
+        var projectedBalanceKopecks: Int64 { projectedIncomeKopecks - projectedExpenseKopecks }
     }
 
-    /// Whether this month's spending pace fits the expected income: month-to-date spending extrapolated
-    /// linearly to the end of the month, against the usual income. Uses `report`, so the usual rules apply.
+    private struct DatedAmount {
+        let date: Date
+        let key: String
+        let title: String
+        let isIncome: Bool
+        let amount: Int64
+        /// "Group/Subcategory" for expenses, empty for income.
+        var category = ""
+    }
+
+    /// Completed income and expense movements with their counterparty; refunds, transfers, split and pending are left out.
+    private static func datedAmounts(_ operations: [FinancialOperationInput]) -> [DatedAmount] {
+        operations.compactMap { operation in
+            guard let date = BankDateParser.parse(operation.occurredAt) else { return nil }
+            let assessment = classify(operation)
+            let key = normalized(operation.description)
+            if assessment.incomeContributionKopecks > 0 {
+                return DatedAmount(date: date, key: key, title: operation.description, isIncome: true, amount: assessment.incomeContributionKopecks)
+            }
+            if assessment.expenseContributionKopecks > 0 {
+                let path = expenseCategory(for: operation, assessment: assessment)
+                return DatedAmount(date: date, key: key, title: operation.description, isIncome: false,
+                                   amount: assessment.expenseContributionKopecks, category: path.group + "/" + path.subcategory)
+            }
+            return nil
+        }
+    }
+
+    private static let recurringPeriods: [(days: Int, tolerance: Int)] = [(7, 1), (14, 2), (30, 4), (365, 15)]
+
+    private static func step(_ date: Date, by intervalDays: Int, calendar: Calendar) -> Date {
+        switch intervalDays {
+        case 30: return calendar.date(byAdding: .month, value: 1, to: date)!
+        case 365: return calendar.date(byAdding: .year, value: 1, to: date)!
+        default: return calendar.date(byAdding: .day, value: intervalDays, to: date)!
+        }
+    }
+
+    private static func median(_ values: [Int64]) -> Int64 {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        return sorted.count % 2 == 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+    }
+
+    private static func quantile(_ values: [Int64], _ q: Double) -> Int64 {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        return sorted[Int((Double(sorted.count - 1) * q).rounded())]
+    }
+
+    /// Payments and income from the same counterparty at least three times, about every 7, 14, 30 or 365 days,
+    /// with amounts within 15% of their median (two thirds of the time), and seen recently enough to still be active.
+    static func recurringPatterns(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> [RecurringPattern] {
+        let horizon = calendar.date(byAdding: .day, value: -400, to: now)!
+        let items = datedAmounts(operations).filter { $0.date >= horizon && $0.date <= now }
+        let groups = Dictionary(grouping: items) { "\($0.isIncome)|\($0.key)" }
+        func days(_ from: Date, _ to: Date) -> Int {
+            calendar.dateComponents([.day], from: calendar.startOfDay(for: from), to: calendar.startOfDay(for: to)).day ?? 0
+        }
+        var patterns: [RecurringPattern] = []
+        for (_, group) in groups where group.count >= 3 {
+            let sorted = group.sorted { $0.date < $1.date }
+            let intervals = zip(sorted, sorted.dropFirst()).map { days($0.date, $1.date) }
+            guard let period = recurringPeriods.first(where: { period in
+                intervals.filter { abs($0 - period.days) <= period.tolerance }.count * 3 >= intervals.count * 2
+            }) else { continue }
+            let amounts = sorted.map(\.amount)
+            let typical = median(amounts)
+            guard amounts.filter({ abs($0 - typical) * 100 <= typical * 15 }).count * 3 >= amounts.count * 2 else { continue }
+            let last = sorted[sorted.count - 1]
+            guard days(last.date, now) <= period.days * 3 / 2 + period.tolerance else { continue }
+            patterns.append(RecurringPattern(title: last.title, isIncome: last.isIncome, intervalDays: period.days,
+                                             typicalAmountKopecks: typical, lastDate: last.date))
+        }
+        return patterns.sorted { ($0.isIncome ? 1 : 0, $0.title) < ($1.isIncome ? 1 : 0, $1.title) }
+    }
+
+    /// Month forecast = what already happened + recurring payments still expected + variable spending for the rest
+    /// of the month. The variable baseline is the median of up to six full months without recurring items and
+    /// one-off purchases; the current month only moves it by a pace factor clamped to 0.6–1.6 and softened during
+    /// the first week. The low and high values use the quartiles of the same months; recurring items stay exact.
+    /// A purchase is one-off when it is more than twice the median purchase of its category, or, for a category
+    /// with fewer than three purchases in the history, more than 5% of the usual monthly variable spending.
+    /// Built on `report`, so the usual rules apply.
     static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> MonthForecast {
         // The engine is also compiled on its own (statement import tests), so month bounds are computed here.
         let monthStartDate = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
-        let endOfToday = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
-        let elapsed = calendar.dateComponents([.day], from: monthStartDate, to: endOfToday).day ?? 1
+        let startOfToday = calendar.startOfDay(for: now)
+        let endOfToday = calendar.date(byAdding: .day, value: 1, to: startOfToday)!
+        let monthEnd = calendar.date(byAdding: .month, value: 1, to: monthStartDate)!
+        let elapsed = max(1, calendar.dateComponents([.day], from: monthStartDate, to: endOfToday).day ?? 1)
         let daysInMonth = calendar.range(of: .day, in: .month, for: monthStartDate)?.count ?? 30
-        let soFar = report(operations, in: DateInterval(start: monthStartDate, end: endOfToday))
-        let spent = soFar.netExpenseKopecks
-        // Months before the saved history starts have no operations at all and would drag the average down.
-        let fullMonths = (1...3).map { back -> FinanceReport in
-            let start = calendar.date(byAdding: .month, value: -back, to: monthStartDate)!
-            return report(operations, in: DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!))
+        let remaining = max(0, daysInMonth - elapsed)
+
+        let patterns = recurringPatterns(operations, now: now, calendar: calendar)
+        let recurringKeys = Set(patterns.map { "\($0.isIncome)|\(normalized($0.title))" })
+        let allItems = datedAmounts(operations)
+        let recurringItems = allItems.filter { recurringKeys.contains("\($0.isIncome)|\($0.key)") }
+        func sum(_ items: [DatedAmount], income: Bool, in interval: DateInterval) -> Int64 {
+            items.filter { $0.isIncome == income && $0.date >= interval.start && $0.date < interval.end }.reduce(0) { $0 + $1.amount }
         }
-        let recorded = fullMonths.filter { $0.operationCount > 0 }
-        let average = recorded.isEmpty ? 0 : recorded.reduce(0) { $0 + $1.incomeKopecks } / Int64(recorded.count)
-        return MonthForecast(spentKopecks: spent,
-                             projectedKopecks: elapsed > 0 ? spent * Int64(daysInMonth) / Int64(elapsed) : spent,
+
+        // Full months with any saved operations; months before the history starts would drag the baseline down.
+        var months: [(interval: DateInterval, report: FinanceReport)] = []
+        var previousMonthIncome: Int64 = 0
+        for back in 1...6 {
+            let start = calendar.date(byAdding: .month, value: -back, to: monthStartDate)!
+            let month = DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!)
+            let monthReport = report(operations, in: month)
+            if back == 1 { previousMonthIncome = monthReport.incomeKopecks }
+            if monthReport.operationCount > 0 { months.append((month, monthReport)) }
+        }
+        let historyStart = months.map(\.interval.start).min() ?? monthStartDate
+
+        // One-off purchases: compared with the usual purchase of their category in the history.
+        let variableItems = allItems.filter { !$0.isIncome && !recurringKeys.contains("\($0.isIncome)|\($0.key)") }
+        let historyByCategory = Dictionary(grouping: variableItems.filter { $0.date >= historyStart && $0.date < monthStartDate }, by: \.category)
+            .mapValues { $0.map(\.amount) }
+        let roughBaseline = median(months.map { $0.report.netExpenseKopecks - sum(recurringItems, income: false, in: $0.interval) })
+        func isOneOff(_ item: DatedAmount) -> Bool {
+            if let history = historyByCategory[item.category], history.count >= 3 { return item.amount > 2 * median(history) }
+            return roughBaseline > 0 && item.amount * 20 > roughBaseline
+        }
+        let oneOffItems = variableItems.filter(isOneOff)
+
+        func variableExpense(in interval: DateInterval, report monthReport: FinanceReport) -> Int64 {
+            monthReport.netExpenseKopecks - sum(recurringItems, income: false, in: interval) - sum(oneOffItems, income: false, in: interval)
+        }
+        let variableExpenses = months.map { variableExpense(in: $0.interval, report: $0.report) }
+        let variableIncomes = months.map { $0.report.incomeKopecks - sum(recurringItems, income: true, in: $0.interval) }
+
+        let soFarInterval = DateInterval(start: monthStartDate, end: endOfToday)
+        let soFar = report(operations, in: soFarInterval)
+        let variableSoFar = variableExpense(in: soFarInterval, report: soFar)
+        let baseline = median(variableExpenses)
+
+        // Pace of this month against the usual one, kept within reason so a single big purchase does not dominate.
+        var pace = 1.0
+        if baseline > 0 {
+            pace = Double(variableSoFar) / (Double(baseline) * Double(elapsed) / Double(daysInMonth))
+            pace = min(max(pace, 0.6), 1.6)
+            if elapsed < 7 { pace = 1 + (pace - 1) * Double(elapsed) / 7 }
+        }
+        func tail(_ base: Int64) -> Int64 {
+            if base <= 0 {
+                // No usable history: fall back to the plain daily pace of this month.
+                return max(0, variableSoFar) * Int64(remaining) / Int64(elapsed)
+            }
+            return Int64((Double(base) / Double(daysInMonth) * pace * Double(remaining)).rounded())
+        }
+
+        var upcoming: [UpcomingPayment] = []
+        for pattern in patterns {
+            var next = step(pattern.lastDate, by: pattern.intervalDays, calendar: calendar)
+            while next < monthEnd {
+                if next >= monthStartDate {
+                    upcoming.append(UpcomingPayment(title: pattern.title, amountKopecks: pattern.typicalAmountKopecks, date: next,
+                                                    isIncome: pattern.isIncome, overdue: next < startOfToday))
+                }
+                next = step(next, by: pattern.intervalDays, calendar: calendar)
+            }
+        }
+        upcoming.sort { $0.date < $1.date }
+        let upcomingExpense = upcoming.filter { !$0.isIncome }.reduce(0) { $0 + $1.amountKopecks }
+        let upcomingIncome = upcoming.filter(\.isIncome).reduce(0) { $0 + $1.amountKopecks }
+
+        let known = soFar.netExpenseKopecks + upcomingExpense
+        let estimates = [tail(quantile(variableExpenses, 0.25)), tail(baseline), tail(quantile(variableExpenses, 0.75))].map { known + $0 }
+
+        return MonthForecast(spentKopecks: soFar.netExpenseKopecks,
                              incomeKopecks: soFar.incomeKopecks,
-                             previousMonthIncomeKopecks: fullMonths[0].incomeKopecks,
-                             averageIncomeKopecks: average,
+                             projectedExpenseKopecks: estimates[1],
+                             projectedExpenseLowKopecks: estimates.min()!,
+                             projectedExpenseHighKopecks: estimates.max()!,
+                             projectedIncomeKopecks: soFar.incomeKopecks + upcomingIncome,
+                             previousMonthIncomeKopecks: previousMonthIncome,
+                             typicalIrregularIncomeKopecks: median(variableIncomes),
+                             oneOffKopecks: sum(oneOffItems, income: false, in: soFarInterval),
+                             upcoming: upcoming,
+                             historyMonths: variableExpenses.count,
                              elapsedDays: elapsed,
                              daysInMonth: daysInMonth)
     }

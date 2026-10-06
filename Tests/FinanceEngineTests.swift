@@ -206,42 +206,74 @@ struct FinanceEngineTests {
     static func testMonthForecast() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let now = calendar.date(from: DateComponents(year: 2024, month: 2, day: 6, hour: 10))!
-        let operations = [
-            op(30_000, kind: "income", date: "2023-11-10T10:00:00Z"),
-            op(-50, kind: "expense", category: "Такси", date: "2023-12-12T10:00:00Z"),
-            op(60_000, kind: "income", date: "2024-01-10T10:00:00Z"),
-            op(-10_000, kind: "expense", category: "Такси", date: "2024-01-15T10:00:00Z"),
-            op(-600, kind: "expense", category: "Такси", date: "2024-02-02T10:00:00Z"),
-            op(300, kind: "refund", category: "Возврат", date: "2024-02-03T10:00:00Z"),
-            op(5_000, kind: "income", date: "2024-02-04T10:00:00Z"),
-            op(-300, kind: "expense", category: "Супермаркеты", date: "2024-02-06T09:00:00Z"),
-            op(-999, kind: "expense", category: "Такси", date: "2024-02-07T09:00:00Z"),
-        ]
-        let forecast = FinancialEngine.monthForecast(operations, now: now, calendar: calendar)
-        require(forecast == FinancialEngine.MonthForecast(spentKopecks: 600, projectedKopecks: 2_900, incomeKopecks: 5_000,
-                                                          previousMonthIncomeKopecks: 60_000, averageIncomeKopecks: 30_000,
-                                                          elapsedDays: 6, daysInMonth: 29),
-                "600 spent in 6 of 29 days after the refund, paced to 2 900; income averaged over Nov, Dec (no income) and Jan")
-        require(forecast.expectedIncomeKopecks == 30_000 && forecast.projectedBalanceKopecks == 27_100,
-                "expected income is the usual income while this month's income is lower")
+        func at(_ month: Int, _ day: Int, _ hour: Int = 10) -> Date {
+            calendar.date(from: DateComponents(year: 2024, month: month, day: day, hour: hour))!
+        }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2024-%02d-%02dT10:00:00Z", month, day) }
 
-        // The user's case: last month brought much more than this month and the spending pace stays high.
+        // Six full months: salary on the 5th, rent on the 15th, phone on the 20th, groceries of varying size.
+        let variableTotals: [Int64] = [30_000, 31_000, 29_000, 32_000, 28_000, 30_000]
+        var history: [FinancialOperationInput] = []
+        for month in 1...6 {
+            history.append(op(100_000, kind: "income", category: "Зарплата", description: "ООО Ромашка", date: iso(month, 5)))
+            history.append(op(-20_000, kind: "expense", category: "ЖКХ", description: "УК Жилищник", date: iso(month, 15)))
+            history.append(op(-249, kind: "expense", category: "Связь", description: "Rush", date: iso(month, 20)))
+            let total = variableTotals[month - 1]
+            history.append(op(-total / 3, kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 3)))
+            history.append(op(-(total - total / 3), kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 18)))
+        }
+        let july = history + [
+            op(100_000, kind: "income", category: "Зарплата", description: "ООО Ромашка", date: iso(7, 5)),
+            op(-12_000, kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(7, 3)),
+        ]
+
+        let patterns = FinancialEngine.recurringPatterns(july, now: at(7, 10), calendar: calendar)
+        require(patterns.map(\.title) == ["Rush", "УК Жилищник", "ООО Ромашка"], "salary, rent and phone are recurring; groceries of varying size are not")
+        require(patterns.allSatisfy { $0.intervalDays == 30 }, "all three repeat monthly")
+        require(patterns.first { $0.title == "УК Жилищник" }?.typicalAmountKopecks == 20_000, "typical amount is the median")
+
+        let forecast = FinancialEngine.monthForecast(july, now: at(7, 10), calendar: calendar)
+        require(forecast.historyMonths == 6 && forecast.elapsedDays == 10 && forecast.daysInMonth == 31, "six months of history, day 10 of 31")
+        require(forecast.upcoming == [
+            FinancialEngine.UpcomingPayment(title: "УК Жилищник", amountKopecks: 20_000, date: at(7, 15), isIncome: false, overdue: false),
+            FinancialEngine.UpcomingPayment(title: "Rush", amountKopecks: 249, date: at(7, 20), isIncome: false, overdue: false),
+        ], "rent and phone are still expected this month; this month's salary already came")
+        // Variable baseline: median 30 000, quartiles 29 000 and 31 000. 12 000 in 10 days is a pace of 1.24,
+        // so the rest of the month adds 12 000 × 21 / 10 = 25 200 to the 12 000 spent and 20 249 still expected.
+        require(forecast.projectedExpenseKopecks == 57_449, "spent + recurring still expected + variable tail")
+        require(forecast.projectedExpenseLowKopecks == 56_609 && forecast.projectedExpenseHighKopecks == 58_289, "range from the quartiles")
+        require(forecast.projectedIncomeKopecks == 100_000 && forecast.projectedBalanceKopecks == 42_551,
+                "salary already received, no other income usual")
+        require(forecast.previousMonthIncomeKopecks == 100_000, "previous month income")
+
+        require(forecast.oneOffKopecks == 0, "an ordinary grocery run is not one-off")
+
+        let late = FinancialEngine.monthForecast(july, now: at(7, 25), calendar: calendar)
+        require(late.upcoming.map(\.overdue) == [true, true], "rent and phone that have not come by the 25th are flagged as overdue")
+
+        // A big purchase on the first day must not be stretched over the whole month.
+        let bigStart = history + [op(-60_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(7, 1))]
+        let early = FinancialEngine.monthForecast(bigStart, now: at(7, 2), calendar: calendar)
+        require(early.oneOffKopecks == 60_000, "a purchase far above the usual spending is one-off")
+        let pace = 1 + (0.6 - 1) * 2.0 / 7
+        let expectedTail = Int64((30_000.0 / 31 * pace * 29).rounded())
+        require(early.projectedExpenseKopecks == 60_000 + 20_249 + expectedTail,
+                "the one-off counts as spent but does not drive the pace; the empty pace is floored at 0.6 and softened")
+
+        // Last month brought 200 000 and 100 000 was spent; this month 100 000 came and 100 000 is gone in 6 days.
         let lowerIncome = [
-            op(200_000, kind: "income", date: "2024-01-05T10:00:00Z"),
-            op(100_000, kind: "income", date: "2024-02-05T10:00:00Z"),
-            op(-60_000, kind: "expense", category: "Электроника", date: "2024-02-06T08:00:00Z"),
+            op(200_000, kind: "income", description: "Перевод от Ивана", date: iso(1, 5)),
+            op(-100_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(1, 10)),
+            op(100_000, kind: "income", description: "Перевод от Ивана", date: iso(2, 5)),
+            op(-100_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(2, 6)),
         ]
-        let tight = FinancialEngine.monthForecast(lowerIncome, now: now, calendar: calendar)
-        require(tight.averageIncomeKopecks == 200_000, "months without any saved operations are not averaged in")
-        require(tight.projectedKopecks == 290_000 && tight.projectedBalanceKopecks == -90_000,
-                "a pace of 60 000 in 6 days does not fit the usual 200 000 income")
+        let tight = FinancialEngine.monthForecast(lowerIncome, now: at(2, 6), calendar: calendar)
+        require(tight.projectedIncomeKopecks == 100_000, "irregular income is not assumed: only what came counts")
+        require(tight.typicalIrregularIncomeKopecks == 200_000, "the usual irregular income is reported separately")
+        require(tight.oneOffKopecks == 100_000 && tight.projectedExpenseKopecks == 100_000, "the big purchase is one-off and not stretched")
 
-        let received = FinancialEngine.monthForecast([op(250_000, kind: "income", date: "2024-02-01T10:00:00Z")], now: now, calendar: calendar)
-        require(received.expectedIncomeKopecks == 250_000, "income already received this month counts when it is above the average")
-
-        let firstDay = FinancialEngine.monthForecast([], now: calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!, calendar: calendar)
-        require(firstDay.elapsedDays == 1 && firstDay.projectedKopecks == 0 && firstDay.daysInMonth == 31 && firstDay.expectedIncomeKopecks == 0,
+        let empty = FinancialEngine.monthForecast([], now: calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!, calendar: calendar)
+        require(empty.elapsedDays == 1 && empty.projectedExpenseKopecks == 0 && empty.projectedIncomeKopecks == 0 && empty.historyMonths == 0,
                 "first day of an empty month")
     }
 
