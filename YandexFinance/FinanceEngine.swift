@@ -41,6 +41,33 @@ struct FinancialOperationInput {
     let providers: [String]
     let kind: String
     let componentAmountsKopecks: [Int64]
+    /// Expense category "Group/Subcategory" chosen by the user (a rule, a change on the operation card or the
+    /// category of a manual entry). It wins over every text guess; nil leaves the built-in guess.
+    var categoryPath: String? = nil
+}
+
+/// The user's expense categories in display order. The built-in tree is used until the user edits it.
+struct ExpenseTaxonomy: Equatable {
+    struct Group: Equatable {
+        var name: String
+        var subcategories: [String]
+        /// Bills and other obligations: the forecast never treats them as one-off purchases.
+        var isFixedCosts: Bool
+    }
+    var groups: [Group]
+
+    var groupNames: [String] { groups.map(\.name) }
+    var subcategoryOrder: [String] { groups.flatMap(\.subcategories) }
+    var fixedCostGroups: Set<String> { Set(groups.filter(\.isFixedCosts).map(\.name)) }
+
+    static let builtin = ExpenseTaxonomy(groups: [
+        Group(name: "Еда", subcategories: ["Супермаркеты", "Кафе и рестораны", "Доставка еды"], isFixedCosts: false),
+        Group(name: "Транспорт", subcategories: ["Такси", "Общественный транспорт", "Топливо", "Авто"], isFixedCosts: false),
+        Group(name: "Покупки", subcategories: ["Маркетплейсы", "Одежда", "Электроника", "Дом и быт"], isFixedCosts: false),
+        Group(name: "Обязательные", subcategories: ["ЖКХ", "Связь и интернет", "Подписки", "Здоровье"], isFixedCosts: true),
+        Group(name: "Другое", subcategories: ["Развлечения", "Путешествия", "Подарки", "Доставка и курьеры",
+                                              "Переводы другим", "Комиссии", "Прочее"], isFixedCosts: false),
+    ])
 }
 
 struct FinancialAssessment {
@@ -356,7 +383,8 @@ enum FinancialEngine {
                                 grossExpenseKopecks: grossExpense, refundsKopecks: refunds, incomeKopecks: income)
     }
 
-    static func report(_ operations: [FinancialOperationInput], in interval: DateInterval) -> FinanceReport {
+    static func report(_ operations: [FinancialOperationInput], in interval: DateInterval,
+                       taxonomy: ExpenseTaxonomy = .builtin) -> FinanceReport {
         var invalidDateCount = 0
         var operationCount = 0
         var income: Int64 = 0
@@ -450,7 +478,10 @@ enum FinancialEngine {
         }
 
         let incomeOrder = incomeSubcategoryOrder
-        let expenseOrder = expenseGroupOrder + ["Сплит", "Возвраты"]
+        // Groups outside the taxonomy (a category deleted after an entry was made) still show, after the known ones.
+        let reserved = ["Сплит", "Возвраты"]
+        let extraGroups = expenseGroups.keys.filter { !taxonomy.groupNames.contains($0) && !reserved.contains($0) }.sorted()
+        let expenseOrder = taxonomy.groupNames + extraGroups + reserved
         let incompleteOrder = ["В обработке", "Не определено", "Отменено"]
         let incompleteLines = incompleteOrder.compactMap { title -> FinanceLine? in
             guard let item = incompleteGroups[title], item.0 > 0 else { return nil }
@@ -468,7 +499,7 @@ enum FinancialEngine {
                              movementKopecks: movement, pendingDebitKopecks: pendingDebit,
                              bankDebitKopecks: bankDebit, bankCreditKopecks: bankCredit, unknownCount: unknownCount,
                              incomeLines: lines(incomeGroups, order: incomeOrder),
-                             expenseLines: lines(expenseGroups, order: expenseOrder, childOrder: expenseSubcategoryOrder),
+                             expenseLines: lines(expenseGroups, order: expenseOrder, childOrder: taxonomy.subcategoryOrder),
                              movementLines: movementGroups.map { FinanceLine(id: $0.key, title: $0.key, count: $0.value.0, amountKopecks: $0.value.1, note: nil, children: []) }.sorted { $0.title < $1.title },
                              incompleteLines: incompleteLines)
     }
@@ -511,9 +542,10 @@ enum FinancialEngine {
     /// Subcategories that are not spending on goods or services and stay out of the growth ranking.
     static let comparisonExcludedSubcategories: Set<String> = ["Переводы другим"]
 
-    static func compareReports(_ operations: [FinancialOperationInput], currentInterval: DateInterval, previousInterval: DateInterval) -> MonthlyComparison {
-        let current = report(operations, in: currentInterval)
-        let previous = report(operations, in: previousInterval)
+    static func compareReports(_ operations: [FinancialOperationInput], currentInterval: DateInterval, previousInterval: DateInterval,
+                               taxonomy: ExpenseTaxonomy = .builtin) -> MonthlyComparison {
+        let current = report(operations, in: currentInterval, taxonomy: taxonomy)
+        let previous = report(operations, in: previousInterval, taxonomy: taxonomy)
 
         func subcategoryAmounts(_ report: FinanceReport) -> [String: Int64] {
             var amounts: [String: Int64] = [:]
@@ -528,8 +560,9 @@ enum FinancialEngine {
         // Walk the fixed taxonomy so equal growth always picks the same category. Split and refunds
         // are not part of it, so they never enter the ranking.
         var best: CategoryGrowth?
-        for group in expenseGroupOrder {
-            for subcategory in expenseSubcategoryOrder where !comparisonExcludedSubcategories.contains(subcategory) {
+        for group in taxonomy.groups {
+            for subcategory in group.subcategories where !comparisonExcludedSubcategories.contains(subcategory) {
+                let group = group.name
                 let id = group + "/" + subcategory
                 let change = MonthlyChange(current: currentAmounts[id] ?? 0, previous: previousAmounts[id] ?? 0)
                 if change.delta > 0 && change.delta > (best?.change.delta ?? 0) {
@@ -701,7 +734,7 @@ enum FinancialEngine {
 
     /// Counterparty key from the bank text: letters only, so amounts, dates and account numbers that change from
     /// month to month (for example a utility bill "ЭЭ 3732.24, ГВС …, ПРД08.2026") do not split one payee into many.
-    private static func counterpartyKey(_ text: String) -> String {
+    static func counterpartyKey(_ text: String) -> String {
         String(normalized(text).map { $0.isLetter ? $0 : " " }).split(separator: " ").joined(separator: " ")
     }
 
@@ -781,11 +814,12 @@ enum FinancialEngine {
     /// one-off purchases; the current month only moves it by a pace factor clamped to 0.6–1.6 and softened during
     /// the first week. The low and high values use the quartiles of the same months; recurring items stay exact.
     /// A purchase is one-off when its payee does not show up in another month, it is not an obligation (group
-    /// "Обязательные"), it is above 3% of the usual monthly variable spending, and it is more than twice the median
+    /// "Обязательные" or another group marked as fixed costs), it is above 3% of the usual monthly variable spending, and it is more than twice the median
     /// purchase of its category, or, for a category with fewer than three purchases in the history, more than 5% of
     /// the usual monthly variable spending. Months with fewer than three expenses are not used.
     /// Built on `report`, so the usual rules apply.
-    static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> MonthForecast {
+    static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current,
+                              taxonomy: ExpenseTaxonomy = .builtin) -> MonthForecast {
         // The engine is also compiled on its own (statement import tests), so month bounds are computed here.
         let monthStartDate = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
         let startOfToday = calendar.startOfDay(for: now)
@@ -833,7 +867,8 @@ enum FinancialEngine {
         func isOneOff(_ item: DatedAmount) -> Bool {
             if (monthsByPayee[item.key] ?? 0) >= 2 { return false }
             // Bills, phone, subscriptions and health are obligations, not one-off purchases.
-            if item.category.hasPrefix("Обязательные/") { return false }
+            if let group = item.category.split(separator: "/", maxSplits: 1).first,
+               taxonomy.fixedCostGroups.contains(String(group)) { return false }
             // Too small to matter for the month: at most 3% of the usual monthly variable spending.
             if roughBaseline > 0 && item.amount * 100 <= roughBaseline * 3 { return false }
             if let history = historyByCategory[item.category], history.count >= 3 { return item.amount > 2 * median(history) }
@@ -924,7 +959,7 @@ enum FinancialEngine {
     /// Split and refunds are not groups, so the amounts add up to `grossExpenseKopecks`.
     static func expenseByGroup(_ report: FinanceReport) -> [CategoryAmount] {
         report.expenseLines
-            .filter { expenseGroupOrder.contains($0.title) && $0.amountKopecks > 0 }
+            .filter { $0.title != "Сплит" && $0.title != "Возвраты" && $0.amountKopecks > 0 }
             .map { CategoryAmount(title: $0.title, amountKopecks: $0.amountKopecks) }
     }
 
@@ -994,18 +1029,16 @@ enum FinancialEngine {
         return "Прочие доходы"
     }
 
-    static let expenseGroupOrder = ["Еда", "Транспорт", "Покупки", "Обязательные", "Другое"]
-    static let expenseSubcategoryOrder = [
-        "Супермаркеты", "Кафе и рестораны", "Доставка еды",
-        "Такси", "Общественный транспорт", "Топливо", "Авто",
-        "Маркетплейсы", "Одежда", "Электроника", "Дом и быт",
-        "ЖКХ", "Связь и интернет", "Подписки", "Здоровье",
-        "Развлечения", "Путешествия", "Подарки", "Доставка и курьеры", "Переводы другим", "Комиссии", "Прочее"
-    ]
+    /// Built-in expense tree, flattened; the user's tree is `ExpenseTaxonomy` built from `SavedHistory`.
+    static let expenseGroupOrder = ExpenseTaxonomy.builtin.groupNames
+    static let expenseSubcategoryOrder = ExpenseTaxonomy.builtin.subcategoryOrder
 
     static func expenseCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> FinanceCategoryPath {
-        if let manual = manualCategory(operation), manual.count == 2,
-           expenseGroupOrder.contains(manual[0]), expenseSubcategoryOrder.contains(manual[1]) {
+        if let chosen = operation.categoryPath.map({ $0.split(separator: "/", maxSplits: 1).map(String.init) }),
+           chosen.count == 2, !chosen[0].isEmpty, !chosen[1].isEmpty {
+            return FinanceCategoryPath(group: chosen[0], subcategory: chosen[1])
+        }
+        if let manual = manualCategory(operation), manual.count == 2, !manual[0].isEmpty, !manual[1].isEmpty {
             return FinanceCategoryPath(group: manual[0], subcategory: manual[1])
         }
         let assessment = assessment ?? classify(operation)

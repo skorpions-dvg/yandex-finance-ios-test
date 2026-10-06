@@ -660,7 +660,8 @@ assert.match(financeEngine, /negative movement is an outflow/i, 'negative stale 
 assert.match(financeEngine, /unknownDetails\.append\(FinanceLine/, 'unknown operations must expose per-operation diagnostics');
 assert.match(financeEngine, /static func expenseCategory\(for operation:/, 'finance taxonomy must have one shared expense mapper');
 assert.match(financeEngine, /operation\.mcc/, 'expense taxonomy should use MCC as a high-confidence fallback');
-assert.match(financeEngine, /\"Еда\", \"Транспорт\", \"Покупки\", \"Обязательные\", \"Другое\"/, 'expense groups must use the agreed user-facing hierarchy');
+assert.deepStrictEqual([...financeEngine.matchAll(/Group\(name: "([^"]+)", subcategories:/g)].map(m => m[1]),
+  ['Еда', 'Транспорт', 'Покупки', 'Обязательные', 'Другое'], 'the built-in expense tree must use the agreed user-facing hierarchy');
 assert.match(appSwift, /FinanceCategoryOperationsView/, 'subcategory taps must open a filtered operations list');
 assert.match(appSwift, /selection: \.expense\(group: line\.title, subcategory: child\.title\)/, 'expense subcategory navigation must reuse the same taxonomy');
 assert.match(appSwift, /selection: \.income\(subcategory: line\.title\)/, 'income subcategories must open their operations');

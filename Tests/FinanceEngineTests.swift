@@ -514,6 +514,130 @@ struct FinanceEngineTests {
         } catch { require(false, "backdated manual expense failed: \(error)") }
     }
 
+    static func bankOp(_ identity: String, _ amount: Int64, description: String, mcc: String? = nil,
+                       kind: String = "expense", date: String = "2032-06-02T10:00:00Z") -> BankOperation {
+        BankOperation(identity: identity, occurredAt: date, timePrecision: "exact", description: description,
+                      amountKopecks: amount, currency: "RUB", status: "Выполнено", category: "Тест", mcc: mcc,
+                      purpose: nil, paymentMethod: nil, providers: [], kind: kind)
+    }
+
+    static func testExpenseCategories() {
+        let day = BankDateParser.parse("2032-06-02T00:00:00Z")!
+        let interval = DateInterval(start: day, duration: 86400)
+        let shop1 = bankOp("b1", -100_000, description: "ВкусВилл 0412", mcc: "5411")
+        let shop2 = bankOp("b2", -50_000, description: "ВкусВилл 0977", mcc: "5411")
+        let other = bankOp("b3", -30_000, description: "Перекрёсток", mcc: "5411")
+        let salary = bankOp("b4", 900_000, description: "Зарплата", kind: "income")
+        var history = SavedHistory()
+        history.operations = [shop1, shop2, other, salary]
+        let coffee = ManualOperation(kind: .expense, amountKopecks: 20_000, date: day.addingTimeInterval(3600),
+                                     accountID: nil, group: "Еда", subcategory: "Кафе и рестораны")
+        history.manualOperations = [coffee]
+
+        // Untouched: the built-in tree, same results as before.
+        require(history.expenseCategories == nil && history.expenseTaxonomy == .builtin, "no edits keep the built-in tree")
+        let builtinReport = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        require(builtinReport.expenseLines.first?.children.first { $0.title == "Супермаркеты" }?.amountKopecks == 180_000,
+                "built-in guess still applies without edits")
+        let supermarkets = history.categoryTree[0].categories[0].id
+        require(history.expenseCategoryID(for: shop1) == supermarkets, "a bank expense resolves to its built-in category id")
+        require(history.expenseCategoryID(for: salary) == nil, "income has no expense category")
+
+        // A new category and a payee rule move every expense of that payee, but not other shops.
+        let food = history.categoryTree[0].id
+        guard let healthyFood = history.addExpenseCategory(name: " Полезная еда ", groupID: food) else {
+            return require(false, "a category is added")
+        }
+        require(history.expenseCategoryID(for: shop1) == supermarkets, "ids of the built-in tree survive the first edit")
+        require(history.addExpenseCategory(name: "Полезная еда", groupID: food) == nil, "names are unique within a group")
+        require(history.addExpenseCategory(name: "Еда/кафе", groupID: food) == nil, "a slash is not allowed in a name")
+        require(history.addExpenseGroup(name: "Возвраты") == nil, "report rows cannot become groups")
+        require(history.setExpenseCategory(healthyFood, for: shop1, forPayee: true), "a payee rule is made")
+        require(history.categoryRules?.count == 1 && history.expenseCategoryID(for: shop2) == healthyFood,
+                "the rule covers other operations of the same payee despite different numbers")
+        require(history.expenseCategoryID(for: other) == supermarkets, "another payee keeps its category")
+        require(!history.setExpenseCategory(healthyFood, for: salary, forPayee: false), "income cannot get an expense category")
+
+        // One operation by hand wins over the rule.
+        require(history.setExpenseCategory(supermarkets, for: shop2, forPayee: false), "a single operation is moved")
+        require(history.expenseCategoryID(for: shop2) == supermarkets && history.expenseCategoryID(for: shop1) == healthyFood,
+                "the single choice wins over the payee rule")
+        var report = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        let foodLine = report.expenseLines.first { $0.title == "Еда" }
+        require(foodLine?.children.map(\.title) == ["Супермаркеты", "Кафе и рестораны", "Полезная еда"],
+                "categories follow the tree order, the new one last")
+        require(foodLine?.children.first { $0.title == "Полезная еда" }?.amountKopecks == 100_000, "the rule moves the money in reports")
+        require(report.netExpenseKopecks == 200_000, "changing categories never changes the totals")
+        require(FinancialEngine.operationMatches(history.financialInput(for: shop1), query: "полезная"), "search finds the chosen category")
+
+        // Renaming keeps rules and manual entries; moving a category changes its group in reports.
+        let cafes = history.categoryTree[0].categories[1].id
+        require(history.renameExpenseCategory(cafes, to: "Кафе"), "rename")
+        require(history.manualOperations?.first?.subcategory == "Кафе", "a manual entry follows the rename")
+        require(history.expenseCategoryID(for: history.allOperations.first { $0.isManual }!) == cafes, "the manual entry stays in its category")
+        require(history.renameExpenseGroup(food, to: "Продукты"), "group rename")
+        require(history.manualOperations?.first?.group == "Продукты", "a manual entry follows the group rename")
+        require(!history.renameExpenseGroup(food, to: "Транспорт"), "group names are unique")
+        guard let leisure = history.addExpenseGroup(name: "Досуг") else { return require(false, "a group is added") }
+        require(history.moveExpenseCategory(cafes, toGroup: leisure, at: 0), "a category moves to another group")
+        require(history.manualOperations?.first?.group == "Досуг", "a manual entry follows the move")
+        require(history.moveExpenseGroup(leisure, to: 0), "groups reorder")
+        report = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        require(report.expenseLines.first?.title == "Досуг" && report.expenseLines.first?.amountKopecks == 20_000,
+                "a reordered group comes first in reports")
+
+        // Deleting merges: the rule, single choices, built-in sources and manual entries go to the target.
+        require(!history.deleteExpenseCategory(healthyFood, mergingInto: healthyFood), "cannot merge into itself")
+        require(history.deleteExpenseCategory(healthyFood, mergingInto: supermarkets), "delete with merge")
+        require(history.categoryRules?.first?.categoryID == supermarkets && history.expenseCategoryID(for: shop1) == supermarkets,
+                "the rule follows the merge")
+        require(history.deleteExpenseGroup(leisure, mergingInto: supermarkets), "delete a group")
+        require(history.manualOperations?.first?.group == "Продукты" && history.manualOperations?.first?.subcategory == "Супермаркеты",
+                "manual entries of a deleted group move to the target")
+        require(history.expenseCategoryID(for: bankOp("b5", -5_000, description: "Кофейня", mcc: "5814")) == supermarkets,
+                "built-in guesses of a deleted category land in the target")
+        require(!history.deleteExpenseGroup(food, mergingInto: supermarkets), "a group cannot merge into its own category")
+        report = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        require(report.netExpenseKopecks == 200_000, "totals survive every edit")
+
+        history.removeCategoryRule(history.categoryRules![0].id)
+        require(history.expenseCategoryID(for: shop1) == supermarkets && history.categoryRules?.isEmpty == true, "a rule can be removed")
+
+        // Everything survives a backup, and an old backup without the new fields still opens.
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.expenseCategories == history.expenseCategories && restored.categoryOverrides == history.categoryOverrides,
+                    "the tree and choices survive a backup")
+            let old = try JSONDecoder().decode(SavedHistory.self, from: Data("{\"operations\":[]}".utf8))
+            require(old.expenseCategories == nil && old.categoryTree == ExpenseCategoryGroup.builtin, "old data opens with the built-in tree")
+        } catch { require(false, "category backup failed: \(error)") }
+    }
+
+    static func testFixedCostGroups() {
+        // A big payment in a group marked as fixed costs is never a one-off in the forecast.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = BankDateParser.parse("2032-06-20T10:00:00Z")!
+        var inputs: [FinancialOperationInput] = []
+        for month in 1...5 {
+            for day in [3, 10, 17] {
+                inputs.append(op(-200_000, kind: "expense", description: "Магазин", mcc: "5411",
+                                 date: String(format: "2032-%02d-%02dT10:00:00Z", month, day)))
+            }
+        }
+        var big = op(-3_000_000, kind: "expense", description: "Ремонт", date: "2032-06-05T10:00:00Z")
+        big.categoryPath = "Дом/Ремонт"
+        inputs.append(big)
+        var plain = ExpenseTaxonomy.builtin
+        plain.groups.append(.init(name: "Дом", subcategories: ["Ремонт"], isFixedCosts: false))
+        var fixed = plain
+        fixed.groups[fixed.groups.count - 1].isFixedCosts = true
+        let asOneOff = FinancialEngine.monthForecast(inputs, now: now, calendar: calendar, taxonomy: plain)
+        let asFixed = FinancialEngine.monthForecast(inputs, now: now, calendar: calendar, taxonomy: fixed)
+        require(asOneOff.oneOffKopecks == 3_000_000, "a big rare payment is a one-off normally")
+        require(asFixed.oneOffKopecks == 0, "a fixed-cost group is never a one-off")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -897,6 +1021,8 @@ struct FinanceEngineTests {
         testManualOperations()
         testGroupBalanceVisibility()
         testBackdatedManualOperation()
+        testExpenseCategories()
+        testFixedCostGroups()
 
         print("Finance engine tests passed")
     }

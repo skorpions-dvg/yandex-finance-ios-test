@@ -102,6 +102,12 @@ struct SavedHistory: Codable {
     var accounts: [Account]?
     /// Income, expenses and transfers entered by hand (cash, other banks); not re-importable either.
     var manualOperations: [ManualOperation]?
+    /// The user's expense tree; nil until the first edit (then `ExpenseCategoryGroup.builtin` is used).
+    var expenseCategories: [ExpenseCategoryGroup]?
+    /// "This payee always goes to this category", made from the operation card.
+    var categoryRules: [CategoryRule]?
+    /// Category chosen for one bank operation: operation identity -> `ExpenseCategory.id`. Wins over rules.
+    var categoryOverrides: [String: UUID]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -123,9 +129,9 @@ struct ManualOperation: Codable, Equatable, Identifiable {
     var accountID: UUID?
     /// Destination account of a transfer.
     var toAccountID: UUID?
-    /// Expense: one of `FinancialEngine.expenseGroupOrder`; income: nil.
+    /// Expense: a group name of the user's tree (`SavedHistory.categoryTree`); income: nil.
     var group: String?
-    /// Expense: one of `FinancialEngine.expenseSubcategoryOrder`; income: one of `FinancialEngine.incomeSubcategoryOrder`.
+    /// Expense: a category name in that group; income: one of `FinancialEngine.incomeSubcategoryOrder`.
     var subcategory: String?
     var note: String = ""
 
@@ -300,6 +306,312 @@ enum AccountListItem: Hashable {
             }
         }
         return (orderedGroups, orderedAccounts)
+    }
+}
+
+// MARK: - Expense categories
+
+/// A category of the user's expense tree. `sources` are the built-in "Group/Subcategory" paths whose bank
+/// operations land here, so renaming, moving and merging never touches saved bank operations.
+struct ExpenseCategory: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var sources: [String] = []
+}
+
+struct ExpenseCategoryGroup: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    /// Bills and other obligations: the forecast never treats them as one-off purchases.
+    var isFixedCosts = false
+    var categories: [ExpenseCategory]
+
+    /// The built-in tree with fixed ids, so a choice made before the first edit keeps pointing at the same category.
+    static let builtin: [ExpenseCategoryGroup] = ExpenseTaxonomy.builtin.groups.enumerated().map { groupIndex, group in
+        ExpenseCategoryGroup(id: builtinID(groupIndex + 1, 0), name: group.name, isFixedCosts: group.isFixedCosts,
+                             categories: group.subcategories.enumerated().map { index, name in
+                                 ExpenseCategory(id: builtinID(groupIndex + 1, index + 1), name: name, sources: [group.name + "/" + name])
+                             })
+    }
+
+    private static func builtinID(_ group: Int, _ category: Int) -> UUID {
+        UUID(uuidString: String(format: "00000000-0000-4000-8000-%06X%06X", group, category))!
+    }
+}
+
+/// "Every expense of this payee goes to this category".
+struct CategoryRule: Codable, Equatable, Identifiable {
+    var id = UUID()
+    /// `FinancialEngine.counterpartyKey` of the operation title.
+    var payeeKey: String
+    /// The operation title the rule was made from, for the rules list.
+    var title: String
+    var categoryID: UUID
+}
+
+/// Finds the user's category of each expense: the choice on the operation, then a payee rule, then the built-in
+/// guess mapped through the tree. Built once per list, because it indexes the whole tree.
+struct ExpenseCategoryResolver {
+    private var pathByID: [UUID: String] = [:]
+    private var idByPath: [String: UUID] = [:]
+    private var idBySource: [String: UUID] = [:]
+    private var ruleByKey: [String: UUID] = [:]
+    private let overrides: [String: UUID]
+
+    init(_ history: SavedHistory) {
+        for group in history.categoryTree {
+            for category in group.categories {
+                let path = group.name + "/" + category.name
+                pathByID[category.id] = path
+                idByPath[path] = category.id
+                for source in category.sources { idBySource[source] = category.id }
+            }
+        }
+        for rule in history.categoryRules ?? [] where !rule.payeeKey.isEmpty { ruleByKey[rule.payeeKey] = rule.categoryID }
+        overrides = history.categoryOverrides ?? [:]
+    }
+
+    /// The category of an expense or a fee; nil for income, refunds, transfers, split and unfinished operations.
+    /// `id` is nil only when the path is outside the tree (an old manual entry of a deleted category).
+    func resolve(_ operation: BankOperation) -> (id: UUID?, path: String)? {
+        let input = operation.financialInput
+        let assessment = FinancialEngine.classify(input)
+        guard assessment.type == .expense || assessment.type == .commission else { return nil }
+        let guess = FinancialEngine.expenseCategory(for: input, assessment: assessment)
+        let guessPath = guess.group + "/" + guess.subcategory
+        if operation.isManual {
+            // A manual entry carries the names it was saved with; edits of the tree keep them current.
+            let id = idByPath[guessPath] ?? idBySource[guessPath]
+            return (id, id.flatMap { pathByID[$0] } ?? guessPath)
+        }
+        for id in [overrides[operation.identity], ruleByKey[FinancialEngine.counterpartyKey(operation.description)]] {
+            if let id, let path = pathByID[id] { return (id, path) }
+        }
+        if let id = idBySource[guessPath], let path = pathByID[id] { return (id, path) }
+        return (nil, guessPath)
+    }
+
+    func financialInput(for operation: BankOperation) -> FinancialOperationInput {
+        var input = operation.financialInput
+        input.categoryPath = resolve(operation)?.path
+        return input
+    }
+}
+
+extension SavedHistory {
+    var categoryTree: [ExpenseCategoryGroup] { expenseCategories ?? ExpenseCategoryGroup.builtin }
+
+    /// The tree in the form the engine takes for ordering, comparison and the forecast.
+    var expenseTaxonomy: ExpenseTaxonomy {
+        ExpenseTaxonomy(groups: categoryTree.map {
+            ExpenseTaxonomy.Group(name: $0.name, subcategories: $0.categories.map(\.name), isFixedCosts: $0.isFixedCosts)
+        })
+    }
+
+    /// Every operation with the user's categories applied: use this for reports, the forecast, search and lists
+    /// instead of `allOperations.map(\.financialInput)`.
+    var financialInputs: [FinancialOperationInput] {
+        let resolver = ExpenseCategoryResolver(self)
+        return allOperations.map(resolver.financialInput(for:))
+    }
+
+    func financialInput(for operation: BankOperation) -> FinancialOperationInput {
+        ExpenseCategoryResolver(self).financialInput(for: operation)
+    }
+
+    /// Current category of an expense in the user's tree; nil for anything that is not an expense.
+    func expenseCategoryID(for operation: BankOperation) -> UUID? {
+        ExpenseCategoryResolver(self).resolve(operation)?.id
+    }
+
+    func expenseCategory(id: UUID) -> (group: ExpenseCategoryGroup, category: ExpenseCategory)? {
+        for group in categoryTree {
+            if let category = group.categories.first(where: { $0.id == id }) { return (group, category) }
+        }
+        return nil
+    }
+
+    // MARK: Editing the tree. Every change returns false and leaves the history untouched when it is not allowed.
+
+    /// Trimmed name, or nil when it is empty or has "/", which separates the group and the category in a path.
+    private static func cleanName(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed.contains("/") ? nil : trimmed
+    }
+
+    private static let reservedGroupNames: Set<String> = ["Сплит", "Возвраты"]
+
+    @discardableResult
+    mutating func addExpenseGroup(name: String) -> UUID? {
+        var tree = categoryTree
+        guard let name = Self.cleanName(name), !Self.reservedGroupNames.contains(name),
+              !tree.contains(where: { $0.name == name }) else { return nil }
+        let group = ExpenseCategoryGroup(name: name, categories: [])
+        tree.append(group)
+        expenseCategories = tree
+        return group.id
+    }
+
+    @discardableResult
+    mutating func addExpenseCategory(name: String, groupID: UUID) -> UUID? {
+        var tree = categoryTree
+        guard let name = Self.cleanName(name), let index = tree.firstIndex(where: { $0.id == groupID }),
+              !tree[index].categories.contains(where: { $0.name == name }) else { return nil }
+        let category = ExpenseCategory(name: name)
+        tree[index].categories.append(category)
+        expenseCategories = tree
+        return category.id
+    }
+
+    @discardableResult
+    mutating func renameExpenseGroup(_ id: UUID, to name: String) -> Bool {
+        var tree = categoryTree
+        guard let name = Self.cleanName(name), !Self.reservedGroupNames.contains(name),
+              let index = tree.firstIndex(where: { $0.id == id }),
+              !tree.contains(where: { $0.id != id && $0.name == name }) else { return false }
+        let old = tree[index]
+        tree[index].name = name
+        expenseCategories = tree
+        for category in old.categories {
+            renameManualPaths(from: old.name + "/" + category.name, to: name + "/" + category.name)
+        }
+        return true
+    }
+
+    @discardableResult
+    mutating func renameExpenseCategory(_ id: UUID, to name: String) -> Bool {
+        var tree = categoryTree
+        guard let name = Self.cleanName(name), case let (groupIndex, index)? = Self.position(of: id, in: tree),
+              !tree[groupIndex].categories.contains(where: { $0.id != id && $0.name == name }) else { return false }
+        let group = tree[groupIndex].name
+        let oldName = tree[groupIndex].categories[index].name
+        tree[groupIndex].categories[index].name = name
+        expenseCategories = tree
+        renameManualPaths(from: group + "/" + oldName, to: group + "/" + name)
+        return true
+    }
+
+    @discardableResult
+    mutating func setFixedCosts(_ isFixedCosts: Bool, groupID: UUID) -> Bool {
+        var tree = categoryTree
+        guard let index = tree.firstIndex(where: { $0.id == groupID }) else { return false }
+        tree[index].isFixedCosts = isFixedCosts
+        expenseCategories = tree
+        return true
+    }
+
+    /// Puts a group at `index` of the final order (0 = first).
+    @discardableResult
+    mutating func moveExpenseGroup(_ id: UUID, to index: Int) -> Bool {
+        var tree = categoryTree
+        guard let from = tree.firstIndex(where: { $0.id == id }) else { return false }
+        let group = tree.remove(at: from)
+        tree.insert(group, at: min(max(0, index), tree.count))
+        expenseCategories = tree
+        return true
+    }
+
+    /// Puts a category into a group (the same or another one) at `index` of that group's final order.
+    @discardableResult
+    mutating func moveExpenseCategory(_ id: UUID, toGroup groupID: UUID, at index: Int) -> Bool {
+        var tree = categoryTree
+        guard case let (fromGroup, from)? = Self.position(of: id, in: tree),
+              let target = tree.firstIndex(where: { $0.id == groupID }) else { return false }
+        let category = tree[fromGroup].categories[from]
+        if target != fromGroup, tree[target].categories.contains(where: { $0.name == category.name }) { return false }
+        let oldPath = tree[fromGroup].name + "/" + category.name
+        tree[fromGroup].categories.remove(at: from)
+        tree[target].categories.insert(category, at: min(max(0, index), tree[target].categories.count))
+        expenseCategories = tree
+        renameManualPaths(from: oldPath, to: tree[target].name + "/" + category.name)
+        return true
+    }
+
+    /// Deletes a category; its operations, rules and manual entries move to `targetID`.
+    @discardableResult
+    mutating func deleteExpenseCategory(_ id: UUID, mergingInto targetID: UUID) -> Bool {
+        var tree = categoryTree
+        guard id != targetID, case let (groupIndex, index)? = Self.position(of: id, in: tree),
+              case let (targetGroup, target)? = Self.position(of: targetID, in: tree) else { return false }
+        let removed = tree[groupIndex].categories[index]
+        tree[targetGroup].categories[target].sources += removed.sources
+        let targetPath = tree[targetGroup].name + "/" + tree[targetGroup].categories[target].name
+        tree[groupIndex].categories.remove(at: index)
+        expenseCategories = tree
+        redirect(categoryID: id, path: tree[groupIndex].name + "/" + removed.name, to: targetID, path: targetPath)
+        return true
+    }
+
+    /// Deletes a group with all its categories; everything in them moves to `targetID`, a category of another group.
+    @discardableResult
+    mutating func deleteExpenseGroup(_ id: UUID, mergingInto targetID: UUID) -> Bool {
+        guard let group = categoryTree.first(where: { $0.id == id }),
+              case let (targetGroup, _)? = Self.position(of: targetID, in: categoryTree),
+              categoryTree[targetGroup].id != id else { return false }
+        for category in group.categories { deleteExpenseCategory(category.id, mergingInto: targetID) }
+        expenseCategories = categoryTree.filter { $0.id != id }
+        return true
+    }
+
+    // MARK: Choosing the category of an operation
+
+    /// Moves an expense to a category. `forPayee` makes a rule for every expense of the same payee, past and future;
+    /// otherwise only this operation changes. A manual entry simply takes the new category.
+    @discardableResult
+    mutating func setExpenseCategory(_ categoryID: UUID, for operation: BankOperation, forPayee: Bool) -> Bool {
+        guard case let (group, category)? = expenseCategory(id: categoryID),
+              ExpenseCategoryResolver(self).resolve(operation) != nil else { return false }
+        if expenseCategories == nil { expenseCategories = categoryTree }
+        if let manualID = operation.manualID {
+            guard let index = manualOperations?.firstIndex(where: { $0.id == manualID }) else { return false }
+            manualOperations?[index].group = group.name
+            manualOperations?[index].subcategory = category.name
+            return true
+        }
+        let key = FinancialEngine.counterpartyKey(operation.description)
+        if forPayee && !key.isEmpty {
+            var rules = categoryRules ?? []
+            if let index = rules.firstIndex(where: { $0.payeeKey == key }) { rules[index].categoryID = categoryID }
+            else { rules.append(CategoryRule(payeeKey: key, title: operation.description, categoryID: categoryID)) }
+            categoryRules = rules
+            categoryOverrides?[operation.identity] = nil
+        } else {
+            var overrides = categoryOverrides ?? [:]
+            overrides[operation.identity] = categoryID
+            categoryOverrides = overrides
+        }
+        return true
+    }
+
+    mutating func removeCategoryRule(_ id: UUID) {
+        categoryRules?.removeAll { $0.id == id }
+    }
+
+    private static func position(of categoryID: UUID, in tree: [ExpenseCategoryGroup]) -> (Int, Int)? {
+        for (groupIndex, group) in tree.enumerated() {
+            if let index = group.categories.firstIndex(where: { $0.id == categoryID }) { return (groupIndex, index) }
+        }
+        return nil
+    }
+
+    private mutating func renameManualPaths(from oldPath: String, to newPath: String) {
+        guard oldPath != newPath, var operations = manualOperations else { return }
+        let parts = newPath.split(separator: "/", maxSplits: 1).map(String.init)
+        for index in operations.indices where operations[index].kind == .expense
+            && "\(operations[index].group ?? "")/\(operations[index].subcategory ?? "")" == oldPath {
+            operations[index].group = parts[0]
+            operations[index].subcategory = parts[1]
+        }
+        manualOperations = operations
+    }
+
+    private mutating func redirect(categoryID: UUID, path: String, to targetID: UUID, path targetPath: String) {
+        if var rules = categoryRules {
+            for index in rules.indices where rules[index].categoryID == categoryID { rules[index].categoryID = targetID }
+            categoryRules = rules
+        }
+        categoryOverrides = categoryOverrides?.mapValues { $0 == categoryID ? targetID : $0 }
+        renameManualPaths(from: path, to: targetPath)
     }
 }
 
