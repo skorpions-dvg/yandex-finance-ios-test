@@ -4,14 +4,13 @@ import SwiftUI
 struct OperationsHomeView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
+    var onAccounts: () -> Void
+    var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
     
     @State private var period: HistoryPeriod = .lastDays(30)
     @State private var historyExpanded: Bool? = nil
     @State private var showForecast = false
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
-    @State private var showAccounts = false
-    @State private var drawerTranslation: CGFloat = 0
-    @State private var drawerMounted = false
     @State private var showSearch = false
     @State private var showAdd = false
     @State private var pendingSavedOperation: ManualOperation?
@@ -81,25 +80,12 @@ struct OperationsHomeView: View {
                 }
                 .appSurface()
                 .listStyle(.insetGrouped)
-                // The first page's right swipe reveals the drawer continuously.
-                .simultaneousGesture(DragGesture(minimumDistance: 18).onChanged { drag in
-                    guard !showAccounts, drag.startLocation.y > 70,
-                          drag.translation.width > 0,
-                          abs(drag.translation.width) > abs(drag.translation.height) * 1.5 else { return }
-                    drawerMounted = true
-                    drawerTranslation = drag.translation.width
-                }.onEnded { drag in
-                    guard drawerTranslation > 0 else { return }
-                    withAnimation(.smooth(duration: 0.3)) {
-                        showAccounts = drag.predictedEndTranslation.width > 120
-                        drawerTranslation = 0
-                    }
-                })
+                .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button {
-                            showAccounts = true
+                            onAccounts()
                         } label: {
                             Label("Все счета", systemImage: "wallet.pass")
                                 .labelStyle(.titleAndIcon)
@@ -149,42 +135,6 @@ struct OperationsHomeView: View {
                 }
             }
         }
-        .overlay(alignment: .leading) {
-            GeometryReader { geometry in
-                let width = max(0, (geometry.size.width - 24) * 0.7)
-                let progress = showAccounts ? max(0, 1 + drawerTranslation / max(1, width)) : min(1, drawerTranslation / max(1, width))
-                if drawerMounted || showAccounts || drawerTranslation > 0 {
-                    ZStack(alignment: .leading) {
-                        Color.black.opacity(0.18 * progress)
-                            .ignoresSafeArea()
-                            .onTapGesture { withAnimation(.smooth(duration: 0.3)) { showAccounts = false } }
-                        AccountsView(browser: browser, onClose: {
-                            withAnimation(.smooth(duration: 0.3)) { showAccounts = false; drawerTranslation = 0 }
-                        }, usesGlass: true)
-                            .frame(width: width)
-                            .glassEffect(.regular, in: .rect(cornerRadius: 24))
-                            .clipShape(.rect(cornerRadius: 24))
-                            .shadow(radius: 12)
-                            .offset(x: -(width + 8) + (width + 16) * progress)
-                            .simultaneousGesture(DragGesture(minimumDistance: 18).onChanged { drag in
-                                guard showAccounts, abs(drag.translation.width) > abs(drag.translation.height) * 1.5 else { return }
-                                drawerTranslation = min(0, drag.translation.width)
-                            }.onEnded { drag in
-                                guard showAccounts else { return }
-                                withAnimation(.smooth(duration: 0.3)) {
-                                    if drag.predictedEndTranslation.width < -width * 0.4 { showAccounts = false }
-                                    drawerTranslation = 0
-                                }
-                            })
-                    }
-                    .allowsHitTesting(showAccounts)
-                    .accessibilityHidden(!showAccounts)
-                }
-            }
-        }
-        .onChange(of: showAccounts) { _, open in if open { drawerMounted = true } }
-        .animation(.smooth(duration: 0.3), value: showAccounts)
-        .onDisappear { showAccounts = false; drawerTranslation = 0 }
     }
 
     private func revealSavedOperation() {
@@ -293,7 +243,7 @@ struct OperationsHomeView: View {
             let accounts = browser.history.accounts ?? []
             let f = presentation.forecast(browser.history)
             HStack(alignment: .top) {
-                Button { showAccounts = true } label: {
+                Button { onAccounts() } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Image(systemName: "wallet.pass")

@@ -25,6 +25,12 @@ struct ContentView: View {
     @ObservedObject var browser: BankBrowser
     @State private var selectedTab = 1
     @State private var presentation = FinancePresentationCache()
+    @State private var pageTranslation: CGFloat = 0
+    @State private var drawerOpen = false
+    @State private var drawerTranslation: CGFloat = 0
+    @State private var drawerMounted = false
+    @State private var panRoute = 0 // 1: drawer, 2: pages
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
@@ -32,15 +38,61 @@ struct ContentView: View {
                 .padding(.top, browser.bankPageVisible ? (browser.signInRequested ? 110 : 52) : 0)
                 .allowsHitTesting(browser.bankPageVisible)
                 .accessibilityHidden(!browser.bankPageVisible)
-            TabView(selection: $selectedTab) {
-                OperationsHomeView(browser: browser, presentation: presentation)
-                    .tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
-                FinanceDashboardView(browser: browser, presentation: presentation)
-                    .tabItem { Label("Отчёты", systemImage: "chart.pie") }.tag(2)
-                SettingsView(browser: browser, presentation: presentation)
-                    .tabItem { Label("Настройки", systemImage: "gearshape") }.tag(3)
+            GeometryReader { geometry in
+                let width = geometry.size.width
+                let drawerWidth = NavigationMotion.drawerWidth(width)
+                let drawerPosition = NavigationMotion.drawerPosition(translation: drawerTranslation, width: drawerWidth, wasOpen: drawerOpen)
+                ZStack(alignment: .leading) {
+                    HStack(spacing: 0) {
+                        OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
+                                           onHorizontalPan: { pan($0, $1, $2, width: width) })
+                            .frame(width: width)
+                            .allowsHitTesting(selectedTab == 1)
+                            .accessibilityHidden(selectedTab != 1)
+                        FinanceDashboardView(browser: browser, presentation: presentation,
+                                             onHorizontalPan: { pan($0, $1, $2, width: width) })
+                            .frame(width: width)
+                            .allowsHitTesting(selectedTab == 2)
+                            .accessibilityHidden(selectedTab != 2)
+                        SettingsView(browser: browser, presentation: presentation,
+                                     onHorizontalPan: { pan($0, $1, $2, width: width) })
+                            .frame(width: width)
+                            .allowsHitTesting(selectedTab == 3)
+                            .accessibilityHidden(selectedTab != 3)
+                    }
+                    .frame(width: width * 3, alignment: .leading)
+                    .offset(x: -CGFloat(selectedTab - 1) * width + pageTranslation)
+                    .allowsHitTesting(!drawerOpen)
+                    if drawerMounted {
+                        ZStack(alignment: .leading) {
+                            Color.black.opacity(0.18 * drawerPosition / max(1, drawerWidth + 16))
+                                .ignoresSafeArea()
+                                .onTapGesture { closeAccounts() }
+                            AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
+                                .frame(width: drawerWidth)
+                                .glassEffect(.regular, in: .rect(cornerRadius: 24))
+                                .clipShape(.rect(cornerRadius: 24))
+                                .shadow(radius: 12)
+                                .gesture(
+                                    HorizontalPanCapture(onPan: { translation, velocity, ended in
+                                        if ended {
+                                            animate {
+                                                drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
+                                                                                               width: drawerWidth, wasOpen: true)
+                                                drawerTranslation = 0
+                                            }
+                                        } else { drawerTranslation = min(0, translation) }
+                                    }, excludesHorizontalScrollViews: false)
+                                )
+                                .offset(x: -(drawerWidth + 8) + drawerPosition)
+                        }
+                        .allowsHitTesting(drawerOpen)
+                        .accessibilityHidden(!drawerOpen)
+                    }
+                }
+                .frame(width: width, height: geometry.size.height, alignment: .leading)
+                .clipped()
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 HStack(spacing: 4) {
                     tabButton(1, title: "Операции", symbol: "list.bullet.rectangle")
@@ -83,9 +135,43 @@ struct ContentView: View {
             if busy && browser.signInRequested { browser.finishSignIn() }
         }
     }
+    private func animate(_ changes: () -> Void) {
+        withAnimation(reduceMotion ? nil : .smooth(duration: 0.3), changes)
+    }
+
+    private func openAccounts() {
+        drawerMounted = true
+        animate { drawerOpen = true; drawerTranslation = 0 }
+    }
+
+    private func closeAccounts() { animate { drawerOpen = false; drawerTranslation = 0 } }
+
+    private func pan(_ translation: CGFloat, _ velocity: CGFloat, _ ended: Bool, width: CGFloat) {
+        if panRoute == 0 && translation != 0 { panRoute = selectedTab == 1 && translation > 0 ? 1 : 2 }
+        if ended {
+            animate {
+                if panRoute == 1 {
+                    drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
+                                                                  width: NavigationMotion.drawerWidth(width), wasOpen: false)
+                } else if panRoute == 2 {
+                    selectedTab = NavigationMotion.pageTarget(current: selectedTab, translation: translation, velocity: velocity, width: width)
+                }
+                drawerTranslation = 0
+                pageTranslation = 0
+            }
+            panRoute = 0
+        } else if panRoute == 1 {
+            drawerMounted = true
+            drawerTranslation = max(0, translation)
+        } else {
+            let beyondLastPage = selectedTab == 3 && translation < 0
+            pageTranslation = beyondLastPage ? translation * 0.15 : translation
+        }
+    }
+
     private func tabButton(_ tab: Int, title: String, symbol: String) -> some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.3)) { selectedTab = tab }
+            animate { selectedTab = tab; pageTranslation = 0; drawerOpen = false; drawerTranslation = 0 }
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: symbol).font(.title3)
@@ -152,6 +238,7 @@ struct OperationDetailView: View {
 struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
+    var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
@@ -298,6 +385,7 @@ struct SettingsView: View {
                 }.listRowBackground(GlassRowBackground())
             }
             .appSurface()
+            .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
             .navigationTitle("Настройки")
         }
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
@@ -479,6 +567,7 @@ struct FinanceCategoryOperationsView: View {
 struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
+    var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
     // Selected month start date (first day of the month). Defaults to current month.
     @State private var selectedMonthStart: Date = monthStart(of: Date())
 
@@ -652,6 +741,7 @@ struct FinanceDashboardView: View {
                 }.listRowBackground(GlassRowBackground()).font(.footnote).foregroundStyle(.secondary)
             }
             .appSurface()
+            .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
             .navigationTitle("Отчёты")
         }
     }

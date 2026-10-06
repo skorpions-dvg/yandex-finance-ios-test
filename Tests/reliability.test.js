@@ -589,7 +589,10 @@ assert.throws(() => parse(groupURL, groupCard.replace('17 марта, 12:34\n+31
 assert.throws(() => parse(groupURL, groupCard + '\n' + purchase, ''), /несколько карточек/);
 assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Несколько разделов/);
 assert.match(appSwift, /@State private var selectedTab = 1/);
-assert.match(appSwift, /TabView\(selection: \$selectedTab\)/);
+assert.match(appSwift, /NavigationMotion\.pageTarget/);
+assert.doesNotMatch(appSwift, /tabViewStyle\(\.page/,
+  'a native page pan must not compete with the accounts drawer');
+assert.match(appSwift, /NavigationMotion\.drawerShouldOpen/);
 assert.doesNotMatch(appSwift, /TabView\(selection: \$browser.selectedTab\)/,
   'tab navigation must not broadcast changes to every bank observer');
 assert.match(swift, /bankPageVisible = true/, 'card retry must bring the hidden bank page to the front');
@@ -601,7 +604,7 @@ assert.match(swift, /func requestSignIn\(\) \{[\s\S]{0,200}signInNeededMessage[\
 assert.match(swift, /historyPageReady\(\) else \{ continue \}\s*self\.finishSignIn\(\)[\s\S]{0,120}self\.read\(mode: "history"/, 'after sign-in the page closes and the refresh continues');
 assert.match(appSwift, /ZStack\(alignment: \.top\) \{[\s\S]{0,200}BankWebView\(browser: browser\)/, 'bank page must stay in the window behind the tabs');
 assert.ok(!/Label\("Банк"/.test(appSwift), 'the bank page is no longer a tab');
-assert.match(appSwift, /Label\("Настройки", systemImage: "gearshape"\)/);
+assert.match(appSwift, /tabButton\(3, title: "Настройки", symbol: "gearshape"\)/);
 assert.match(appSwift, /Месяц сканера \(не дата платежа\)/);
 (async () => {
   const card = {innerText:groupCard, getClientRects:()=>[{}], closest:()=>null};
@@ -622,7 +625,7 @@ const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/Fin
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
 // Build numbers and README consistency are checked together above.
-assert.match(appSwift, /Label\("Отчёты", systemImage: "chart\.pie"\)/);
+assert.match(appSwift, /tabButton\(2, title: "Отчёты", symbol: "chart\.pie"\)/);
 assert.match(appSwift, /Button\(action: previousMonth\)[\s\S]{0,400}Button\(action: nextMonth\)[\s\S]{0,300}\}\s*(?:\/\/[^\n]*\s*)?\.buttonStyle\(\.borderless\)/,
   'month switcher buttons share a List row and must be borderless, otherwise one tap fires both');
 assert.match(appSwift, /Банковские списания/);

@@ -7,6 +7,7 @@ struct BuiltinWallpaper: Identifiable {
     let id: String
     let name: String
     let colors: [Color]
+    var assetName: String? = nil
 
     static let all: [BuiltinWallpaper] = [
         .init(id: "night", name: "Ночь", colors: [.black, Color(red: 0.08, green: 0.10, blue: 0.19)]),
@@ -16,7 +17,11 @@ struct BuiltinWallpaper: Identifiable {
         .init(id: "rose", name: "Розовый кварц", colors: [.pink, Color(red: 0.45, green: 0.22, blue: 0.42), .indigo]),
         .init(id: "forest", name: "Лес", colors: [.mint, .teal, Color(red: 0.03, green: 0.18, blue: 0.13)]),
         .init(id: "violet", name: "Лаванда", colors: [.purple, .indigo, .blue]),
-        .init(id: "silver", name: "Графит", colors: [.gray, Color(red: 0.17, green: 0.20, blue: 0.26), .black])
+        .init(id: "silver", name: "Графит", colors: [.gray, Color(red: 0.17, green: 0.20, blue: 0.26), .black]),
+        .init(id: "photo-mist", name: "Горы в тумане", colors: [], assetName: "Wallpaper-mist"),
+        .init(id: "photo-sea", name: "Тихое море", colors: [], assetName: "Wallpaper-sea"),
+        .init(id: "photo-dunes", name: "Дюны", colors: [], assetName: "Wallpaper-dunes"),
+        .init(id: "photo-forest", name: "Туманный лес", colors: [], assetName: "Wallpaper-forest")
     ]
 }
 
@@ -80,7 +85,8 @@ struct WallpaperBackground: View {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
                     let preset = BuiltinWallpaper.all.first { $0.id == wallpaper.selection } ?? BuiltinWallpaper.all[0]
-                    LinearGradient(colors: preset.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                    if let asset = preset.assetName { Image(asset).resizable().scaledToFill() }
+                    else { LinearGradient(colors: preset.colors, startPoint: .topLeading, endPoint: .bottomTrailing) }
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -126,7 +132,13 @@ struct WallpaperSettingsView: View {
                     ForEach(BuiltinWallpaper.all) { preset in
                         Button { wallpaper.selection = preset.id } label: {
                             VStack(alignment: .leading, spacing: 8) {
-                                LinearGradient(colors: preset.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                                GeometryReader { geometry in
+                                    Group {
+                                        if let asset = preset.assetName { Image(asset).resizable().scaledToFill() }
+                                        else { LinearGradient(colors: preset.colors, startPoint: .topLeading, endPoint: .bottomTrailing) }
+                                    }
+                                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                                }
                                     .frame(height: 125)
                                     .overlay(alignment: .topTrailing) {
                                         if wallpaper.selection == preset.id {
