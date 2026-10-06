@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Validate on a copy first: rejected edits never reach the storage writer.
 @MainActor
@@ -23,6 +24,8 @@ struct ExpenseCategoriesView: View {
     @State private var editedCategory: ExpenseCategory?
     @State private var deletion: ExpenseCategoryDeletion?
     @State private var error: String?
+    @State private var showCategoryImporter = false
+    @State private var importedPlan: ExpenseCategoryImport?
 
     private var tree: [ExpenseCategoryGroup] { browser.history.categoryTree }
     private var fullItems: [AccountListItem] {
@@ -43,6 +46,12 @@ struct ExpenseCategoriesView: View {
         let _ = presentation.prepare(browser.history)
         let lines = monthReport.expenseLines
         List {
+            Section {
+                Button("Импортировать разметку категорий", systemImage: "square.and.arrow.down") {
+                    showCategoryImporter = true
+                }
+                .disabled(browser.busy || !browser.storageAvailable)
+            }.listRowBackground(GlassRowBackground())
             Section {
                 Text(Date().formatted(.dateTime.month(.wide).year()))
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -111,6 +120,19 @@ struct ExpenseCategoriesView: View {
         .sheet(item: $editedGroup) { ExpenseCategoryFormView(browser: browser, group: $0, createsGroup: true) }
         .sheet(item: $editedCategory) { ExpenseCategoryFormView(browser: browser, category: $0) }
         .sheet(item: $deletion) { ExpenseCategoryMergeView(browser: browser, deletion: $0) }
+        .fileImporter(isPresented: $showCategoryImporter, allowedContentTypes: [.json]) { result in
+            do {
+                let url = try result.get()
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let plan = try ExpenseCategoryImport.decode(Data(contentsOf: url))
+                _ = try plan.preview(browser.history)
+                importedPlan = plan
+            } catch { self.error = error.localizedDescription }
+        }
+        .sheet(isPresented: Binding(get: { importedPlan != nil }, set: { if !$0 { importedPlan = nil } })) {
+            if let plan = importedPlan { ExpenseCategoryImportPreview(browser: browser, plan: plan) }
+        }
         .alert("Не удалось изменить", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) { error = nil }
         } message: { Text(error ?? "") }
@@ -202,6 +224,62 @@ struct ExpenseCategoriesView: View {
             let position = moved[(header + 1)..<index].count
             error = saveExpenseCategoryChange(browser) { $0.moveExpenseCategory(id, toGroup: groupID, at: position) }
         case .ungroupedHeader: break
+        }
+    }
+}
+
+private struct ExpenseCategoryImportPreview: View {
+    @ObservedObject var browser: BankBrowser
+    let plan: ExpenseCategoryImport
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let result = try? plan.preview(browser.history) {
+                    Section {
+                        Text("Назначить категории: \(result.assigned)")
+                        Text("Перенести категории между группами: \(result.moved)")
+                        if result.skipped > 0 {
+                            Text("Пропущено: \(result.skipped). Операции уже размечены, изменились или отсутствуют.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                        Text("Суммы, даты, счета и история сохранятся. Разметка применяется только к указанным в файле операциям.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }.listRowBackground(GlassRowBackground())
+                    Section("Категории назначения") {
+                        ForEach(result.destinations.keys.sorted(), id: \.self) { path in
+                            LabeledContent(path.replacingOccurrences(of: "/", with: " → "),
+                                           value: String(result.destinations[path] ?? 0))
+                        }
+                    }.listRowBackground(GlassRowBackground())
+                }
+            }
+            .appSurface()
+            .navigationTitle("Разметка категорий")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Применить") {
+                        do {
+                            let result = try plan.preview(browser.history)
+                            guard result.assigned > 0 || result.moved > 0 else {
+                                error = "Все назначения уже применены или операции изменились."
+                                return
+                            }
+                            if browser.updateUserData({ $0 = result.history }) {
+                                browser.message = "Разметка применена: \(result.assigned) операций, \(result.moved) перенесённых категорий."
+                                dismiss()
+                            } else { error = browser.message }
+                        } catch { self.error = error.localizedDescription }
+                    }.disabled(browser.busy || !browser.storageAvailable)
+                }
+            }
+            .alert("Разметка не применена", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("OK", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
         }
     }
 }
