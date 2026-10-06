@@ -216,22 +216,13 @@ struct OperationsHomeView: View {
                 Text("пришло пока \(rubles(f.incomeKopecks)) + ожидаемая зарплата · в прошлом месяце \(rubles(f.previousMonthIncomeKopecks))")
                     .font(.caption).foregroundStyle(.secondary)
                 if f.typicalIrregularIncomeKopecks > 0 {
-                    Text("Нерегулярные поступления обычно ≈ \(rubles(f.typicalIrregularIncomeKopecks)) в месяц — в итог не включены")
+                    Text("Нерегулярные поступления обычно ≈ \(rubles(f.typicalIrregularIncomeKopecks)) в месяц")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if f.projectedIncomeKopecks == 0 {
-                Label("Доходов пока нет — сравнить не с чем", systemImage: "questionmark.circle")
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
-            } else if f.projectedBalanceKopecks >= 0 {
-                Label("Укладываетесь: останется ≈ \(rubles(f.projectedBalanceKopecks))", systemImage: "checkmark.circle")
-                    .foregroundStyle(.green)
-                    .font(.subheadline)
-            } else {
-                Label("Не хватит ≈ \(rubles(-f.projectedBalanceKopecks)), если тратить как обычно", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-                    .font(.subheadline)
+            balanceLine(f.projectedBalanceKopecks, scenario: "Без новых поступлений")
+            if f.balanceWithTypicalIncomeKopecks != f.projectedBalanceKopecks {
+                balanceLine(f.balanceWithTypicalIncomeKopecks, scenario: "С обычными поступлениями")
             }
             if !f.upcoming.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -263,6 +254,15 @@ struct OperationsHomeView: View {
         }
     }
     
+    private func balanceLine(_ balance: Int64, scenario: String) -> some View {
+        Label(balance >= 0
+              ? "\(scenario): останется ≈ \(rubles(balance))"
+              : "\(scenario): не хватит ≈ \(rubles(-balance))",
+              systemImage: balance >= 0 ? "checkmark.circle" : "exclamationmark.triangle")
+            .foregroundStyle(balance >= 0 ? .green : .orange)
+            .font(.subheadline)
+    }
+
     // MARK: - Busy Row
     private var busyRow: some View {
         HStack {

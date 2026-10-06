@@ -581,6 +581,8 @@ enum FinancialEngine {
         let previousMonthIncomeKopecks: Int64
         /// Usual non-recurring income per month (median), shown separately and not counted in the balance.
         let typicalIrregularIncomeKopecks: Int64
+        /// Non-recurring income already received this month.
+        let irregularIncomeSoFarKopecks: Int64
         /// One-off purchases this month: counted as spent, left out of the baseline and the pace.
         let oneOffKopecks: Int64
         let upcoming: [UpcomingPayment]
@@ -591,6 +593,10 @@ enum FinancialEngine {
 
         /// Expected income minus projected spending; negative means the money is not expected to last.
         var projectedBalanceKopecks: Int64 { projectedIncomeKopecks - projectedExpenseKopecks }
+        /// The same balance if the usual irregular income still comes this month (the second, optimistic scenario).
+        var balanceWithTypicalIncomeKopecks: Int64 {
+            projectedBalanceKopecks + max(0, typicalIrregularIncomeKopecks - irregularIncomeSoFarKopecks)
+        }
     }
 
     private struct DatedAmount {
@@ -696,7 +702,9 @@ enum FinancialEngine {
             items.filter { $0.isIncome == income && $0.date >= interval.start && $0.date < interval.end }.reduce(0) { $0 + $1.amount }
         }
 
-        // Full months with any saved operations; months before the history starts would drag the baseline down.
+        // Full months only: a month before the saved history or the partly covered month it starts in
+        // (for example a statement that begins mid-month) would drag the baseline down.
+        let firstSaved = operations.compactMap { BankDateParser.parse($0.occurredAt) }.min()
         var months: [(interval: DateInterval, report: FinanceReport)] = []
         var previousMonthIncome: Int64 = 0
         for back in 1...6 {
@@ -704,7 +712,9 @@ enum FinancialEngine {
             let month = DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!)
             let monthReport = report(operations, in: month)
             if back == 1 { previousMonthIncome = monthReport.incomeKopecks }
-            if monthReport.operationCount > 0 { months.append((month, monthReport)) }
+            if monthReport.operationCount > 0, let firstSaved, firstSaved < calendar.date(byAdding: .day, value: 7, to: start)! {
+                months.append((month, monthReport))
+            }
         }
         let historyStart = months.map(\.interval.start).min() ?? monthStartDate
 
@@ -771,6 +781,7 @@ enum FinancialEngine {
                              projectedIncomeKopecks: soFar.incomeKopecks + upcomingIncome,
                              previousMonthIncomeKopecks: previousMonthIncome,
                              typicalIrregularIncomeKopecks: median(variableIncomes),
+                             irregularIncomeSoFarKopecks: soFar.incomeKopecks - sum(recurringItems, income: true, in: soFarInterval),
                              oneOffKopecks: sum(oneOffItems, income: false, in: soFarInterval),
                              upcoming: upcoming,
                              historyMonths: variableExpenses.count,

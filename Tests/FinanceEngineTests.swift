@@ -271,6 +271,16 @@ struct FinanceEngineTests {
         require(tight.projectedIncomeKopecks == 100_000, "irregular income is not assumed: only what came counts")
         require(tight.typicalIrregularIncomeKopecks == 200_000, "the usual irregular income is reported separately")
         require(tight.oneOffKopecks == 100_000 && tight.projectedExpenseKopecks == 100_000, "the big purchase is one-off and not stretched")
+        require(tight.balanceWithTypicalIncomeKopecks == tight.projectedBalanceKopecks + 100_000,
+                "the optimistic scenario adds only the part of the usual irregular income that has not come yet")
+
+        // A history that starts mid-month: that partial month must not enter the baseline.
+        let partial = [
+            op(-1_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(3, 20)),
+            op(-30_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(4, 10)),
+        ]
+        let fromPartial = FinancialEngine.monthForecast(partial, now: at(5, 10), calendar: calendar)
+        require(fromPartial.historyMonths == 1, "March is only partly covered and is skipped; April counts")
 
         let empty = FinancialEngine.monthForecast([], now: calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!, calendar: calendar)
         require(empty.elapsedDays == 1 && empty.projectedExpenseKopecks == 0 && empty.projectedIncomeKopecks == 0 && empty.historyMonths == 0,
