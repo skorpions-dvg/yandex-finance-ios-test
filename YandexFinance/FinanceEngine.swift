@@ -44,6 +44,9 @@ struct FinancialOperationInput {
     /// Expense category "Group/Subcategory" chosen by the user (a rule, a change on the operation card or the
     /// category of a manual entry). It wins over every text guess; nil leaves the built-in guess.
     var categoryPath: String? = nil
+    /// Income category chosen by the user (a sender rule or a change on the operation card). Only applies to
+    /// income and interest; it never changes what an operation is.
+    var incomeCategoryName: String? = nil
 }
 
 /// The user's expense categories in display order. The built-in tree is used until the user edits it.
@@ -1018,6 +1021,10 @@ enum FinancialEngine {
     static let incomeSubcategoryOrder = ["Переводы от других", "Пополнения", "Зарплата и выплаты", "Кэшбэк", "Проценты", "Прочие доходы"]
 
     static func incomeCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> String {
+        if let chosen = operation.incomeCategoryName, incomeSubcategoryOrder.contains(chosen) {
+            let type = (assessment ?? classify(operation)).type
+            if type == .income || type == .interestIncome { return chosen }
+        }
         if let manual = manualCategory(operation), manual.count == 1, incomeSubcategoryOrder.contains(manual[0]) { return manual[0] }
         let assessment = assessment ?? classify(operation)
         let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))

@@ -218,6 +218,13 @@ struct OperationDetailView: View {
                     LabeledContent("Категория", value: pair.group.name + " / " + pair.category.name)
                 }
                 LabeledContent("Категория банка", value: operation.category)
+            } else if let income = browser.history.incomeCategory(for: operation) {
+                NavigationLink {
+                    OperationIncomeCategoryView(browser: browser, operation: operation)
+                } label: {
+                    LabeledContent("Категория дохода", value: income)
+                }
+                LabeledContent("Категория банка", value: operation.category)
             } else { LabeledContent("Категория", value: operation.category) }
             LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
             if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {

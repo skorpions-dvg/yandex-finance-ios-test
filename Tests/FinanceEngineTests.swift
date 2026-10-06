@@ -638,6 +638,73 @@ struct FinanceEngineTests {
         require(asFixed.oneOffKopecks == 0, "a fixed-cost group is never a one-off")
     }
 
+    static func testIncomeCategories() {
+        let day = BankDateParser.parse("2032-06-02T00:00:00Z")!
+        let interval = DateInterval(start: day, duration: 86400)
+        let pay1 = bankOp("i1", 100_000, description: "Перевод от Иванов И. 0412", kind: "income")
+        let pay2 = bankOp("i2", 50_000, description: "Перевод от Иванов И. 0977", kind: "income")
+        let other = bankOp("i3", 30_000, description: "Магазин возврат подарка", kind: "income")
+        let own = bankOp("i4", 70_000, description: "Перевод между счетами одного клиента", kind: "transfer")
+        let refund = bankOp("i5", 20_000, description: "Возврат покупки", kind: "refund")
+        let shop = bankOp("i6", -10_000, description: "Магазин", mcc: "5411")
+        var history = SavedHistory()
+        history.operations = [pay1, pay2, other, own, refund, shop]
+        let before = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        let guessed = history.incomeCategory(for: pay1)
+        require(guessed != nil, "an income has a category")
+        require(history.incomeCategory(for: shop) == nil && history.incomeCategory(for: refund) == nil, "only income has an income category")
+
+        require(history.setIncomeCategory("Зарплата и выплаты", for: pay1, forSender: true), "a sender rule is made")
+        require(history.incomeCategory(for: pay2) == "Зарплата и выплаты", "the rule covers the same sender with other numbers")
+        require(history.incomeCategory(for: other) != "Зарплата и выплаты", "another sender keeps its category")
+        require(history.setIncomeCategory("Кэшбэк", for: pay2, forSender: false), "one income is moved")
+        require(history.incomeCategory(for: pay2) == "Кэшбэк" && history.incomeCategory(for: pay1) == "Зарплата и выплаты",
+                "the single choice wins over the rule")
+        let after = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        require(after.incomeKopecks == before.incomeKopecks && after.netExpenseKopecks == before.netExpenseKopecks
+                && after.movementKopecks == before.movementKopecks && after.refundsKopecks == before.refundsKopecks,
+                "choosing categories never changes the totals")
+        require(after.incomeLines.first { $0.title == "Зарплата и выплаты" }?.amountKopecks == 100_000, "the money moves in reports")
+        require(FinancialEngine.operationMatches(history.financialInput(for: pay1), query: "зарплата"), "search finds the chosen category")
+
+        // Nothing but income can get an income category.
+        let snapshot = history.incomeCategoryOverrides
+        require(!history.setIncomeCategory("Кэшбэк", for: refund, forSender: true), "a refund never becomes income")
+        require(!history.setIncomeCategory("Кэшбэк", for: own, forSender: true), "an own transfer never becomes income")
+        require(!history.setIncomeCategory("Кэшбэк", for: shop, forSender: false), "an expense never becomes income")
+        require(!history.setIncomeCategory("Несуществующая", for: pay1, forSender: false), "unknown category is rejected")
+        let pending = BankOperation(identity: "i7", occurredAt: "2032-06-02T10:00:00Z", timePrecision: "exact", description: "Перевод от Иванов И.",
+                                    amountKopecks: 5_000, currency: "RUB", status: "В обработке", category: "Тест", mcc: nil, purpose: nil,
+                                    paymentMethod: nil, providers: [], kind: "income")
+        require(!history.setIncomeCategory("Кэшбэк", for: pending, forSender: false), "a pending operation never becomes income")
+        let split = bankOp("i8", -5_000, description: "Yandex*5399*Ysplit")
+        require(!history.setIncomeCategory("Кэшбэк", for: split, forSender: false), "Split never becomes income")
+        require(history.incomeCategoryOverrides == snapshot && history.incomeCategoryRules?.count == 1, "a refused change saves nothing")
+
+        // A rule on a sender does not leak into refunds or transfers that share its words.
+        var tricky = history
+        tricky.operations.append(bankOp("i9", 9_000, description: "Перевод от Иванов И.", kind: "refund"))
+        require(FinancialEngine.report(tricky.financialInputs, in: interval, taxonomy: tricky.expenseTaxonomy).refundsKopecks == before.refundsKopecks + 9_000,
+                "a refund of the same sender stays a refund")
+
+        // A manual income takes the choice directly.
+        let manual = ManualOperation(kind: .income, amountKopecks: 10_000, date: day.addingTimeInterval(60), accountID: nil, subcategory: "Прочие доходы")
+        history.manualOperations = [manual]
+        require(history.setIncomeCategory("Кэшбэк", for: manual.bankOperation, forSender: true), "manual income is changed")
+        require(history.manualOperations?.first?.subcategory == "Кэшбэк" && history.incomeCategoryRules?.count == 1, "a manual income makes no rule")
+
+        history.removeIncomeCategoryRule(history.incomeCategoryRules![0].id)
+        require(history.incomeCategory(for: pay1) == guessed, "removing the rule returns the old guess")
+        require(history.incomeCategory(for: pay2) == "Кэшбэк", "single choices stay after the rule is removed")
+
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.incomeCategoryOverrides == history.incomeCategoryOverrides, "income choices survive a backup")
+            let old = try JSONDecoder().decode(SavedHistory.self, from: Data("{\"operations\":[]}".utf8))
+            require(old.incomeCategoryRules == nil && old.incomeCategoryOverrides == nil, "old data opens without the new fields")
+        } catch { require(false, "income category backup failed: \(error)") }
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1023,6 +1090,7 @@ struct FinanceEngineTests {
         testBackdatedManualOperation()
         testExpenseCategories()
         testFixedCostGroups()
+        testIncomeCategories()
 
         print("Finance engine tests passed")
     }

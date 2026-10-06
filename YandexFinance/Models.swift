@@ -108,6 +108,10 @@ struct SavedHistory: Codable {
     var categoryRules: [CategoryRule]?
     /// Category chosen for one bank operation: operation identity -> `ExpenseCategory.id`. Wins over rules.
     var categoryOverrides: [String: UUID]?
+    /// "This sender's income always goes to this category" (a name from `FinancialEngine.incomeSubcategoryOrder`).
+    var incomeCategoryRules: [IncomeCategoryRule]?
+    /// Income category chosen for one bank operation: operation identity -> category name. Wins over rules.
+    var incomeCategoryOverrides: [String: String]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -349,6 +353,16 @@ struct CategoryRule: Codable, Equatable, Identifiable {
     var categoryID: UUID
 }
 
+/// "Every income from this sender goes to this category".
+struct IncomeCategoryRule: Codable, Equatable, Identifiable {
+    var id = UUID()
+    /// `FinancialEngine.counterpartyKey` of the operation title.
+    var payeeKey: String
+    /// The operation title the rule was made from, for the rules list.
+    var title: String
+    var category: String
+}
+
 /// Finds the user's category of each expense: the choice on the operation, then a payee rule, then the built-in
 /// guess mapped through the tree. Built once per list, because it indexes the whole tree.
 struct ExpenseCategoryResolver {
@@ -357,6 +371,8 @@ struct ExpenseCategoryResolver {
     private var idBySource: [String: UUID] = [:]
     private var ruleByKey: [String: UUID] = [:]
     private let overrides: [String: UUID]
+    private var incomeRuleByKey: [String: String] = [:]
+    private let incomeOverrides: [String: String]
 
     init(_ history: SavedHistory) {
         for group in history.categoryTree {
@@ -369,6 +385,17 @@ struct ExpenseCategoryResolver {
         }
         for rule in history.categoryRules ?? [] where !rule.payeeKey.isEmpty { ruleByKey[rule.payeeKey] = rule.categoryID }
         overrides = history.categoryOverrides ?? [:]
+        for rule in history.incomeCategoryRules ?? [] where !rule.payeeKey.isEmpty { incomeRuleByKey[rule.payeeKey] = rule.category }
+        incomeOverrides = history.incomeCategoryOverrides ?? [:]
+    }
+
+    /// The user's income category of a bank income or interest; nil for anything else or when nothing was chosen.
+    func chosenIncomeCategory(_ operation: BankOperation) -> String? {
+        guard !operation.isManual else { return nil }
+        let type = FinancialEngine.classify(operation.financialInput).type
+        guard type == .income || type == .interestIncome else { return nil }
+        let chosen = incomeOverrides[operation.identity] ?? incomeRuleByKey[FinancialEngine.counterpartyKey(operation.description)]
+        return chosen.flatMap { FinancialEngine.incomeSubcategoryOrder.contains($0) ? $0 : nil }
     }
 
     /// The category of an expense or a fee; nil for income, refunds, transfers, split and unfinished operations.
@@ -394,6 +421,7 @@ struct ExpenseCategoryResolver {
     func financialInput(for operation: BankOperation) -> FinancialOperationInput {
         var input = operation.financialInput
         input.categoryPath = resolve(operation)?.path
+        input.incomeCategoryName = chosenIncomeCategory(operation)
         return input
     }
 }
@@ -585,6 +613,47 @@ extension SavedHistory {
 
     mutating func removeCategoryRule(_ id: UUID) {
         categoryRules?.removeAll { $0.id == id }
+    }
+
+    /// Current income category of a bank or manual income; nil for anything that is not income.
+    func incomeCategory(for operation: BankOperation) -> String? {
+        let input = financialInput(for: operation)
+        let type = FinancialEngine.classify(input).type
+        guard type == .income || type == .interestIncome else { return nil }
+        return FinancialEngine.incomeCategory(for: input)
+    }
+
+    /// Moves an income to a category. `forSender` makes a rule for every income of the same sender, past and
+    /// future; otherwise only this operation changes (and wins over the rule). A manual income takes it directly.
+    /// Returns false, changing nothing, for anything that is not income or interest: a refund, a transfer between
+    /// own accounts, Split or an unfinished operation never becomes income.
+    @discardableResult
+    mutating func setIncomeCategory(_ category: String, for operation: BankOperation, forSender: Bool) -> Bool {
+        guard FinancialEngine.incomeSubcategoryOrder.contains(category) else { return false }
+        let type = FinancialEngine.classify(operation.financialInput).type
+        guard type == .income || type == .interestIncome else { return false }
+        if let manualID = operation.manualID {
+            guard let index = manualOperations?.firstIndex(where: { $0.id == manualID }) else { return false }
+            manualOperations?[index].subcategory = category
+            return true
+        }
+        let key = FinancialEngine.counterpartyKey(operation.description)
+        if forSender && !key.isEmpty {
+            var rules = incomeCategoryRules ?? []
+            if let index = rules.firstIndex(where: { $0.payeeKey == key }) { rules[index].category = category }
+            else { rules.append(IncomeCategoryRule(payeeKey: key, title: operation.description, category: category)) }
+            incomeCategoryRules = rules
+            incomeCategoryOverrides?[operation.identity] = nil
+        } else {
+            var overrides = incomeCategoryOverrides ?? [:]
+            overrides[operation.identity] = category
+            incomeCategoryOverrides = overrides
+        }
+        return true
+    }
+
+    mutating func removeIncomeCategoryRule(_ id: UUID) {
+        incomeCategoryRules?.removeAll { $0.id == id }
     }
 
     private static func position(of categoryID: UUID, in tree: [ExpenseCategoryGroup]) -> (Int, Int)? {

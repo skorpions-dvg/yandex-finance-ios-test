@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// Validate on a copy first: rejected edits never reach the storage writer.
 @MainActor
-private func saveExpenseCategoryChange(_ browser: BankBrowser,
+func saveExpenseCategoryChange(_ browser: BankBrowser,
                                        change: (inout SavedHistory) -> Bool) -> String? {
     var preview = browser.history
     guard change(&preview) else {
@@ -79,6 +79,20 @@ struct ExpenseCategoriesView: View {
                 .moveDisabled(!editMode.isEditing)
                 .deleteDisabled(!editMode.isEditing)
             }.listRowBackground(GlassRowBackground())
+            if !(browser.history.incomeCategoryRules ?? []).isEmpty {
+                Section("Правила доходов") {
+                    ForEach(browser.history.incomeCategoryRules ?? []) { rule in
+                        Text("\(rule.title) → \(rule.category)").font(.subheadline)
+                    }
+                    .onDelete { offsets in
+                        let rules = browser.history.incomeCategoryRules ?? []
+                        let ids = offsets.compactMap { rules.indices.contains($0) ? rules[$0].id : nil }
+                        if !browser.updateUserData({ history in ids.forEach { history.removeIncomeCategoryRule($0) } }) {
+                            error = browser.message
+                        }
+                    }
+                }.listRowBackground(GlassRowBackground())
+            }
             if !(browser.history.categoryRules ?? []).isEmpty {
                 Section("Правила") {
                     ForEach(browser.history.categoryRules ?? []) { rule in
@@ -404,6 +418,50 @@ private struct ExpenseCategoryMergeView: View {
             Button("Отмена", role: .cancel) { }
         }
         .alert("Не удалось удалить", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+}
+
+struct OperationIncomeCategoryView: View {
+    @ObservedObject var browser: BankBrowser
+    @Environment(\.dismiss) private var dismiss
+    let operation: BankOperation
+    @State private var forSender = true
+    @State private var error: String?
+
+    var body: some View {
+        let selected = browser.history.incomeCategory(for: operation)
+        List {
+            Section {
+                ForEach(FinancialEngine.incomeSubcategoryOrder, id: \.self) { name in
+                    Button {
+                        error = saveExpenseCategoryChange(browser) {
+                            $0.setIncomeCategory(name, for: operation, forSender: forSender)
+                        }
+                        if error == nil { dismiss() }
+                    } label: {
+                        HStack {
+                            Text(name).foregroundStyle(.primary)
+                            Spacer()
+                            if selected == name { Image(systemName: "checkmark").foregroundStyle(.orange) }
+                        }
+                    }
+                }
+            }.listRowBackground(GlassRowBackground())
+            if !operation.isManual {
+                Section {
+                    Toggle("Для всех поступлений „\(operation.description)“", isOn: $forSender)
+                } footer: {
+                    Text("Прошлые и будущие поступления этого отправителя тоже перейдут в эту категорию")
+                }.listRowBackground(GlassRowBackground())
+            }
+        }
+        .tint(.orange)
+        .appSurface()
+        .navigationTitle("Категория дохода")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("Не удалось изменить", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) { error = nil }
         } message: { Text(error ?? "") }
     }

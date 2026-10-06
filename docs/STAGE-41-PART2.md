@@ -16,6 +16,8 @@
 
 ## 41.10 — категории банковских доходов с правилами
 
+> **СДЕЛАНО ведущим в 41.10 (коммит после c8d383b): модель, движок, тесты `testIncomeCategories`, экран выбора в карточке, правила доходов в списке. Не переделывай; ниже — описание для справки. Используй `history.setIncomeCategory`, `history.incomeCategory(for:)`, `OperationIncomeCategoryView`. Для 41.12 перенос выборов должен включать и `incomeCategoryOverrides`.**
+
 Сейчас доход получает категорию из `incomeSubcategoryOrder` по тексту (`FinancialEngine.incomeCategory`), у ручных доходов выбор есть, у банковских нет.
 
 ### Модель (`Models.swift`)
