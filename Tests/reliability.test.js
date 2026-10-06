@@ -590,6 +590,8 @@ assert.throws(() => parse(groupURL, groupCard + '\n' + purchase, ''), /неск�
 assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Несколько разделов/);
 assert.match(appSwift, /TabView\(selection: \$browser.selectedTab\)/);
 assert.match(swift, /bankPageVisible = true/, 'card retry must bring the hidden bank page to the front');
+assert.match(appSwift, /Button\("Обновить новые операции"\) \{ browser\.refreshNewOperations\(\) \}/, 'manual refresh must go through the sign-in check');
+assert.match(swift, /guard ready else \{[\s\S]{0,120}signInNeededMessage[\s\S]{0,80}bankPageVisible = true/, 'a signed-out bank must be reported and shown, not ignored');
 assert.match(appSwift, /ZStack\(alignment: \.top\) \{[\s\S]{0,200}BankWebView\(browser: browser\)/, 'bank page must stay in the window behind the tabs');
 assert.ok(!/Label\("Банк"/.test(appSwift), 'the bank page is no longer a tab');
 assert.match(appSwift, /Label\("Настройки", systemImage: "gearshape"\)/);

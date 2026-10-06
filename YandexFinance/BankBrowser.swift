@@ -71,22 +71,58 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             for _ in 0..<120 {
                 do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
                 guard let self, self.foreground, self.autoUpdate, !self.busy else { return }
-                guard self.webView.url?.host == "bank.yandex.ru", self.webView.url?.path == "/my/transactions-history", !self.webView.isLoading else { continue }
-                let probe = """
-                if (location.hostname !== 'bank.yandex.ru' || location.pathname !== '/my/transactions-history') return false;
-                return (document.body?.innerText || '').includes('Все карты и счета');
-                """
-                do {
-                    let value = try await self.webView.callAsyncJavaScript(probe, arguments: [:], in: nil, contentWorld: .defaultClient)
-                    guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
-                    if value as? Bool == true {
-                        self.automaticTask = nil
-                        self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: false, automaticRun: true)
-                        return
-                    }
-                } catch { continue }
+                guard await self.historyPageReady() else { continue }
+                guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
+                self.automaticTask = nil
+                self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: false, automaticRun: true)
+                return
             }
-            self?.automaticTask = nil
+            guard let self else { return }
+            self.automaticTask = nil
+            if self.foreground, self.autoUpdate, !self.busy {
+                self.message = Self.signInNeededMessage
+            }
+        }
+    }
+
+    static let signInNeededMessage = "Банк не показал историю операций — похоже, нужен вход. Откройте «Настройки» → «Страница банка», войдите и нажмите «Готово», затем обновите операции."
+
+    /// True when the bank's history page is loaded and signed in (its account filter is visible).
+    private func historyPageReady() async -> Bool {
+        guard webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !webView.isLoading else { return false }
+        let probe = """
+        if (location.hostname !== 'bank.yandex.ru' || location.pathname !== '/my/transactions-history') return false;
+        return (document.body?.innerText || '').includes('Все карты и счета');
+        """
+        let value = try? await webView.callAsyncJavaScript(probe, arguments: [:], in: nil, contentWorld: .defaultClient)
+        return value as? Bool == true
+    }
+
+    /// Manual refresh: opens the history page when needed and, if the bank asks to sign in,
+    /// says so and brings the bank page to the front instead of failing silently.
+    func refreshNewOperations() {
+        guard !busy, readable else { return }
+        automaticTask?.cancel(); automaticTask = nil
+        busy = true; cancelled = false
+        message = "Открываю историю банка…"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var ready = await self.historyPageReady()
+            if !ready {
+                self.webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
+                for _ in 0..<30 where !ready && !self.cancelled {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    ready = await self.historyPageReady()
+                }
+            }
+            self.busy = false
+            if self.cancelled { self.message = "Обновление остановлено."; return }
+            guard ready else {
+                self.message = Self.signInNeededMessage
+                self.bankPageVisible = true
+                return
+            }
+            self.read(mode: "history", lookbackDays: 30)
         }
     }
     private func incrementalPolicy(now: Date = Date()) -> SyncLookbackResult {

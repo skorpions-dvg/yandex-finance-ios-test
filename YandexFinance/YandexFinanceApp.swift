@@ -130,7 +130,7 @@ struct SettingsView: View {
                     if browser.busy {
                         HStack { ProgressView(); Text("Обновление операций…"); Spacer(); Button("Остановить") { browser.cancel() } }
                     } else {
-                        Button("Обновить новые операции") { browser.read(mode: "history", lookbackDays: 30) }
+                        Button("Обновить новые операции") { browser.refreshNewOperations() }
                             .disabled(!browser.storageAvailable)
                         Button("Прочитать открытую карточку") { browser.read(mode: "card", lookbackDays: nil) }
                             .disabled(!browser.storageAvailable)
