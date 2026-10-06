@@ -563,12 +563,13 @@ enum FinancialEngine {
     /// Whether this month's spending pace fits: today's month-to-date numbers extrapolated linearly
     /// to the end of the month, next to the previous month's total. Uses `report`, so the usual rules apply.
     static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> MonthForecast {
-        let periods = monthComparisonPeriods(selectedStart: now, currentDate: now, calendar: calendar)
-        let monthStartDate = periods.current.start
-        let previousMonth = DateInterval(start: periods.previous.start, end: monthStartDate)
-        let elapsed = calendar.dateComponents([.day], from: monthStartDate, to: periods.current.end).day ?? 1
+        // The engine is also compiled on its own (statement import tests), so month bounds are computed here.
+        let monthStartDate = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        let endOfToday = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
+        let previousMonth = DateInterval(start: calendar.date(byAdding: .month, value: -1, to: monthStartDate)!, end: monthStartDate)
+        let elapsed = calendar.dateComponents([.day], from: monthStartDate, to: endOfToday).day ?? 1
         let daysInMonth = calendar.range(of: .day, in: .month, for: monthStartDate)?.count ?? 30
-        let soFar = report(operations, in: periods.current)
+        let soFar = report(operations, in: DateInterval(start: monthStartDate, end: endOfToday))
         let spent = soFar.netExpenseKopecks
         return MonthForecast(spentKopecks: spent,
                              projectedKopecks: elapsed > 0 ? spent * Int64(daysInMonth) / Int64(elapsed) : spent,
