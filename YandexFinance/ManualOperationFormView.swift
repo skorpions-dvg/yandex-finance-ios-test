@@ -19,6 +19,8 @@ struct ManualOperationFormView: View {
     @State private var saveError = false
     @State private var saveErrorMessage = ""
     @State private var saved = false
+    @State private var showDateTime = false
+    @State private var selectsTime = false
 
     init(browser: BankBrowser, operation: ManualOperation? = nil,
          onSave: ((ManualOperation) -> Void)? = nil) {
@@ -104,6 +106,9 @@ struct ManualOperationFormView: View {
         .onChange(of: accountID) { _, value in
             if toAccountID == value { toAccountID = nil }
         }
+        .sheet(isPresented: $showDateTime) {
+            ManualOperationDateTimeView(date: $date, startsWithTime: selectsTime)
+        }
         .confirmationDialog("Удалить операцию?", isPresented: $confirmDeletion, titleVisibility: .visible) {
             Button("Удалить операцию", role: .destructive, action: delete)
             Button("Отмена", role: .cancel) { }
@@ -182,10 +187,27 @@ struct ManualOperationFormView: View {
                 }
             }
             Section {
-                DatePicker("Дата и время", selection: $date, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
+                HStack {
+                    Text("Дата и время")
+                    Spacer()
+                    Button(date.formatted(date: .abbreviated, time: .omitted)) { openDateTime(time: false) }
+                        .buttonStyle(.borderless)
+                    Button(date.formatted(date: .omitted, time: .shortened)) { openDateTime(time: true) }
+                        .buttonStyle(.borderless)
+                }
                 TextField("Комментарий", text: $note).focused($fieldFocused)
+            } footer: {
+                if let account = accounts.first(where: { $0.id == accountID }), date < account.startDate {
+                    Text("Операция до начального остатка сохранится в истории и отчётах, но не изменит остаток счёта.")
+                }
             }
         }
+    }
+
+    private func openDateTime(time: Bool) {
+        fieldFocused = false
+        selectsTime = time
+        showDateTime = true
     }
 
     private func accountPicker(_ title: String, selection: Binding<UUID?>, choices: [Account]) -> some View {
@@ -257,5 +279,57 @@ struct ManualOperationFormView: View {
             saveErrorMessage = browser.message
             saveError = true
         }
+    }
+}
+
+/// A separate sheet keeps the calendar from intercepting the operation's Save button.
+private struct ManualOperationDateTimeView: View {
+    @Binding var date: Date
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: Date
+    @State private var selectsTime: Bool
+
+    init(date: Binding<Date>, startsWithTime: Bool) {
+        _date = date
+        _draft = State(initialValue: date.wrappedValue)
+        _selectsTime = State(initialValue: startsWithTime)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+                if selectsTime {
+                    Text(draft.formatted(date: .abbreviated, time: .omitted)).foregroundStyle(.secondary)
+                    DatePicker("Время", selection: $draft, in: ...Date(), displayedComponents: .hourAndMinute)
+                        .datePickerStyle(.wheel).labelsHidden()
+                } else {
+                    DatePicker("Дата", selection: $draft, in: ...Date(), displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                        .onChange(of: draft) { _, _ in selectsTime = true }
+                }
+            }
+            .padding()
+            .tint(.orange)
+            .navigationTitle(selectsTime ? "Время" : "Дата")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if selectsTime {
+                        Button("Дата", systemImage: "chevron.left") { selectsTime = false }
+                    } else {
+                        Button("Отмена", systemImage: "xmark") { dismiss() }
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(selectsTime ? "Готово" : "Время", systemImage: "checkmark") {
+                        if selectsTime {
+                            date = min(draft, Date())
+                            dismiss()
+                        } else { selectsTime = true }
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }

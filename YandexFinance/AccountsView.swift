@@ -170,10 +170,6 @@ struct AccountsView: View {
                     break
                 }
             }
-        } footer: {
-            if editMode.isEditing {
-                Text("Перетащите группу за ручку — её счета переедут вместе с ней. Счёт, опущенный под другую группу, перейдёт в неё.")
-            }
         }
     }
 
@@ -182,42 +178,51 @@ struct AccountsView: View {
     }
 
     private func groupHeader(_ group: AccountGroup) -> some View {
-        Button {
-            guard !editMode.isEditing else { return }
-            withAnimation {
-                if collapsed.contains(group.id) { collapsed.remove(group.id) }
-                else { collapsed.insert(group.id) }
-            }
-        } label: {
-            HStack {
-                if !editMode.isEditing {
-                    Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
-                        .foregroundStyle(.secondary)
+        HStack {
+            Button {
+                guard !editMode.isEditing else { return }
+                withAnimation {
+                    if collapsed.contains(group.id) { collapsed.remove(group.id) }
+                    else { collapsed.insert(group.id) }
                 }
-                Text(group.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                if group.includesInBalance == false {
-                    Image(systemName: "eye.slash").font(.caption).foregroundStyle(.secondary)
-                        .accessibilityLabel("Не входит в общий баланс")
+            } label: {
+                HStack {
+                    if !editMode.isEditing {
+                        Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(group.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    Spacer()
+                    Text(total(accounts.filter { $0.groupID == group.id }))
+                        .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
                 }
-                Spacer()
-                Text(total(accounts.filter { $0.groupID == group.id }))
-                    .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityValue(!editMode.isEditing && collapsed.contains(group.id) ? "Свёрнуто" : "Развёрнуто")
+            Button { toggleGroupBalance(group) } label: {
+                Image(systemName: group.includesInBalance == false ? "eye.slash" : "eye")
+                    .foregroundStyle(group.includesInBalance == false ? Color.secondary : Color.orange)
+                    .frame(width: 36, height: 44)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(group.includesInBalance == false ? "Учитывать группу в общем балансе" : "Исключить группу из общего баланса")
         }
-        .buttonStyle(.plain)
-        .accessibilityValue(!editMode.isEditing && collapsed.contains(group.id) ? "Свёрнуто" : "Развёрнуто")
         .contextMenu { groupActions(group) }
+    }
+
+    private func toggleGroupBalance(_ group: AccountGroup) {
+        persist { history in
+            guard let index = history.accountGroups?.firstIndex(where: { $0.id == group.id }) else { return }
+            history.accountGroups?[index].includesInBalance = group.includesInBalance == false
+        }
     }
 
     @ViewBuilder private func groupActions(_ group: AccountGroup) -> some View {
         Button("Переименовать", systemImage: "pencil") { editedGroup = group }
         Button(group.includesInBalance == false ? "Учитывать в общем балансе" : "Исключить из общего баланса",
                systemImage: group.includesInBalance == false ? "eye" : "eye.slash") {
-            persist { history in
-                guard let index = history.accountGroups?.firstIndex(where: { $0.id == group.id }) else { return }
-                history.accountGroups?[index].includesInBalance = group.includesInBalance == false
-            }
+            toggleGroupBalance(group)
         }
         Button("Удалить группу", systemImage: "trash", role: .destructive) {
             deletedGroup = group
@@ -226,24 +231,38 @@ struct AccountsView: View {
     }
 
     private func accountRow(_ account: Account) -> some View {
-        Button { editedAccount = account } label: {
-            HStack {
-                Image(systemName: account.icon)
-                    .foregroundStyle(accountColor(account.color))
-                    .frame(width: 28, height: 28)
-                    .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                Text(account.name).foregroundStyle(.primary)
-                Spacer()
-                if account.showsBalance {
-                    Text(accountMoney(accountBalance(account, history: browser.history)))
-                        .foregroundStyle(.primary).multilineTextAlignment(.trailing)
-                } else {
-                    Text("—").foregroundStyle(.secondary)
+        HStack {
+            Button { editedAccount = account } label: {
+                HStack {
+                    Image(systemName: account.icon)
+                        .foregroundStyle(accountColor(account.color))
+                        .frame(width: 28, height: 28)
+                        .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                    Text(account.name).foregroundStyle(.primary)
+                    Spacer()
+                    if account.showsBalance {
+                        Text(accountMoney(accountBalance(account, history: browser.history)))
+                            .foregroundStyle(.primary).multilineTextAlignment(.trailing)
+                    } else {
+                        Text("—").foregroundStyle(.secondary)
+                    }
                 }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            Button {
+                persist { history in
+                    guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
+                    history.accounts?[index].showsBalance.toggle()
+                }
+            } label: {
+                Image(systemName: account.showsBalance ? "eye" : "eye.slash")
+                    .foregroundStyle(account.showsBalance ? Color.orange : Color.secondary)
+                    .frame(width: 36, height: 44)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(account.showsBalance ? "Исключить счёт из общего баланса" : "Учитывать счёт в общем балансе")
         }
-        .buttonStyle(.plain)
     }
 
     private func deleteGroup() {

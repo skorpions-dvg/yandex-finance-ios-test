@@ -488,6 +488,32 @@ struct FinanceEngineTests {
         } catch { require(false, "group visibility regression failed: \(error)") }
     }
 
+    static func testBackdatedManualOperation() {
+        let now = BankDateParser.parse("2032-06-03T10:00:00Z")!
+        let yesterday = now.addingTimeInterval(-86400)
+        let account = Account(name: "Cash", icon: "banknote", color: "green", groupID: nil,
+                              startBalanceKopecks: 100_000, startDate: yesterday.addingTimeInterval(-86400))
+        let expense = ManualOperation(kind: .expense, amountKopecks: 25_000, date: yesterday,
+                                      accountID: account.id, group: "Еда", subcategory: "Кафе и рестораны")
+        var history = SavedHistory()
+        history.accounts = [account]
+        history.manualOperations = [expense]
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.manualOperations == [expense], "yesterday's manual expense persists with its exact date")
+            let operation = restored.allOperations[0]
+            require(BankDateParser.parse(operation.occurredAt) == yesterday, "history keeps yesterday's date")
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let yesterdayInterval = historyInterval(.custom(from: yesterday, through: yesterday), now: now, calendar: calendar)
+            require(yesterdayInterval.contains(yesterday), "the selected past day reveals the saved expense")
+            require(FinancialEngine.report(restored.allOperations.map(\.financialInput), in: yesterdayInterval).netExpenseKopecks == 25_000,
+                    "yesterday's expense appears in its period report")
+            require(account.balance(bankOperations: [], manual: restored.manualOperations ?? []) == 75_000,
+                    "yesterday's expense changes an account opened before that date")
+        } catch { require(false, "backdated manual expense failed: \(error)") }
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -870,6 +896,7 @@ struct FinanceEngineTests {
         testMonthReserve()
         testManualOperations()
         testGroupBalanceVisibility()
+        testBackdatedManualOperation()
 
         print("Finance engine tests passed")
     }
