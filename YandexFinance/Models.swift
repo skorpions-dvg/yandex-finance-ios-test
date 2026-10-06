@@ -40,7 +40,7 @@ extension BankOperation {
     var financialInput: FinancialOperationInput {
         FinancialOperationInput(occurredAt: occurredAt, description: description, amountKopecks: amountKopecks,
                                 status: status, category: category, mcc: mcc, purpose: purpose, providers: providers, kind: kind,
-                                componentAmountsKopecks: components?.map(\.amountKopecks) ?? [])
+                                componentAmountsKopecks: components?.map(\.amountKopecks) ?? [], paymentMethod: paymentMethod)
     }
 
     var financialAssessment: FinancialAssessment { FinancialEngine.classify(financialInput) }

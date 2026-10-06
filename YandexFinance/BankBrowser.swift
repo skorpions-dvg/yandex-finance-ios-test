@@ -233,7 +233,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         guard !busy, readable else { return }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.pdf], asCopy: true)
         picker.delegate = self
-        picker.allowsMultipleSelection = false
+        picker.allowsMultipleSelection = true
         guard let presenter = topViewController() else {
             message = "Не удалось открыть выбор выписки."
             return
@@ -257,52 +257,29 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let url = urls.first else { return }
-        importStatement(url)
+        importStatements(urls)
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         message = "Импорт выписки отменён."
     }
 
-    private func importStatement(_ url: URL) {
-        guard !busy, readable else { return }
+    func importStatements(_ urls: [URL]) {
+        guard !busy, readable, !urls.isEmpty else { return }
         busy = true
         defer { busy = false }
         do {
-            let result = try StatementImporter.importPDF(at: url)
-            var next = history
-            let cutoff = StatementImporter.archiveCutoff
-
-            // Statement is authoritative below 01.10.2026. Replace any partial
-            // WebView bootstrap there to avoid the same movement under two IDs.
-            next.operations.removeAll { operation in
-                guard let date = Self.operationDate(operation.occurredAt) else { return false }
-                return date < cutoff
-            }
-            let floorMonthOrdinal = 2026 * 12 + 9
-            next.unresolvedIssues = (next.unresolvedIssues ?? []).filter { issue in
-                if let raw = issue.bankDate, let date = Self.operationDate(raw) { return date >= cutoff }
-                if let month = issue.monthOrdinal { return month >= floorMonthOrdinal }
-                return true
-            }
-
-            let counts = apply(result.operations, to: &next)
-            guard counts.rejected == 0 else {
-                throw AppFailure(message: "Часть операций выписки не прошла проверку: \(counts.rejected). Архив не сохранён.")
-            }
-            next.statementArchiveThrough = cutoff.addingTimeInterval(-1)
-            next.statementImportedAt = Date()
-            next.statementOperationCount = result.operations.count
-            next.bootstrapCompleted = true
-            next.bootstrapResumeMonth = nil
-            next.lastStopReason = "statement_archive_imported"
-            next.lastSync = Date()
+            let results = try StatementImporter.importPDFs(urls)
+            let next = try StatementImporter.merging(results, into: history)
+            let accountCount = Set(results.filter { $0.source == .account }.flatMap { $0.operations.map(\.identity) }).count
+            let saveCount = Set(results.filter { $0.source == .save }.flatMap { $0.operations.map(\.identity) }).count
+            let ignored = results.reduce(0) { $0 + $1.ignoredAtOrAfterCutoff }
+            let unchanged = history.operations == next.operations
             try vault.save(next)
             history = next
-            message = "Выписка импортирована: \(result.operations.count) архивных операций до 01.10.2026. Операций с 01.10.2026 и новее оставлено сканеру: \(result.ignoredAtOrAfterCutoff). Старую историю через WebView больше листать не нужно."
+            message = "Импортировано: \(accountCount) операций платёжного счёта, \(saveCount) операций Сейва. Операций с 01.10.2026 оставлено сканеру: \(ignored)." + (unchanged ? " Операций новых нет." : "")
         } catch {
-            message = "Не удалось импортировать выписку: \(error.localizedDescription)"
+            message = "Не удалось импортировать выписки: \(error.localizedDescription)"
         }
     }
 

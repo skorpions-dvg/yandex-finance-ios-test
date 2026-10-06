@@ -63,12 +63,48 @@ struct StatementImporterTests {
         let refund = result.operations.first { $0.description.contains("Возврат") }
         expect(refund?.kind == "refund", "refund must reduce expenses rather than create income")
 
+        expect(split?.identity == "statement:8d6ea4b423fe5065abd82be77566e15aee45010c2cdb9415e45e2a649fb44e9c", "legacy account identity must stay fixed")
+
         let ids = Set(result.operations.map(\.identity))
         expect(ids.count == result.operations.count, "statement identities must be unique")
         expect(result.operations.allSatisfy { $0.status == "Выполнено" }, "posted statement operations are settled")
 
         let repeatResult = try StatementImporter.parsePages([page])
         expect(result.operations.map(\.identity) == repeatResult.operations.map(\.identity), "reimport must be deterministic")
+
+        let savePage = """
+        Яндекс Банк
+        Договор банковского вклада до востребования для физических лиц
+        Выписка по Договору за период с 01.09.2026 по 04.10.2026
+        Описание операции Дата операции Сумма в валюте
+        МСК
+        Договора
+        Перевод между счетами одного клиента 29.09.2026 +500,00 ₽
+        Капитализация процентов 30.09.2026 +12,34 ₽
+        Перевод между счетами одного клиента 01.10.2026 –100,00 ₽
+        Страница 1 из 1
+        """
+        let save = try StatementImporter.parsePages([savePage])
+        expect(save.source == .save && save.operations.count == 2 && save.ignoredAtOrAfterCutoff == 1, "Save detection and cutoff")
+        expect(save.operations.allSatisfy { $0.identity.hasPrefix("statement-save:") && $0.timePrecision == "statement_day" && $0.paymentMethod == "Сейв (выписка)" }, "Save source markers")
+        expect(save.operations.contains { $0.kind == "interest_income" && $0.occurredAt == "2026-09-30T09:00:00.000Z" }, "interest at Moscow noon")
+        expect(save.operations.contains { $0.kind == "internal_transfer" }, "Save top-up is internal")
+        var original = SavedHistory()
+        original.operations = result.operations
+        original.incomeCategoryOverrides = ["untouched": "Кэшбэк"]
+        let both = try StatementImporter.merging([result, save, result], into: original)
+        expect(both.operations.count == 6 && both.statementOperationCount == 6, "overlapping account PDFs are deduplicated")
+        let repeated = try StatementImporter.merging([result, save], into: both)
+        expect(repeated.operations == both.operations, "repeat preserves identical rows including verification times")
+        let saveOnly = try StatementImporter.merging([save], into: both)
+        expect(saveOnly.operations == both.operations, "Save-only import preserves account rows")
+        let accountOnly = try StatementImporter.merging([result], into: both)
+        expect(accountOnly.operations == both.operations, "account-only import preserves Save rows")
+        expect(accountOnly.incomeCategoryOverrides == original.incomeCategoryOverrides, "user category choices untouched")
+        do {
+            _ = try StatementImporter.importPDFs([URL(fileURLWithPath: "/missing-synthetic-statement.pdf")])
+            expect(false, "bad selection must fail")
+        } catch { expect(original.operations == result.operations, "failure cannot mutate the original") }
 
         print("Statement importer: archive cutoff, own transfers, Split, refunds and deterministic IDs passed.")
     }

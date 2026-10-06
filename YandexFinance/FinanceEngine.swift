@@ -47,6 +47,8 @@ struct FinancialOperationInput {
     /// Income category chosen by the user (a sender rule or a change on the operation card). Only applies to
     /// income and interest; it never changes what an operation is.
     var incomeCategoryName: String? = nil
+    /// Statement source marker; deposit rows never move the bank card.
+    var paymentMethod: String? = nil
 }
 
 /// The user's expense categories in display order. The built-in tree is used until the user edits it.
@@ -589,7 +591,8 @@ enum FinancialEngine {
     static func accountBalance(startKopecks: Int64, since: Date, tracksBankCard: Bool, operations: [FinancialOperationInput]) -> Int64 {
         guard tracksBankCard else { return startKopecks }
         return operations.reduce(startKopecks) { balance, operation in
-            guard let date = BankDateParser.parse(operation.occurredAt), date >= since,
+            guard operation.paymentMethod != "Сейв (выписка)",
+                  let date = BankDateParser.parse(operation.occurredAt), date >= since,
                   classify(operation).type != .cancelled else { return balance }
             return balance + operation.amountKopecks
         }
@@ -995,7 +998,7 @@ enum FinancialEngine {
         for operation in operations {
             guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { continue }
             let assessment = classify(operation)
-            if assessment.type == .internalTransfer && isSaveTransfer(operation) {
+            if assessment.type == .internalTransfer && isSaveTransfer(operation) && operation.paymentMethod != "Сейв (выписка)" {
                 if operation.amountKopecks < 0 { toSave += -operation.amountKopecks }
                 if operation.amountKopecks > 0 { fromSave += operation.amountKopecks }
                 tracked += 1

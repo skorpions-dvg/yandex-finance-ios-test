@@ -705,6 +705,32 @@ struct FinanceEngineTests {
         } catch { require(false, "income category backup failed: \(error)") }
     }
 
+    static func testSaveStatementSource() {
+        let start = BankDateParser.parse("2032-06-01T00:00:00Z")!
+        let interval = DateInterval(start: start, end: BankDateParser.parse("2032-07-01T00:00:00Z")!)
+        let card = [op(-50_000, kind: "internal_transfer", description: "Перевод между счетами одного клиента"),
+                    op(10_000, kind: "internal_transfer", description: "Перевод между счетами одного клиента"),
+                    op(-2_000, kind: "expense")]
+        var depositIn = op(50_000, kind: "internal_transfer", description: "Перевод между счетами одного клиента")
+        depositIn.paymentMethod = "Сейв (выписка)"
+        var depositOut = op(-10_000, kind: "internal_transfer", description: "Перевод между счетами одного клиента")
+        depositOut.paymentMethod = "Сейв (выписка)"
+        var interest = op(123, kind: "interest_income", description: "Капитализация процентов")
+        interest.paymentMethod = "Сейв (выписка)"
+        let both = card + [depositIn, depositOut, interest]
+        let before = FinancialEngine.report(card, in: interval), after = FinancialEngine.report(both, in: interval)
+        require(after.incomeKopecks == before.incomeKopecks + 123 && after.netExpenseKopecks == before.netExpenseKopecks, "both statements add only deposit interest to report")
+        let save = FinancialEngine.saveAccountSummary(both, in: interval), old = FinancialEngine.saveAccountSummary(card, in: interval)
+        require(save.toSaveKopecks == old.toSaveKopecks && save.fromSaveKopecks == old.fromSaveKopecks && save.interestIncomeKopecks == old.interestIncomeKopecks + 123, "deposit transfers never double Save totals")
+        require(FinancialEngine.accountBalance(startKopecks: 100_000, since: start, tracksBankCard: true, operations: both) == FinancialEngine.accountBalance(startKopecks: 100_000, since: start, tracksBankCard: true, operations: card), "deposit rows do not move card balance")
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = BankDateParser.parse("2032-06-15T00:00:00Z")!
+        let forecast = FinancialEngine.monthForecast(card, now: now, calendar: calendar)
+        let combinedForecast = FinancialEngine.monthForecast(both, now: now, calendar: calendar)
+        require(combinedForecast.spentKopecks == forecast.spentKopecks && combinedForecast.projectedExpenseKopecks == forecast.projectedExpenseKopecks, "deposit transfers do not affect expense forecast")
+        require(combinedForecast.incomeKopecks == forecast.incomeKopecks + 123, "forecast includes only deposit interest")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1091,6 +1117,7 @@ struct FinanceEngineTests {
         testExpenseCategories()
         testFixedCostGroups()
         testIncomeCategories()
+        testSaveStatementSource()
 
         print("Finance engine tests passed")
     }

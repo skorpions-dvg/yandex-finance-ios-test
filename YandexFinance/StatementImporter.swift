@@ -3,6 +3,8 @@ import PDFKit
 import CryptoKit
 
 struct StatementImportResult {
+    enum Source: Hashable { case account, save }
+    let source: Source
     let operations: [BankOperation]
     let coverageStart: Date?
     let coverageEnd: Date?
@@ -72,6 +74,9 @@ enum StatementImporter {
             throw AppFailure(message: "Это не похоже на выписку Яндекс Банка.")
         }
 
+        if fullText.localizedCaseInsensitiveContains("банковского вклада") {
+            return try parseSavePages(pages)
+        }
         let holder = parseHolder(fullText)
         let coverage = parseCoverage(fullText)
         let requiredThrough = archiveCutoff.addingTimeInterval(-86400)
@@ -146,10 +151,94 @@ enum StatementImporter {
             if $0.occurredAt != $1.occurredAt { return $0.occurredAt > $1.occurredAt }
             return $0.identity < $1.identity
         }
-        return StatementImportResult(operations: operations,
+        return StatementImportResult(source: .account, operations: operations,
                                      coverageStart: coverage.start,
                                      coverageEnd: coverage.end,
                                      ignoredAtOrAfterCutoff: ignored)
+    }
+
+    private static func parseSavePages(_ pages: [String]) throws -> StatementImportResult {
+        let text = pages.joined(separator: "\n")
+        let pattern = #"(?s)(.+?)\s+(\d{2}\.\d{2}\.\d{4})\s+([+−–-]\s*\d[\d\u00A0 ]*,\d{2}\s*₽)"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        var operations: [BankOperation] = [], seen: [String: Int] = [:]
+        var ignored = 0
+        for page in pages {
+            let body = transactionBody(from: page), ns = transactionBody(from: page) as NSString
+            for match in regex.matches(in: body, range: NSRange(location: 0, length: ns.length)) {
+                let description = collapseWhitespace(ns.substring(with: match.range(at: 1)))
+                let day = ns.substring(with: match.range(at: 2))
+                guard let amount = parseAmount(ns.substring(with: match.range(at: 3))),
+                      let date = operationDateFormatter.date(from: day + " 12:00") else {
+                    throw AppFailure(message: "Не удалось разобрать строку выписки Сейва.")
+                }
+                if date >= archiveCutoff { ignored += 1; continue }
+                let interest = normalize(description).contains("процент")
+                guard interest || normalize(description).contains("перевод между счетами") ||
+                        normalize(description).contains("пополнение") || normalize(description).contains("вывод") else {
+                    throw AppFailure(message: "Неизвестный вид операции в выписке Сейва.")
+                }
+                let signature = [day, String(amount), description].joined(separator: "|")
+                let occurrence = seen[signature, default: 0]; seen[signature] = occurrence + 1
+                let digest = SHA256.hash(data: Data("statement-save-v1|\(signature)|\(occurrence)".utf8))
+                operations.append(BankOperation(identity: "statement-save:" + digest.map { String(format: "%02x", $0) }.joined(),
+                    occurredAt: isoFormatter.string(from: date), timePrecision: "statement_day", description: description,
+                    amountKopecks: amount, currency: "RUB", status: "Выполнено",
+                    category: interest ? "Проценты" : "Переводы между своими счетами", mcc: nil, purpose: description,
+                    paymentMethod: "Сейв (выписка)", providers: [], kind: interest ? "interest_income" : "internal_transfer"))
+            }
+        }
+        guard !operations.isEmpty else { throw AppFailure(message: "В выписке нет операций раньше 01.10.2026 для архивного импорта.") }
+        operations.sort { $0.occurredAt == $1.occurredAt ? $0.identity < $1.identity : $0.occurredAt > $1.occurredAt }
+        let coverage = parseCoverage(text)
+        return StatementImportResult(source: .save, operations: operations, coverageStart: coverage.start,
+                                     coverageEnd: coverage.end, ignoredAtOrAfterCutoff: ignored)
+    }
+
+    /// Parse the entire selection before preparing a single atomic history replacement.
+    static func importPDFs(_ urls: [URL]) throws -> [StatementImportResult] {
+        try urls.map { url in
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do { return try importPDF(at: url) }
+            catch { throw AppFailure(message: "\(url.lastPathComponent): \(error.localizedDescription)") }
+        }
+    }
+
+    static func merging(_ results: [StatementImportResult], into original: SavedHistory) throws -> SavedHistory {
+        guard !results.isEmpty else { throw AppFailure(message: "Выписки не выбраны.") }
+        let sources = Set(results.map(\.source))
+        var next = original
+        next.operations.removeAll { operation in
+            if operation.identity.hasPrefix("statement-save:") { return sources.contains(.save) }
+            return sources.contains(.account) && (BankDateParser.parse(operation.occurredAt).map { $0 < archiveCutoff } ?? false)
+        }
+        var byID = Dictionary(next.operations.map { ($0.identity, $0) }, uniquingKeysWith: { first, _ in first })
+        for result in results {
+            for operation in result.operations {
+                guard operation.currency == "RUB", !operation.identity.isEmpty, !operation.description.isEmpty,
+                      BankDateParser.parse(operation.occurredAt) != nil else {
+                    throw AppFailure(message: "Часть операций выписки не прошла проверку. Архив не сохранён.")
+                }
+                if let old = original.operations.first(where: { $0.identity == operation.identity }), old.sameFinancialContent(as: operation) {
+                    byID[operation.identity] = old
+                } else { byID[operation.identity] = operation }
+            }
+        }
+        next.operations = byID.values.sorted { $0.occurredAt == $1.occurredAt ? $0.identity < $1.identity : $0.occurredAt > $1.occurredAt }
+        if sources.contains(.account) {
+            next.unresolvedIssues = (next.unresolvedIssues ?? []).filter { issue in
+                if let raw = issue.bankDate, let date = BankDateParser.parse(raw) { return date >= archiveCutoff }
+                if let month = issue.monthOrdinal { return month >= 2026 * 12 + 9 }
+                return true
+            }
+            next.bootstrapCompleted = true; next.bootstrapResumeMonth = nil
+        }
+        next.statementArchiveThrough = archiveCutoff.addingTimeInterval(-1)
+        next.statementImportedAt = Date()
+        next.statementOperationCount = next.operations.filter { $0.identity.hasPrefix("statement:") || $0.identity.hasPrefix("statement-save:") }.count
+        next.lastStopReason = "statement_archive_imported"; next.lastSync = Date()
+        return next
     }
 
     private static func transactionBody(from page: String) -> String {
