@@ -545,6 +545,39 @@ enum FinancialEngine {
             topExpenseGrowth: best)
     }
 
+    // MARK: - Month forecast
+
+    struct MonthForecast: Equatable {
+        /// Net expense (after refunds) from the first day of the month through today.
+        let spentKopecks: Int64
+        /// Spending at the same daily pace for the whole month.
+        let projectedKopecks: Int64
+        /// Net expense of the whole previous month.
+        let previousMonthKopecks: Int64
+        /// Income from the first day of the month through today.
+        let incomeKopecks: Int64
+        let elapsedDays: Int
+        let daysInMonth: Int
+    }
+
+    /// Whether this month's spending pace fits: today's month-to-date numbers extrapolated linearly
+    /// to the end of the month, next to the previous month's total. Uses `report`, so the usual rules apply.
+    static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> MonthForecast {
+        let periods = monthComparisonPeriods(selectedStart: now, currentDate: now, calendar: calendar)
+        let monthStartDate = periods.current.start
+        let previousMonth = DateInterval(start: periods.previous.start, end: monthStartDate)
+        let elapsed = calendar.dateComponents([.day], from: monthStartDate, to: periods.current.end).day ?? 1
+        let daysInMonth = calendar.range(of: .day, in: .month, for: monthStartDate)?.count ?? 30
+        let soFar = report(operations, in: periods.current)
+        let spent = soFar.netExpenseKopecks
+        return MonthForecast(spentKopecks: spent,
+                             projectedKopecks: elapsed > 0 ? spent * Int64(daysInMonth) / Int64(elapsed) : spent,
+                             previousMonthKopecks: report(operations, in: previousMonth).netExpenseKopecks,
+                             incomeKopecks: soFar.incomeKopecks,
+                             elapsedDays: elapsed,
+                             daysInMonth: daysInMonth)
+    }
+
     // MARK: - Chart data
 
     struct CategoryAmount: Equatable, Identifiable {

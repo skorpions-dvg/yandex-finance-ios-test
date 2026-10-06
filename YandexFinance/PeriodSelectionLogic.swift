@@ -27,6 +27,30 @@ public func canGoToNextMonth(
     nextMonthIfAllowed(selectedStart: selectedStart, currentDate: currentDate, calendar: calendar) != nil
 }
 
+/// Period chosen on the operations screen.
+public enum HistoryPeriod: Hashable {
+    /// The last N calendar days, today included.
+    case lastDays(Int)
+    case allTime
+    /// Whole calendar days from one date through another, both included.
+    case custom(from: Date, through: Date)
+}
+
+/// Half-open interval for a history period; it always ends at the end of today (or of the last custom day).
+public func historyInterval(_ period: HistoryPeriod, now: Date = Date(), calendar: Calendar = .current) -> DateInterval {
+    let endOfToday = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
+    switch period {
+    case .lastDays(let days):
+        return DateInterval(start: calendar.date(byAdding: .day, value: -max(days, 1), to: endOfToday)!, end: endOfToday)
+    case .allTime:
+        return DateInterval(start: .distantPast, end: endOfToday)
+    case .custom(let from, let through):
+        let first = calendar.startOfDay(for: min(from, through))
+        let last = calendar.startOfDay(for: max(from, through))
+        return DateInterval(start: first, end: calendar.date(byAdding: .day, value: 1, to: last)!)
+    }
+}
+
 /// Half-open periods used to compare the selected month with the previous one.
 public struct MonthComparisonPeriods: Equatable {
     public let current: DateInterval

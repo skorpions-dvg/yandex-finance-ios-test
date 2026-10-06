@@ -185,6 +185,44 @@ struct FinanceEngineTests {
         require(FinancialEngine.expenseByGroup(FinancialEngine.report([], in: interval)).isEmpty, "no spending, no groups")
     }
 
+    static func testHistoryInterval() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ month: Int, _ day: Int, _ hour: Int = 0) -> Date {
+            calendar.date(from: DateComponents(year: 2024, month: month, day: day, hour: hour))!
+        }
+        let now = date(2, 6, 10)
+        require(historyInterval(.lastDays(7), now: now, calendar: calendar) == DateInterval(start: date(1, 31), end: date(2, 7)),
+                "7 days are today and the six days before it")
+        require(historyInterval(.lastDays(30), now: now, calendar: calendar) == DateInterval(start: date(1, 8), end: date(2, 7)),
+                "30 days end with today")
+        require(historyInterval(.allTime, now: now, calendar: calendar) == DateInterval(start: .distantPast, end: date(2, 7)),
+                "all history ends with today")
+        require(historyInterval(.custom(from: date(2, 10, 15), through: date(2, 1, 8)), now: now, calendar: calendar)
+                    == DateInterval(start: date(2, 1), end: date(2, 11)),
+                "custom dates are whole days in either order, the last day included")
+    }
+
+    static func testMonthForecast() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2024, month: 2, day: 6, hour: 10))!
+        let operations = [
+            op(-10_000, kind: "expense", category: "Такси", date: "2024-01-15T10:00:00Z"),
+            op(-600, kind: "expense", category: "Такси", date: "2024-02-02T10:00:00Z"),
+            op(300, kind: "refund", category: "Возврат", date: "2024-02-03T10:00:00Z"),
+            op(5_000, kind: "income", date: "2024-02-04T10:00:00Z"),
+            op(-300, kind: "expense", category: "Супермаркеты", date: "2024-02-06T09:00:00Z"),
+            op(-999, kind: "expense", category: "Такси", date: "2024-02-07T09:00:00Z"),
+        ]
+        let forecast = FinancialEngine.monthForecast(operations, now: now, calendar: calendar)
+        require(forecast == FinancialEngine.MonthForecast(spentKopecks: 600, projectedKopecks: 2_900, previousMonthKopecks: 10_000,
+                                                          incomeKopecks: 5_000, elapsedDays: 6, daysInMonth: 29),
+                "forecast: 600 spent in 6 of 29 days after the refund, paced to 2 900; tomorrow is not counted")
+        let firstDay = FinancialEngine.monthForecast([], now: calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!, calendar: calendar)
+        require(firstDay.elapsedDays == 1 && firstDay.projectedKopecks == 0 && firstDay.daysInMonth == 31, "first day of an empty month")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -558,6 +596,8 @@ struct FinanceEngineTests {
         testMonthlyComparison()
         testDailyNetExpense()
         testExpenseByGroup()
+        testHistoryInterval()
+        testMonthForecast()
 
         print("Finance engine tests passed")
     }

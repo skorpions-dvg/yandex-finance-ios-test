@@ -28,55 +28,8 @@ struct ContentView: View {
                 .allowsHitTesting(browser.bankPageVisible)
                 .accessibilityHidden(!browser.bankPageVisible)
             TabView(selection: $browser.selectedTab) {
-                NavigationStack {
-                    List {
-                        if browser.busy {
-                            HStack { ProgressView(); Text("Обновление операций…").font(.footnote) }
-                        }
-                        ForEach(browser.history.operations, id: \.identity) { operation in
-                            NavigationLink {
-                                Form {
-                                    LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
-                                    if let components = operation.components {
-                                        Section("Составляющие") {
-                                            ForEach(Array(components.enumerated()), id: \.offset) { _, component in
-                                                VStack(alignment: .leading) {
-                                                    HStack {
-                                                        Text(component.amountKopecks < 0 ? "Списание" : "Поступление")
-                                                        Spacer()
-                                                        Text(component.formattedAmount)
-                                                    }
-                                                    Text(component.displayDate).font(.caption)
-                                                }
-                                            }
-                                            Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
-                                        }
-                                    }
-                                    LabeledContent("Категория", value: operation.category)
-                                    LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
-                                    if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
-                                        LabeledContent("Счета", value: route)
-                                    }
-                                    Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)
-                                    LabeledContent("Статус", value: operation.status)
-                                    LabeledContent("Дата UTC", value: operation.occurredAt)
-                                    LabeledContent("Точность", value: operation.timePrecision == "source_timestamp" ? "Время банка" : "До минуты")
-                                    if let mcc = operation.mcc { LabeledContent("MCC", value: mcc) }
-                                    if let purpose = operation.purpose { LabeledContent("Назначение", value: purpose) }
-                                    if let method = operation.paymentMethod { LabeledContent("Способ оплаты", value: method) }
-                                }.navigationTitle(operation.description)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack { Text(operation.description); Spacer(); Text(operation.formattedAmount) }
-                                    if let components = operation.components {
-                                        Text("Сводная карточка: \(components.count) составляющих").font(.caption)
-                                    }
-                                    Text(operation.category + " · " + operation.status).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }.navigationTitle("Операции")
-                }.tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
+                OperationsHomeView(browser: browser)
+                    .tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
                 FinanceDashboardView(browser: browser)
                     .tabItem { Label("Отчёты", systemImage: "chart.pie") }.tag(2)
                 SettingsView(browser: browser)
@@ -100,17 +53,56 @@ struct ContentView: View {
     }
 }
 
+/// Full card of one saved operation: amounts, components, category, financial type and bank details.
+struct OperationDetailView: View {
+    let operation: BankOperation
+    var body: some View {
+        Form {
+            LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
+            if let components = operation.components {
+                Section("Составляющие") {
+                    ForEach(Array(components.enumerated()), id: \.offset) { _, component in
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text(component.amountKopecks < 0 ? "Списание" : "Поступление")
+                                Spacer()
+                                Text(component.formattedAmount)
+                            }
+                            Text(component.displayDate).font(.caption)
+                        }
+                    }
+                    Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
+                }
+            }
+            LabeledContent("Категория", value: operation.category)
+            LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
+            if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
+                LabeledContent("Счета", value: route)
+            }
+            Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)
+            LabeledContent("Статус", value: operation.status)
+            LabeledContent("Дата UTC", value: operation.occurredAt)
+            LabeledContent("Точность", value: operation.timePrecision == "source_timestamp" ? "Время банка" : "До минуты")
+            if let mcc = operation.mcc { LabeledContent("MCC", value: mcc) }
+            if let purpose = operation.purpose { LabeledContent("Назначение", value: purpose) }
+            if let method = operation.paymentMethod { LabeledContent("Способ оплаты", value: method) }
+        }.navigationTitle(operation.description)
+    }
+}
+
 /// Bank connection, sync, statement import and storage, moved here from the former bank tab.
 @MainActor
 struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
     @State private var confirmStorageReset = false
+    @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
     var body: some View {
         NavigationStack {
             List {
                 if let storageError = browser.storageError {
                     Section("Хранилище недоступно") {
-                        Text(storageError).font(.footnote)
+                        Label(storageError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote).foregroundStyle(.red)
                         Button("Повторить открытие") { browser.retryOpenStorage() }
                             .disabled(browser.busy)
                         if browser.storageRetryFailed {
@@ -121,6 +113,11 @@ struct SettingsView: View {
                         }
                     }
                 }
+                Section {
+                    Toggle("История всегда развёрнута", isOn: $historyAlwaysExpanded)
+                    Text("Иначе список операций на главном экране открывается по нажатию на «Операции».")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Text("Отображение") }
                 Section {
                     Button("Страница банка") { browser.bankPageVisible = true }
                     Text("Откройте, чтобы войти в банк или посмотреть, что происходит при проверке. Обычно страница скрыта: проверка идёт без неё.")
@@ -430,13 +427,19 @@ struct FinanceDashboardView: View {
                     }
                     // In a List row every default-style button fires on any tap in the row.
                     .buttonStyle(.borderless)
-                Section("Выбранный месяц") {
-                    LabeledContent("Доходы", value: rubles(report.incomeKopecks))
-                    LabeledContent("Расходы", value: rubles(report.netExpenseKopecks))
+                // Income and expenses open straight into subcategories and operations.
+                incomeBlock(report, interval: interval)
+                expenseBlock(report, interval: interval)
+
+                if !report.movementLines.isEmpty {
+                    movementBlock(report, interval: interval)
+                }
+                if !report.incompleteLines.isEmpty {
+                    incompleteBlock(report)
+                }
+
+                Section("Итог месяца") {
                     LabeledContent("Разница", value: signed(report.differenceKopecks))
-                    if report.pendingDebitKopecks > 0 {
-                        LabeledContent("В обработке", value: rubles(report.pendingDebitKopecks))
-                    }
                     LabeledContent("Операций", value: String(report.operationCount))
                     if report.invalidDateCount > 0 {
                         LabeledContent("Не распознано дат в базе", value: String(report.invalidDateCount))
@@ -499,15 +502,6 @@ struct FinanceDashboardView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                incomeBlock(report, interval: interval)
-                expenseBlock(report, interval: interval)
-
-                if !report.movementLines.isEmpty {
-                    movementBlock(report, interval: interval)
-                }
-                if !report.incompleteLines.isEmpty {
-                    incompleteBlock(report)
-                }
 
                 Section("Сверка с банком") {
                     LabeledContent("Банковские списания", value: rubles(report.bankDebitKopecks))
