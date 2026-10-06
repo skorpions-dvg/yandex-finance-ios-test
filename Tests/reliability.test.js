@@ -591,7 +591,9 @@ assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Неск
 assert.match(appSwift, /TabView\(selection: \$browser.selectedTab\)/);
 assert.match(swift, /bankPageVisible = true/, 'card retry must bring the hidden bank page to the front');
 assert.match(appSwift, /Button\("Обновить новые операции"\) \{ browser\.refreshNewOperations\(\) \}/, 'manual refresh must go through the sign-in check');
-assert.match(swift, /guard ready else \{[\s\S]{0,120}signInNeededMessage[\s\S]{0,80}bankPageVisible = true/, 'a signed-out bank must be reported and shown, not ignored');
+assert.match(swift, /guard ready else \{\s*self\.requestSignIn\(\)/, 'a signed-out bank must be reported and shown, not ignored');
+assert.match(swift, /func requestSignIn\(\) \{[\s\S]{0,200}signInNeededMessage[\s\S]{0,120}bankPageVisible = true/, 'sign-in request shows the bank page with the hint');
+assert.match(swift, /historyPageReady\(\) else \{ continue \}\s*self\.finishSignIn\(\)[\s\S]{0,120}self\.read\(mode: "history"/, 'after sign-in the page closes and the refresh continues');
 assert.match(appSwift, /ZStack\(alignment: \.top\) \{[\s\S]{0,200}BankWebView\(browser: browser\)/, 'bank page must stay in the window behind the tabs');
 assert.ok(!/Label\("Банк"/.test(appSwift), 'the bank page is no longer a tab');
 assert.match(appSwift, /Label\("Настройки", systemImage: "gearshape"\)/);

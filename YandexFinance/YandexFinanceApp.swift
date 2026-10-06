@@ -24,7 +24,7 @@ struct ContentView: View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
             BankWebView(browser: browser)
-                .padding(.top, browser.bankPageVisible ? 52 : 0)
+                .padding(.top, browser.bankPageVisible ? (browser.signInRequested ? 110 : 52) : 0)
                 .allowsHitTesting(browser.bankPageVisible)
                 .accessibilityHidden(!browser.bankPageVisible)
             TabView(selection: $browser.selectedTab) {
@@ -38,15 +38,24 @@ struct ContentView: View {
             .opacity(browser.bankPageVisible ? 0 : 1)
             .allowsHitTesting(!browser.bankPageVisible)
             if browser.bankPageVisible {
-                HStack {
-                    Button("Готово") { browser.bankPageVisible = false }.fontWeight(.semibold)
-                    Spacer()
-                    Text(browser.host).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("История") { browser.openHistory() }.disabled(browser.busy)
+                VStack(spacing: 0) {
+                    HStack {
+                        Button("Готово") { browser.finishSignIn() }.fontWeight(.semibold)
+                        Spacer()
+                        Text(browser.host).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("История") { browser.openHistory() }.disabled(browser.busy)
+                    }
+                    .padding(.horizontal)
+                    .frame(height: 52)
+                    if browser.signInRequested {
+                        Label("Банк просит войти. Введите код из SMS — iPhone подскажет его над клавиатурой. После входа страница закроется сама.",
+                              systemImage: "key.fill")
+                            .font(.footnote)
+                            .padding(.horizontal)
+                            .padding(.bottom, 8)
+                    }
                 }
-                .padding(.horizontal)
-                .frame(height: 52)
                 .background(.bar)
             }
         }

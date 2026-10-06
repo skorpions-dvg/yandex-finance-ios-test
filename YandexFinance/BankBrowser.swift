@@ -9,6 +9,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published var selectedTab = 1
     /// The bank page always stays in the window (scanning needs it); this only brings it to the front.
     @Published var bankPageVisible = false
+    /// The bank page is in front because the bank asked to sign in (shows the code hint).
+    @Published private(set) var signInRequested = false
+    private var signInWatch: Task<Void, Never>?
     @Published var busy = false
     @Published var message = ""
     @Published var host = "bank.yandex.ru"
@@ -79,13 +82,50 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             }
             guard let self else { return }
             self.automaticTask = nil
-            if self.foreground, self.autoUpdate, !self.busy {
-                self.message = Self.signInNeededMessage
+            guard self.foreground, self.autoUpdate, !self.busy else { return }
+            // A page that loaded but shows no history means the bank wants a sign-in; without any page we are offline.
+            if self.webView.url != nil && !self.webView.isLoading {
+                self.requestSignIn()
+            } else {
+                self.message = "Не удалось открыть историю банка. Проверьте интернет и обновите операции в «Настройках»."
             }
         }
     }
 
-    static let signInNeededMessage = "Банк не показал историю операций — похоже, нужен вход. Откройте «Настройки» → «Страница банка», войдите и нажмите «Готово», затем обновите операции."
+    static let signInNeededMessage = "Банк просит войти. Введите код из SMS на странице банка — после входа обновление продолжится само."
+
+    /// Brings the bank page to the front for sign-in and waits up to ten minutes for the signed-in history;
+    /// then hides the page again and runs the refresh that was interrupted.
+    func requestSignIn() {
+        message = Self.signInNeededMessage
+        signInRequested = true
+        bankPageVisible = true
+        signInWatch?.cancel()
+        signInWatch = Task { @MainActor [weak self] in
+            for _ in 0..<600 {
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
+                guard let self, self.signInRequested else { return }
+                if self.webView.url?.host == "bank.yandex.ru", self.webView.url?.path != "/my/transactions-history", !self.webView.isLoading,
+                   let path = self.webView.url?.path, path == "/" || path.hasPrefix("/my") {
+                    // Signed in but landed elsewhere in the bank: go to the history the scanner reads.
+                    self.webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
+                    continue
+                }
+                guard await self.historyPageReady() else { continue }
+                self.finishSignIn()
+                self.message = "Вход выполнен, обновляю операции…"
+                self.read(mode: "history", lookbackDays: self.incrementalDays())
+                return
+            }
+        }
+    }
+
+    /// Hides the bank page and stops waiting for a sign-in (also used by «Готово»).
+    func finishSignIn() {
+        signInWatch?.cancel(); signInWatch = nil
+        signInRequested = false
+        bankPageVisible = false
+    }
 
     /// True when the bank's history page is loaded and signed in (its account filter is visible).
     private func historyPageReady() async -> Bool {
@@ -118,8 +158,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             self.busy = false
             if self.cancelled { self.message = "Обновление остановлено."; return }
             guard ready else {
-                self.message = Self.signInNeededMessage
-                self.bankPageVisible = true
+                self.requestSignIn()
                 return
             }
             self.read(mode: "history", lookbackDays: 30)
