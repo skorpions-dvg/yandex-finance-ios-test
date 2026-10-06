@@ -101,7 +101,7 @@ struct OperationsHomeView: View {
                 SearchOperationsView(browser: browser)
             }
             .sheet(isPresented: $showAdd) {
-                ManualOperationFormView(browser: browser)
+                ManualOperationFormView(browser: browser, onSave: showSavedOperation)
             }
             .sheet(item: $editedOperation) { operation in
                 ManualOperationFormView(browser: browser, operation: operation)
@@ -112,6 +112,14 @@ struct OperationsHomeView: View {
                                  through: $customThrough)
             }
         }
+    }
+
+    private func showSavedOperation(_ operation: ManualOperation) {
+        // Saving must immediately reveal the entry, even with collapsed history or an older selected period.
+        if !interval.contains(operation.date) {
+            period = .custom(from: operation.date, through: operation.date)
+        }
+        historyExpanded = true
     }
     
     // MARK: - Period Row
@@ -351,7 +359,7 @@ struct OperationsHomeView: View {
 
     /// Sum of the accounts that show their balance, the same way the accounts screen counts them.
     private func currentBalance(_ accounts: [Account]) -> Int64 {
-        accounts.filter(\.showsBalance).reduce(0) { total, account in
+        accounts.filter { $0.contributesToBalance(groups: browser.history.accountGroups ?? []) }.reduce(0) { total, account in
             total + account.balance(bankOperations: browser.history.operations.map(\.financialInput),
                                     manual: browser.history.manualOperations ?? [])
         }

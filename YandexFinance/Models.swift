@@ -190,6 +190,14 @@ extension Account {
 struct AccountGroup: Codable, Equatable, Identifiable {
     var id = UUID()
     var name: String
+    /// Missing in old backups: the group contributes to the overall balance by default.
+    var includesInBalance: Bool?
+}
+
+extension Account {
+    func contributesToBalance(groups: [AccountGroup]) -> Bool {
+        showsBalance && (groups.first { $0.id == groupID }?.includesInBalance ?? true)
+    }
 }
 
 struct Account: Codable, Equatable, Identifiable {

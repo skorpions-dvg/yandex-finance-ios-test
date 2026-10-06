@@ -50,7 +50,7 @@ struct AccountsView: View {
                     HStack {
                         Label("Все счета", systemImage: "wallet.pass")
                         Spacer()
-                        Text(total(accounts)).bold().multilineTextAlignment(.trailing)
+                        Text(total(accounts.filter { $0.contributesToBalance(groups: groups) })).bold().multilineTextAlignment(.trailing)
                     }
                     .moveDisabled(true)
                     .deleteDisabled(true)
@@ -195,6 +195,10 @@ struct AccountsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Text(group.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                if group.includesInBalance == false {
+                    Image(systemName: "eye.slash").font(.caption).foregroundStyle(.secondary)
+                        .accessibilityLabel("Не входит в общий баланс")
+                }
                 Spacer()
                 Text(total(accounts.filter { $0.groupID == group.id }))
                     .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
@@ -208,6 +212,13 @@ struct AccountsView: View {
 
     @ViewBuilder private func groupActions(_ group: AccountGroup) -> some View {
         Button("Переименовать", systemImage: "pencil") { editedGroup = group }
+        Button(group.includesInBalance == false ? "Учитывать в общем балансе" : "Исключить из общего баланса",
+               systemImage: group.includesInBalance == false ? "eye" : "eye.slash") {
+            persist { history in
+                guard let index = history.accountGroups?.firstIndex(where: { $0.id == group.id }) else { return }
+                history.accountGroups?[index].includesInBalance = group.includesInBalance == false
+            }
+        }
         Button("Удалить группу", systemImage: "trash", role: .destructive) {
             deletedGroup = group
             confirmGroupDeletion = true
@@ -264,7 +275,6 @@ struct AccountFormView: View {
     @Environment(\.dismiss) private var dismiss
     private let account: Account?
     private let sessionInfo: Binding<Bool>?
-    private let onSave: ((Account) -> Void)?
     @State private var localInfo = true
     @State private var name: String
     @State private var icon: String
@@ -284,11 +294,9 @@ struct AccountFormView: View {
                              "Самолёт", "Дом", "Автомобиль", "Покупки", "Сумка", "Сердце", "Звезда", "Образование",
                              "Здоровье", "Игры", "Животные", "Лист"]
 
-    init(browser: BankBrowser, account: Account?, showsInfo: Binding<Bool>? = nil,
-         onSave: ((Account) -> Void)? = nil) {
+    init(browser: BankBrowser, account: Account?, showsInfo: Binding<Bool>? = nil) {
         self.browser = browser
         self.account = account
-        self.onSave = onSave
         sessionInfo = showsInfo
         _name = State(initialValue: account?.name ?? "")
         _icon = State(initialValue: account?.icon ?? "banknote")
@@ -468,10 +476,7 @@ struct AccountFormView: View {
             else { accounts.append(saved) }
             history.accounts = accounts
         }
-        if success {
-            onSave?(saved)
-            dismiss()
-        } else { saveError = true }
+        if success { dismiss() } else { saveError = true }
     }
 
     private func delete() {
@@ -487,17 +492,26 @@ struct AccountGroupFormView: View {
     @Environment(\.dismiss) private var dismiss
     private let group: AccountGroup?
     @State private var name: String
+    @State private var includesInBalance: Bool
     @State private var saveError = false
 
     init(browser: BankBrowser, group: AccountGroup? = nil) {
         self.browser = browser
         self.group = group
         _name = State(initialValue: group?.name ?? "")
+        _includesInBalance = State(initialValue: group?.includesInBalance ?? true)
     }
 
     var body: some View {
         NavigationStack {
-            Form { TextField("Название группы", text: $name) }
+            Form {
+                TextField("Название группы", text: $name)
+                Section {
+                    Toggle("Учитывать в общем балансе", isOn: $includesInBalance)
+                } footer: {
+                    Text("Все счета группы учитываются в «Все счета», текущем остатке и запасе. Если выключить, счета и операции останутся доступны.")
+                }
+            }
                 .navigationTitle(group == nil ? "Новая группа" : "Группа")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -520,6 +534,7 @@ struct AccountGroupFormView: View {
         guard !name.isEmpty else { return }
         var saved = group ?? AccountGroup(name: name)
         saved.name = name
+        saved.includesInBalance = includesInBalance
         let success = browser.updateUserData { history in
             var groups = history.accountGroups ?? []
             if let index = groups.firstIndex(where: { $0.id == saved.id }) { groups[index] = saved }

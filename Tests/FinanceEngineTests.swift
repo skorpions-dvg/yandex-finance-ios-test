@@ -453,6 +453,41 @@ struct FinanceEngineTests {
         } catch { require(false, "backup with manual operations failed: \(error)") }
     }
 
+    static func testGroupBalanceVisibility() {
+        do {
+            let legacy = Data("{\"id\":\"00000000-0000-0000-0000-000000000001\",\"name\":\"Legacy\"}".utf8)
+            var group = try JSONDecoder().decode(AccountGroup.self, from: legacy)
+            let day = BankDateParser.parse("2032-06-02T00:00:00Z")!
+            var cash = Account(name: "Cash", icon: "banknote", color: "orange", groupID: group.id,
+                               startBalanceKopecks: 100_000, startDate: day)
+            let other = Account(name: "Other", icon: "wallet.pass", color: "blue", groupID: nil,
+                                startBalanceKopecks: 200_000, startDate: day)
+            require(cash.contributesToBalance(groups: [group]), "old groups remain included without the new optional field")
+            group.includesInBalance = false
+            require(!cash.contributesToBalance(groups: [group]), "a hidden group excludes all of its accounts")
+            require(other.contributesToBalance(groups: [group]), "ungrouped accounts are unaffected")
+            require(cash.contributesToBalance(groups: []), "deleting a group makes its orphaned accounts included again")
+            var history = SavedHistory()
+            history.accounts = [cash, other]
+            history.accountGroups = [group]
+            let expense = ManualOperation(kind: .expense, amountKopecks: 25_000, date: day.addingTimeInterval(60),
+                                          accountID: cash.id, group: "Еда", subcategory: "Кафе и рестораны")
+            history.manualOperations = [expense]
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.accountGroups?.first?.includesInBalance == false, "group visibility survives a backup")
+            let total = (restored.accounts ?? []).filter { $0.contributesToBalance(groups: restored.accountGroups ?? []) }
+                .reduce(Int64(0)) { $0 + $1.balance(bankOperations: [], manual: restored.manualOperations ?? []) }
+            require(total == 200_000, "overall balance excludes the hidden group")
+            require(cash.balance(bankOperations: [], manual: [expense]) == 75_000, "hidden accounts still keep their actual balances")
+            require(FinancialEngine.report(restored.allOperations.map(\.financialInput),
+                                          in: DateInterval(start: day, duration: 86400)).netExpenseKopecks == 25_000,
+                    "hiding a balance group must not hide its expenses from reports")
+            group.includesInBalance = true
+            cash.showsBalance = false
+            require(!cash.contributesToBalance(groups: [group]), "showing a group preserves each account's own visibility setting")
+        } catch { require(false, "group visibility regression failed: \(error)") }
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -834,6 +869,7 @@ struct FinanceEngineTests {
         testAccountReorder()
         testMonthReserve()
         testManualOperations()
+        testGroupBalanceVisibility()
 
         print("Finance engine tests passed")
     }

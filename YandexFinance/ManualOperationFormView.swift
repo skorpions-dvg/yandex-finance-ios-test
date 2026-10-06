@@ -4,6 +4,9 @@ struct ManualOperationFormView: View {
     @ObservedObject var browser: BankBrowser
     @Environment(\.dismiss) private var dismiss
     private let operation: ManualOperation?
+    private let onSave: ((ManualOperation) -> Void)?
+    @State private var operationID: UUID
+    @FocusState private var fieldFocused: Bool
     @State private var kind: ManualOperation.Kind
     @State private var amountText: String
     @State private var accountID: UUID?
@@ -12,13 +15,17 @@ struct ManualOperationFormView: View {
     @State private var subcategory: String?
     @State private var date: Date
     @State private var note: String
-    @State private var newAccount = false
     @State private var confirmDeletion = false
     @State private var saveError = false
+    @State private var saveErrorMessage = ""
+    @State private var saved = false
 
-    init(browser: BankBrowser, operation: ManualOperation? = nil) {
+    init(browser: BankBrowser, operation: ManualOperation? = nil,
+         onSave: ((ManualOperation) -> Void)? = nil) {
         self.browser = browser
         self.operation = operation
+        self.onSave = onSave
+        _operationID = State(initialValue: operation?.id ?? UUID())
         _kind = State(initialValue: operation?.kind ?? .expense)
         _amountText = State(initialValue: operation.map {
             (Decimal($0.amountKopecks) / 100).description.replacingOccurrences(of: ".", with: ",")
@@ -63,8 +70,8 @@ struct ManualOperationFormView: View {
         NavigationStack {
             Form {
                 if accounts.isEmpty {
-                    ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass")
-                    Button("Создать счёт") { newAccount = true }
+                    ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
+                                           description: Text("Добавьте счёт на главном экране в разделе «Все счета»."))
                 } else {
                     fields
                 }
@@ -84,7 +91,7 @@ struct ManualOperationFormView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Сохранить", systemImage: "checkmark", action: save)
-                        .tint(.orange).disabled(!canSave)
+                        .tint(.orange).disabled(!canSave || saved)
                 }
             }
         }
@@ -97,22 +104,13 @@ struct ManualOperationFormView: View {
         .onChange(of: accountID) { _, value in
             if toAccountID == value { toAccountID = nil }
         }
-        .sheet(isPresented: $newAccount) {
-            AccountFormView(browser: browser, account: nil) { account in
-                if kind == .transfer || !account.tracksBankCard {
-                    accountID = account.id
-                }
-                // A new entry on the new account must not precede its opening balance.
-                if operation == nil && date < account.startDate { date = Date() }
-            }
-        }
         .confirmationDialog("Удалить операцию?", isPresented: $confirmDeletion, titleVisibility: .visible) {
             Button("Удалить операцию", role: .destructive, action: delete)
             Button("Отмена", role: .cancel) { }
         }
         .alert("Не удалось сохранить", isPresented: $saveError) {
             Button("OK", role: .cancel) { }
-        } message: { Text(browser.message) }
+        } message: { Text(saveErrorMessage) }
     }
 
     private var fields: some View {
@@ -125,6 +123,7 @@ struct ManualOperationFormView: View {
                 }
                 .pickerStyle(.segmented)
                 TextField("Сумма, ₽", text: $amountText)
+                    .focused($fieldFocused)
                     .font(.title.weight(.semibold))
                     .keyboardType(.decimalPad)
                     .foregroundStyle(kind == .income ? Color.green : Color.primary)
@@ -169,7 +168,7 @@ struct ManualOperationFormView: View {
             Section {
                 if eligibleAccounts.isEmpty {
                     Text("Нет счетов для ручных операций").foregroundStyle(.secondary)
-                    Text("Создайте отдельный счёт, например «Наличные», без отметки «Карта Яндекс Банка».")
+                    Text("В разделе «Все счета» добавьте отдельный счёт, например «Наличные», без отметки «Карта Яндекс Банка».")
                         .font(.footnote).foregroundStyle(.secondary)
                 } else {
                     accountPicker(kind == .transfer ? "Откуда" : "Счёт", selection: $accountID, choices: eligibleAccounts)
@@ -177,7 +176,6 @@ struct ManualOperationFormView: View {
                         accountPicker("Куда", selection: $toAccountID, choices: accounts.filter { $0.id != accountID })
                     }
                 }
-                Button("Создать счёт") { newAccount = true }
             } footer: {
                 if kind != .transfer {
                     Text("Операции по карте Яндекс Банка загружаются из банка автоматически")
@@ -185,7 +183,7 @@ struct ManualOperationFormView: View {
             }
             Section {
                 DatePicker("Дата и время", selection: $date, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
-                TextField("Комментарий", text: $note)
+                TextField("Комментарий", text: $note).focused($fieldFocused)
             }
         }
     }
@@ -223,25 +221,41 @@ struct ManualOperationFormView: View {
     }
 
     private func save() {
-        guard canSave, let amount = parsedAmount else { return }
-        let saved = ManualOperation(id: operation?.id ?? UUID(), kind: kind, amountKopecks: amount,
+        guard !saved else { return }
+        fieldFocused = false
+        guard canSave, let amount = parsedAmount else {
+            saveErrorMessage = "Проверьте сумму, категорию, счёт и дату операции."
+            saveError = true
+            return
+        }
+        let operationToSave = ManualOperation(id: operationID, kind: kind, amountKopecks: amount,
                                     date: date, accountID: accountID,
                                     toAccountID: kind == .transfer ? toAccountID : nil,
                                     group: kind == .expense ? group : nil,
                                     subcategory: kind == .transfer ? nil : subcategory, note: note)
         let success = browser.updateUserData { history in
             var operations = history.manualOperations ?? []
-            if let index = operations.firstIndex(where: { $0.id == saved.id }) { operations[index] = saved }
-            else { operations.append(saved) }
+            if let index = operations.firstIndex(where: { $0.id == operationToSave.id }) { operations[index] = operationToSave }
+            else { operations.append(operationToSave) }
             history.manualOperations = operations
         }
-        if success { dismiss() } else { saveError = true }
+        if success {
+            saved = true
+            onSave?(operationToSave)
+            dismiss()
+        } else {
+            saveErrorMessage = browser.message
+            saveError = true
+        }
     }
 
     private func delete() {
         guard let operation else { return }
         if browser.updateUserData({ history in history.manualOperations?.removeAll { $0.id == operation.id } }) {
             dismiss()
-        } else { saveError = true }
+        } else {
+            saveErrorMessage = browser.message
+            saveError = true
+        }
     }
 }
