@@ -108,7 +108,9 @@ struct AppSurfaceModifier: ViewModifier {
         content
             .scrollContentBackground(.hidden)
             .containerBackground(Color.clear, for: .navigation)
-            .background { WallpaperBackground() }
+            // Pages stay transparent over the stationary wallpaper owned by ContentView.
+            // A presented sheet owns one background beneath its navigation transitions.
+            .presentationBackground { WallpaperBackground() }
             .toolbarBackground(.hidden, for: .navigationBar)
     }
 }

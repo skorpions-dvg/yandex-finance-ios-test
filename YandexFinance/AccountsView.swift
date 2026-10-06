@@ -107,7 +107,7 @@ struct AccountsView: View {
             .font(usesGlass ? .subheadline : .body)
             .scrollContentBackground(.hidden)
             .containerBackground(Color.clear, for: .navigation)
-            .background { if !usesGlass { WallpaperBackground() } }
+            .presentationBackground { WallpaperBackground() }
             .toolbarBackground(usesGlass ? .hidden : .automatic, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if usesGlass { compactHeader }

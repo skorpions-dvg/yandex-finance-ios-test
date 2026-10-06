@@ -38,6 +38,9 @@ struct ContentView: View {
                 .padding(.top, browser.bankPageVisible ? (browser.signInRequested ? 110 : 52) : 0)
                 .allowsHitTesting(browser.bankPageVisible)
                 .accessibilityHidden(!browser.bankPageVisible)
+            // One opaque wallpaper covers the mounted bank page without hiding its WebView.
+            WallpaperBackground()
+                .opacity(browser.bankPageVisible ? 0 : 1)
             GeometryReader { geometry in
                 let width = geometry.size.width
                 let drawerWidth = NavigationMotion.drawerWidth(width)
@@ -103,7 +106,6 @@ struct ContentView: View {
                 .padding(.horizontal, 40)
                 .padding(.bottom, 8)
             }
-            .background { WallpaperBackground() }
             .opacity(browser.bankPageVisible ? 0 : 1)
             .allowsHitTesting(!browser.bankPageVisible)
             if browser.bankPageVisible {
