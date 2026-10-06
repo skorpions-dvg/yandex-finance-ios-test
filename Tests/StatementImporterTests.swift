@@ -160,6 +160,11 @@ extension StatementImporterTests {
         context.closePDF()
         let document = PDFDocument(url: url)!
         let cells = StatementImporter.cells(from: document.page(at: 0)!)
+        if !cells.contains(where: { $0.text == "Описание" }) {
+            print("DIAG_RAW " + Data((document.page(at: 0)!.string ?? "").utf8).base64EncodedString())
+            print("DIAG_CELLS " + cells.prefix(45).map { Data($0.text.utf8).base64EncodedString() + ":\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";"))
+            print("DIAG_COUNTS \(document.page(at: 0)!.numberOfCharacters) \((document.page(at: 0)!.string! as NSString).length)")
+        }
         expect(cells.contains { $0.text == "Описание" }, "PDF extraction keeps heading word boundaries")
         expect(cells.contains { $0.text == "29.09.2026" }, "PDF extraction keeps date word boundaries")
         let parsed = try StatementImporter.importPDF(at: url)

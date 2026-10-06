@@ -297,10 +297,11 @@ enum StatementImporter {
             guard rect.width > 0, rect.height > 0 else { continue }
             let glyph = StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height)
             if let current = word,
-               abs(current.y - glyph.y) < max(2, glyph.height * 0.3),
+               abs(current.y + current.height - (glyph.y + glyph.height)) <= max(3, glyph.height * 0.5),
                glyph.x >= current.x, glyph.x - (current.x + current.width) < max(5, glyph.height * 0.7) {
                 word = StatementCell(text: current.text + character, x: current.x, y: min(current.y, glyph.y),
-                    width: max(current.width, glyph.x + glyph.width - current.x), height: max(current.height, glyph.height))
+                    width: max(current.width, glyph.x + glyph.width - current.x),
+                    height: max(current.y + current.height, glyph.y + glyph.height) - min(current.y, glyph.y))
             } else {
                 if let word { words.append(word) }; word = glyph
             }
