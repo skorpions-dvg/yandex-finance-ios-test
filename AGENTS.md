@@ -30,7 +30,7 @@
 - `Models.swift` — модели и резервная копия; `FinanceEngine.swift` — расчёты (только с тестами).
 
 ## Окружение на ПК пользователя (Windows 11)
-Доступно только Codex, запущенному на этом ПК (ярлык «Codex — Finance Test»). Облачный Codex из приложения ChatGPT работает только с репозиторием GitHub: локальных программ ниже у него нет — он правит код и пушит в ветку, а проверку и сборку делает GitHub Actions.
+Всё ниже доступно, если ты работаешь на этом ПК: приложение Codex для Windows с проектом «Finance Test» на папке `C:\Users\dimav\OneDrive\Документы\ios app\yandex-finance-ios-test-main` («Этот компьютер») или Codex CLI из ярлыка «Codex — Finance Test». Пользуйся этими инструментами: запускай проверки и сборку сам. Только облачный Codex (задача в облаке, без папки на этом ПК) работает лишь с репозиторием GitHub: локальных программ у него нет — он правит код и пушит в ветку, проверку и сборку делает GitHub Actions.
 - Git for Windows (`C:\Program Files\Git\cmd\git.exe`), доступ к GitHub сохранён в Git Credential Manager.
 - Swift 6.4 for Windows — компилирует и запускает финансовые тесты локально (`.local\check.ps1`; SwiftUI/Charts/PDFKit на Windows не собираются — их проверяет GitHub Actions).
 - Node.js — встроенный в Bionic: `%LOCALAPPDATA%\Programs\Bionic\resources\app\.webpack-bionic\bin\node.exe` (JS-тесты; `check.ps1` находит его сам).
