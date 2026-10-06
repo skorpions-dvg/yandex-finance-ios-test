@@ -13,7 +13,7 @@
 6. Сборка и IPA:
    - `powershell -NoProfile -ExecutionPolicy Bypass -File .local\ci.ps1 -Action run -Branch stage-NN` — запускает GitHub Actions и ждёт результат (5–15 минут, очередь macOS бывает долгой; «job was not acquired by Runner» — сбой GitHub, просто запустить ещё раз);
    - при ошибке там же будут последние строки лога — исправь и повтори;
-   - при успехе: `... ci.ps1 -Action ipa -RunId <id>` скачивает `FinanceTest-<версия>.ipa` во временную папку; скажи пользователю путь (он ставит через SideStore на iPhone).
+   - при успехе: `... ci.ps1 -Action ipa -RunId <id>` скачивает `FinanceTest-<версия>.ipa` и сам кладёт его в **iCloud Drive → «Finance Test»** (там всегда только последняя сборка). Ссылки на файлы Windows пользователю не давай: напиши «IPA <версия> в iCloud Drive → Finance Test» — он откроет её в «Файлах» на iPhone и поставит через SideStore.
 7. Не утверждай, что что-то собралось или тесты прошли, если ты этого не запускал. Показывай реальный вывод команд.
 
 ## Что нельзя без ТЗ от Claude
