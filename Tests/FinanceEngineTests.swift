@@ -340,6 +340,24 @@ struct FinanceEngineTests {
         require(!finds(grocery, "   "), "an empty query finds nothing")
     }
 
+    static func testBackup() {
+        let cash = AccountGroup(name: "Наличные")
+        var history = SavedHistory()
+        history.accountGroups = [cash]
+        history.accounts = [Account(name: "Наличные", icon: "banknote", color: "green", groupID: cash.id,
+                                    startBalanceKopecks: 1_500_000, startDate: Date(timeIntervalSince1970: 1_790_000_000))]
+        history.statementOperationCount = 453
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.accounts == history.accounts && restored.accountGroups == history.accountGroups, "accounts and groups survive a backup")
+            require(restored.statementOperationCount == 453, "history fields survive a backup")
+        } catch { require(false, "backup round trip failed: \(error)") }
+        require((try? HistoryBackup.decode(Data("{\"operations\":[]}".utf8))) == nil, "a file that is not a backup is refused")
+        // Data saved before accounts existed still decodes.
+        let old = try? JSONDecoder().decode(SavedHistory.self, from: Data("{\"operations\":[]}".utf8))
+        require(old != nil && old?.accounts == nil, "older saved history without accounts still opens")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -716,6 +734,7 @@ struct FinanceEngineTests {
         testHistoryInterval()
         testMonthForecast()
         testOperationSearch()
+        testBackup()
 
         print("Finance engine tests passed")
     }

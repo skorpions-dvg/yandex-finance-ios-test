@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 @MainActor
@@ -105,6 +106,9 @@ struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
+    @State private var exportedBackup: BackupDocument?
+    @State private var showBackupImporter = false
+    @State private var pendingRestore: URL?
     var body: some View {
         NavigationStack {
             List {
@@ -180,6 +184,17 @@ struct SettingsView: View {
                     Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("Журнал проверок") }
+                Section {
+                    Button("Экспортировать резервную копию") {
+                        do { exportedBackup = BackupDocument(data: try browser.backupData()) }
+                        catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
+                    }
+                    .disabled(!browser.storageAvailable || browser.busy)
+                    Button("Восстановить из копии") { showBackupImporter = true }
+                        .disabled(browser.busy)
+                    Text("Копия — файл со всеми операциями, счетами и группами. Сохраните его в «Файлы» или iCloud Drive. В нём ваши финансовые данные в открытом виде: не пересылайте его другим.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Text("Резервная копия") }
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
                             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -206,6 +221,24 @@ struct SettingsView: View {
                     }
             }
             .navigationTitle("Настройки")
+        }
+        .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
+                      document: exportedBackup, contentType: .json,
+                      defaultFilename: "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))") { result in
+            if case .success = result { browser.message = "Резервная копия сохранена." }
+        }
+        .fileImporter(isPresented: $showBackupImporter, allowedContentTypes: [.json]) { result in
+            if case .success(let url) = result { pendingRestore = url }
+        }
+        .confirmationDialog("Восстановить из копии?", isPresented: Binding(get: { pendingRestore != nil }, set: { if !$0 { pendingRestore = nil } }),
+                            titleVisibility: .visible) {
+            Button("Заменить данные копией", role: .destructive) {
+                if let url = pendingRestore { browser.restoreBackup(from: url) }
+                pendingRestore = nil
+            }
+            Button("Отмена", role: .cancel) { pendingRestore = nil }
+        } message: {
+            Text("Текущие операции, счета и группы на этом iPhone заменятся содержимым файла. Если хранилище недоступно, сначала сбросьте его.")
         }
         .confirmationDialog("Сбросить локальное хранилище?", isPresented: $confirmStorageReset, titleVisibility: .visible) {
             Button("Сбросить и удалить локальную историю", role: .destructive) { browser.resetLocalStorage() }
@@ -706,4 +739,13 @@ struct FinanceDashboardView: View {
             Text(value).font(.headline)
         }
     }
+}
+
+/// JSON backup file for the system "Save to Files" panel.
+struct BackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let data: Data
+    init(data: Data) { self.data = data }
+    init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
 }

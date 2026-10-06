@@ -96,6 +96,63 @@ struct SavedHistory: Codable {
     var statementArchiveThrough: Date?
     var statementImportedAt: Date?
     var statementOperationCount: Int?
+    /// User-made account groups and accounts, in display order. Unlike bank operations they cannot be
+    /// re-imported from the bank, which is why the backup exists.
+    var accountGroups: [AccountGroup]?
+    var accounts: [Account]?
+}
+
+struct AccountGroup: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+}
+
+struct Account: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    /// SF Symbol name.
+    var icon: String
+    /// One of `Account.palette` keys.
+    var color: String
+    var groupID: UUID?
+    /// Balance entered by the user at `startDate`.
+    var startBalanceKopecks: Int64
+    var startDate: Date
+    var showsBalance: Bool = true
+    /// The bank card scanned from Yandex Bank: its operations after `startDate` move the balance.
+    var tracksBankCard: Bool = false
+
+    static let palette = ["orange", "red", "yellow", "green", "teal", "blue", "indigo", "purple", "pink", "gray"]
+}
+
+/// Plain JSON copy of everything the app keeps, for the user's own backup.
+enum HistoryBackup {
+    static let formatVersion = 1
+
+    private struct Envelope: Codable {
+        let format: Int
+        let exportedAt: Date
+        let history: SavedHistory
+    }
+
+    static func encode(_ history: SavedHistory, exportedAt: Date = Date()) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(Envelope(format: formatVersion, exportedAt: exportedAt, history: history))
+    }
+
+    static func decode(_ data: Data) throws -> SavedHistory {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let envelope = try? decoder.decode(Envelope.self, from: data) else {
+            throw AppFailure(message: "Это не резервная копия Finance Test или файл повреждён.")
+        }
+        guard envelope.format <= formatVersion else {
+            throw AppFailure(message: "Копия сделана более новой версией приложения. Обновите приложение и повторите.")
+        }
+        return envelope.history
+    }
 }
 
 struct AppFailure: LocalizedError {

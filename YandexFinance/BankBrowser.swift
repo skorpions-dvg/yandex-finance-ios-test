@@ -485,6 +485,42 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
     }
 
+    /// Saves a change to user data (accounts, groups) into the encrypted history.
+    @discardableResult
+    func updateUserData(_ change: (inout SavedHistory) -> Void) -> Bool {
+        guard readable else { message = "Хранилище недоступно, изменения не сохранены."; return false }
+        var next = history
+        change(&next)
+        do {
+            try vault.save(next)
+            history = next
+            return true
+        } catch {
+            message = "Не удалось сохранить: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func backupData() throws -> Data { try HistoryBackup.encode(history) }
+
+    /// Replaces the local history with a backup file chosen by the user.
+    func restoreBackup(from url: URL) {
+        guard !busy else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let restored = try HistoryBackup.decode(Data(contentsOf: url))
+            try vault.save(restored)
+            history = restored
+            readable = true
+            storageError = nil
+            storageRetryFailed = false
+            message = "Восстановлено из копии: \(restored.operations.count) операций, счетов: \(restored.accounts?.count ?? 0)."
+        } catch {
+            message = "Не удалось восстановить копию: \(error.localizedDescription)"
+        }
+    }
+
     func resetLocalStorage() {
         guard !busy else { return }
         do {
