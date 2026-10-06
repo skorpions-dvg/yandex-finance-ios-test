@@ -630,6 +630,11 @@ assert.match(financeEngine, /Снятие наличных — перемеще�
 assert.match(financeTests, /cash withdrawal/);
 assert.match(appSwift, /let report = FinancialEngine\.report/);
 assert.match(appSwift, /resetLocalStorage/);
+const vaultSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/Vault.swift'), 'utf8');
+assert.match(vaultSwift, /AES\.GCM\.open\(box, using: SymmetricKey\(data: bytes\)\)[\s\S]{0,120}remember\(bytes\)/,
+  'a stored key may only be copied over after it has decrypted the history');
+assert.ok(!/errSecSuccess, let bytes = result as\? Data \{[\s\S]{0,200}write\(to: recoveryKeyURL/.test(vaultSwift),
+  'reading the Keychain must never overwrite the recovery key before it is verified');
 assert.match(swift, /Не сохранено после проверки/);
 assert.match(source, /V34\.6\.3 keeps conservative verification/);
 assert.match(source, /перевод между счетами одного клиента/);

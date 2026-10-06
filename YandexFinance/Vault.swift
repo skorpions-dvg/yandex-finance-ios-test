@@ -27,24 +27,60 @@ struct Vault {
         try supportFolder().appendingPathComponent("operations.encrypted")
     }
 
-    private func key(create: Bool) throws -> SymmetricKey {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service,
-                                    kSecAttrAccount as String: account,
-                                    kSecReturnData as String: true,
-                                    kSecMatchLimit as String: kSecMatchLimitOne]
+    private var keychainQuery: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    private func keychainKey() -> (code: OSStatus, bytes: Data?) {
+        var query = keychainQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let code = SecItemCopyMatching(query as CFDictionary, &result)
-        if code == errSecSuccess, let bytes = result as? Data {
-            guard bytes.count == 32 else { throw AppFailure(message: "Неверный ключ хранилища.") }
-            try? bytes.write(to: recoveryKeyURL(), options: [.atomic, .completeFileProtection])
-            return SymmetricKey(data: bytes)
-        }
+        guard code == errSecSuccess, let bytes = result as? Data, bytes.count == 32 else { return (code, nil) }
+        return (code, bytes)
+    }
 
-        let recoveryURL = try recoveryKeyURL()
-        if let bytes = try? Data(contentsOf: recoveryURL), bytes.count == 32 {
+    private func recoveryKey() -> Data? {
+        guard let url = try? recoveryKeyURL(), let bytes = try? Data(contentsOf: url), bytes.count == 32 else { return nil }
+        return bytes
+    }
+
+    /// Keys worth trying for the existing history: the container copy first, because it survives
+    /// re-signing in AltStore, then the Keychain item, which belongs to the signing identity.
+    private func candidateKeys() -> [Data] {
+        var keys: [Data] = []
+        for bytes in [recoveryKey(), keychainKey().bytes].compactMap({ $0 }) where !keys.contains(bytes) {
+            keys.append(bytes)
+        }
+        return keys
+    }
+
+    /// Called only after a key has actually decrypted the history: keep both copies on that key.
+    private func remember(_ bytes: Data) {
+        if recoveryKey() != bytes, let url = try? recoveryKeyURL() {
+            try? bytes.write(to: url, options: [.atomic, .completeFileProtection])
+        }
+        let stored = keychainKey()
+        if stored.bytes == bytes { return }
+        if stored.code == errSecItemNotFound {
+            var add = keychainQuery
+            add[kSecValueData as String] = bytes
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            SecItemAdd(add as CFDictionary, nil)
+        } else {
+            SecItemUpdate(keychainQuery as CFDictionary, [kSecValueData as String: bytes] as CFDictionary)
+        }
+    }
+
+    private func key(create: Bool) throws -> SymmetricKey {
+        // Never overwrite a stored key here: a key is only copied over after it has opened the history.
+        if let bytes = recoveryKey() ?? keychainKey().bytes {
             return SymmetricKey(data: bytes)
         }
+        let code = keychainKey().code
 
         guard code == errSecItemNotFound, create else {
             throw AppFailure(message: "Ключ хранилища недоступен. Код: \(code).")
@@ -70,8 +106,16 @@ struct Vault {
         let file = try fileURL()
         guard FileManager.default.fileExists(atPath: file.path) else { return SavedHistory() }
         let box = try AES.GCM.SealedBox(combined: Data(contentsOf: file))
-        let decoded = try AES.GCM.open(box, using: key(create: false))
-        return try JSONDecoder().decode(SavedHistory.self, from: decoded)
+        let candidates = candidateKeys()
+        guard !candidates.isEmpty else {
+            throw AppFailure(message: "Ключ хранилища недоступен. Код: \(keychainKey().code). Существующая локальная история сохранена и не будет перезаписана.")
+        }
+        for bytes in candidates {
+            guard let decoded = try? AES.GCM.open(box, using: SymmetricKey(data: bytes)) else { continue }
+            remember(bytes)
+            return try JSONDecoder().decode(SavedHistory.self, from: decoded)
+        }
+        throw AppFailure(message: "Ни один сохранённый ключ не подходит к локальной истории (проверено ключей: \(candidates.count)). История сохранена и не будет перезаписана. Обычно так бывает после установки через AltStore под другим Apple ID: установите приложение под прежним Apple ID, и ключ вернётся. Не сбрасывайте хранилище, если история нужна.")
     }
 
 
