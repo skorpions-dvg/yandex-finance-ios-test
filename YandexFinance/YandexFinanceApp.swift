@@ -20,102 +20,160 @@ struct YandexFinanceApp: App {
 @MainActor
 struct ContentView: View {
     @ObservedObject var browser: BankBrowser
-    @State private var confirmStorageReset = false
     var body: some View {
-        TabView(selection: $browser.selectedTab) {
-            VStack(spacing: 8) {
+        ZStack(alignment: .top) {
+            // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
+            BankWebView(browser: browser)
+                .padding(.top, browser.bankPageVisible ? 52 : 0)
+                .allowsHitTesting(browser.bankPageVisible)
+                .accessibilityHidden(!browser.bankPageVisible)
+            TabView(selection: $browser.selectedTab) {
+                NavigationStack {
+                    List {
+                        if browser.busy {
+                            HStack { ProgressView(); Text("Обновление операций…").font(.footnote) }
+                        }
+                        ForEach(browser.history.operations, id: \.identity) { operation in
+                            NavigationLink {
+                                Form {
+                                    LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
+                                    if let components = operation.components {
+                                        Section("Составляющие") {
+                                            ForEach(Array(components.enumerated()), id: \.offset) { _, component in
+                                                VStack(alignment: .leading) {
+                                                    HStack {
+                                                        Text(component.amountKopecks < 0 ? "Списание" : "Поступление")
+                                                        Spacer()
+                                                        Text(component.formattedAmount)
+                                                    }
+                                                    Text(component.displayDate).font(.caption)
+                                                }
+                                            }
+                                            Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
+                                        }
+                                    }
+                                    LabeledContent("Категория", value: operation.category)
+                                    LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
+                                    if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
+                                        LabeledContent("Счета", value: route)
+                                    }
+                                    Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)
+                                    LabeledContent("Статус", value: operation.status)
+                                    LabeledContent("Дата UTC", value: operation.occurredAt)
+                                    LabeledContent("Точность", value: operation.timePrecision == "source_timestamp" ? "Время банка" : "До минуты")
+                                    if let mcc = operation.mcc { LabeledContent("MCC", value: mcc) }
+                                    if let purpose = operation.purpose { LabeledContent("Назначение", value: purpose) }
+                                    if let method = operation.paymentMethod { LabeledContent("Способ оплаты", value: method) }
+                                }.navigationTitle(operation.description)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack { Text(operation.description); Spacer(); Text(operation.formattedAmount) }
+                                    if let components = operation.components {
+                                        Text("Сводная карточка: \(components.count) составляющих").font(.caption)
+                                    }
+                                    Text(operation.category + " · " + operation.status).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }.navigationTitle("Операции")
+                }.tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
+                FinanceDashboardView(browser: browser)
+                    .tabItem { Label("Отчёты", systemImage: "chart.pie") }.tag(2)
+                SettingsView(browser: browser)
+                    .tabItem { Label("Настройки", systemImage: "gearshape") }.tag(3)
+            }
+            .opacity(browser.bankPageVisible ? 0 : 1)
+            .allowsHitTesting(!browser.bankPageVisible)
+            if browser.bankPageVisible {
                 HStack {
+                    Button("Готово") { browser.bankPageVisible = false }.fontWeight(.semibold)
+                    Spacer()
                     Text(browser.host).font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("История") { browser.openHistory() }.disabled(browser.busy)
-                }.padding(.horizontal)
+                }
+                .padding(.horizontal)
+                .frame(height: 52)
+                .background(.bar)
+            }
+        }
+    }
+}
+
+/// Bank connection, sync, statement import and storage, moved here from the former bank tab.
+@MainActor
+struct SettingsView: View {
+    @ObservedObject var browser: BankBrowser
+    @State private var confirmStorageReset = false
+    var body: some View {
+        NavigationStack {
+            List {
                 if let storageError = browser.storageError {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Хранилище недоступно").font(.headline)
-                        Text(storageError).font(.caption).foregroundStyle(.secondary)
+                    Section("Хранилище недоступно") {
+                        Text(storageError).font(.footnote)
                         Button("Повторить открытие") { browser.retryOpenStorage() }
                             .disabled(browser.busy)
                         if browser.storageRetryFailed {
+                            Text("Повторная попытка не помогла. Сброс удалит только локальную историю и ключ шифрования. После сброса сначала импортируйте PDF-выписку для архива до 01.10.2026, затем обновите новые операции.")
+                                .font(.caption).foregroundStyle(.secondary)
                             Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
                                 .disabled(browser.busy)
                         }
                     }
-                    .padding(.horizontal)
                 }
-                BankWebView(browser: browser)
-                if !browser.message.isEmpty {
-                    Text(browser.message).font(.footnote).padding(.horizontal).accessibilityIdentifier("syncStatus")
-                }
-                if !browser.autoUpdate {
-                    Text("Автообновление выключено. Новые операции не будут проверяться при открытии, пока вы снова не включите его во вкладке «Операции».")
-                        .font(.caption).foregroundStyle(.orange).padding(.horizontal)
-                }
-                if browser.busy {
-                    HStack { ProgressView(); Button("Остановить") { browser.cancel() } }.padding(.bottom, 8)
-                } else {
-                    VStack(spacing: 8) {
-                        HStack {
-                            Button("Прочитать карточку") { browser.read(mode: "card", lookbackDays: nil) }.disabled(!browser.storageAvailable)
-                            Button("Обновить новые операции") { browser.read(mode: "history", lookbackDays: 30) }.buttonStyle(.borderedProminent).disabled(!browser.storageAvailable)
-                        }
+                Section {
+                    Button("Страница банка") { browser.bankPageVisible = true }
+                    Text("Откройте, чтобы войти в банк или посмотреть, что происходит при проверке. Обычно страница скрыта: проверка идёт без неё.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } header: { Text("Банк") }
+                Section {
+                    if browser.busy {
+                        HStack { ProgressView(); Text("Обновление операций…"); Spacer(); Button("Остановить") { browser.cancel() } }
+                    } else {
+                        Button("Обновить новые операции") { browser.read(mode: "history", lookbackDays: 30) }
+                            .disabled(!browser.storageAvailable)
+                        Button("Прочитать открытую карточку") { browser.read(mode: "card", lookbackDays: nil) }
+                            .disabled(!browser.storageAvailable)
                         if browser.canResume {
                             Button("Продолжить загрузку истории") { browser.continueInitialHistory() }.disabled(!browser.storageAvailable)
                         }
                         Button("Импортировать выписку") { browser.syncSixMonthsHistory() }
-                            .font(.footnote)
                             .disabled(!browser.storageAvailable)
-                    }.font(.footnote).padding(.bottom, 8)
-                }
-            }.tabItem { Label("Банк", systemImage: "building.columns") }.tag(0)
-            NavigationStack {
-                List {
-                    if let storageError = browser.storageError {
-                        Section("Хранилище недоступно") {
-                            Text(storageError).font(.footnote)
-                            Button("Повторить открытие") { browser.retryOpenStorage() }
-                                .disabled(browser.busy)
-                            if browser.storageRetryFailed {
-                                Text("Повторная попытка не помогла. Сброс удалит только локальную историю и ключ шифрования. После сброса сначала импортируйте PDF-выписку для архива до 01.10.2026, затем обновите новые операции.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
-                                    .disabled(browser.busy)
-                            }
-                        }
                     }
-                    Section {
-                        Text("Сохранено операций: \(browser.history.operations.count)")
-                        if let imported = browser.history.statementImportedAt {
-                            Text("Архив из выписки: до 30.09.2026")
-                            Text("Импортировано из выписки: \(browser.history.statementOperationCount ?? 0) операций · \(imported.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            Text("Архив до 01.10.2026: выписка ещё не импортирована")
-                                .font(.caption).foregroundStyle(.orange)
-                        }
-                        if let date = browser.history.lastSync {
-                            Text("Последнее сохранение: \(date.formatted(date: .abbreviated, time: .shortened))")
-                        }
-                        Text(browser.bootstrapComplete ? "Архив и текущая история подготовлены" : "Архив до 01.10.2026 ещё не импортирован")
-                        Text("Не разобрано: \(browser.history.unresolvedIssues?.count ?? 0)")
-                        if let date = browser.history.lastCompletedSync {
-                            Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
-                        }
-                        if browser.stalePendingCount > 0 {
-                            Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(browser.stalePendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
-                                .font(.caption).foregroundStyle(.orange)
-                        }
-                        Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
-                        if !browser.autoUpdate {
-                            Text("Автообновление выключено. После сброса хранилища это делается специально; включите его снова после ручной синхронизации, когда будете готовы.")
-                                .font(.caption).foregroundStyle(.orange)
-                        }
-                        Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        if !browser.message.isEmpty { Text(browser.message).font(.footnote) }
-                        if browser.busy { ProgressView("Обновление операций…") }
-                        Text("Итоги, возвраты и категории считаются на вкладке «Финансы». Здесь полный список операций.")
-                            .font(.footnote).foregroundStyle(.secondary)
+                    if !browser.message.isEmpty {
+                        Text(browser.message).font(.footnote).accessibilityIdentifier("syncStatus")
                     }
+                    Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
+                    if !browser.autoUpdate {
+                        Text("Автообновление выключено. Новые операции не будут проверяться при открытии приложения. После сброса хранилища это делается специально; включите его после ручной синхронизации.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                } header: { Text("Обновление") }
+                Section {
+                    Text("Сохранено операций: \(browser.history.operations.count)")
+                    if let imported = browser.history.statementImportedAt {
+                        Text("Архив из выписки: до 30.09.2026")
+                        Text("Импортировано из выписки: \(browser.history.statementOperationCount ?? 0) операций · \(imported.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Архив до 01.10.2026: выписка ещё не импортирована")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    if let date = browser.history.lastSync {
+                        Text("Последнее сохранение: \(date.formatted(date: .abbreviated, time: .shortened))")
+                    }
+                    Text(browser.bootstrapComplete ? "Архив и текущая история подготовлены" : "Архив до 01.10.2026 ещё не импортирован")
+                    Text("Не разобрано: \(browser.history.unresolvedIssues?.count ?? 0)")
+                    if let date = browser.history.lastCompletedSync {
+                        Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
+                    }
+                    if browser.stalePendingCount > 0 {
+                        Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(browser.stalePendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } header: { Text("Журнал проверок") }
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
                             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -134,58 +192,14 @@ struct ContentView: View {
                                     Button(issue.operationURL == nil ? "Найти и перечитать" : "Перечитать эту операцию") { browser.retry(issue) }
                                         .disabled(browser.busy)
                                     if issue.operationURL == nil {
-                                        Text("У старой записи нет ссылки: поиск пройдёт только по сохранённому месяцу. Откройте вкладку «Банк» → «История» перед поиском.").font(.caption).foregroundStyle(.secondary)
+                                        Text("У старой записи нет ссылки: поиск пройдёт только по сохранённому месяцу. Откройте «Страница банка» → «История» перед поиском.").font(.caption).foregroundStyle(.secondary)
                                     }
                                 }.padding(.vertical, 4)
                             }
                         }
                     }
-                    ForEach(browser.history.operations, id: \.identity) { operation in
-                        NavigationLink {
-                            Form {
-                                LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
-                                if let components = operation.components {
-                                    Section("Составляющие") {
-                                        ForEach(Array(components.enumerated()), id: \.offset) { _, component in
-                                            VStack(alignment: .leading) {
-                                                HStack {
-                                                    Text(component.amountKopecks < 0 ? "Списание" : "Поступление")
-                                                    Spacer()
-                                                    Text(component.formattedAmount)
-                                                }
-                                                Text(component.displayDate).font(.caption)
-                                            }
-                                        }
-                                        Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
-                                    }
-                                }
-                                LabeledContent("Категория", value: operation.category)
-                                LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
-                                if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
-                                    LabeledContent("Счета", value: route)
-                                }
-                                Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)
-                                LabeledContent("Статус", value: operation.status)
-                                LabeledContent("Дата UTC", value: operation.occurredAt)
-                                LabeledContent("Точность", value: operation.timePrecision == "source_timestamp" ? "Время банка" : "До минуты")
-                                if let mcc = operation.mcc { LabeledContent("MCC", value: mcc) }
-                                if let purpose = operation.purpose { LabeledContent("Назначение", value: purpose) }
-                                if let method = operation.paymentMethod { LabeledContent("Способ оплаты", value: method) }
-                            }.navigationTitle(operation.description)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack { Text(operation.description); Spacer(); Text(operation.formattedAmount) }
-                                if let components = operation.components {
-                                    Text("Сводная карточка: \(components.count) составляющих").font(.caption)
-                                }
-                                Text(operation.category + " · " + operation.status).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }.navigationTitle("Мои операции")
-            }.tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
-            FinanceDashboardView(browser: browser)
-                .tabItem { Label("Финансы", systemImage: "chart.pie") }.tag(2)
+            }
+            .navigationTitle("Настройки")
         }
         .confirmationDialog("Сбросить локальное хранилище?", isPresented: $confirmStorageReset, titleVisibility: .visible) {
             Button("Сбросить и удалить локальную историю", role: .destructive) { browser.resetLocalStorage() }
@@ -512,7 +526,7 @@ struct FinanceDashboardView: View {
                     Text("Старое завершённое списание без современного типа считается расходом. Непонятное положительное поступление автоматически доходом не назначается.")
                 }.font(.footnote).foregroundStyle(.secondary)
             }
-            .navigationTitle("Финансы")
+            .navigationTitle("Отчёты")
         }
     }
 

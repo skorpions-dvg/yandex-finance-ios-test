@@ -589,7 +589,10 @@ assert.throws(() => parse(groupURL, groupCard.replace('17 марта, 12:34\n+31
 assert.throws(() => parse(groupURL, groupCard + '\n' + purchase, ''), /несколько карточек/);
 assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Несколько разделов/);
 assert.match(appSwift, /TabView\(selection: \$browser.selectedTab\)/);
-assert.match(swift, /selectedTab = 0/);
+assert.match(swift, /bankPageVisible = true/, 'card retry must bring the hidden bank page to the front');
+assert.match(appSwift, /ZStack\(alignment: \.top\) \{[\s\S]{0,200}BankWebView\(browser: browser\)/, 'bank page must stay in the window behind the tabs');
+assert.ok(!/Label\("Банк"/.test(appSwift), 'the bank page is no longer a tab');
+assert.match(appSwift, /Label\("Настройки", systemImage: "gearshape"\)/);
 assert.match(appSwift, /Месяц сканера \(не дата платежа\)/);
 (async () => {
   const card = {innerText:groupCard, getClientRects:()=>[{}], closest:()=>null};
@@ -610,7 +613,7 @@ const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/Fin
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
 // Build numbers and README consistency are checked together above.
-assert.match(appSwift, /Label\("Финансы", systemImage: "chart\.pie"\)/);
+assert.match(appSwift, /Label\("Отчёты", systemImage: "chart\.pie"\)/);
 assert.match(appSwift, /Button\(action: previousMonth\)[\s\S]{0,400}Button\(action: nextMonth\)[\s\S]{0,300}\}\s*(?:\/\/[^\n]*\s*)?\.buttonStyle\(\.borderless\)/,
   'month switcher buttons share a List row and must be borderless, otherwise one tap fires both');
 assert.match(appSwift, /Банковские списания/);

@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 @MainActor
 final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, UIDocumentPickerDelegate {
     let webView: WKWebView
-    @Published var selectedTab = 2
+    @Published var selectedTab = 1
+    /// The bank page always stays in the window (scanning needs it); this only brings it to the front.
+    @Published var bankPageVisible = false
     @Published var busy = false
     @Published var message = ""
     @Published var host = "bank.yandex.ru"
@@ -208,7 +210,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
     func retry(_ issue: ImportIssue) {
         guard !busy, readable else { return }
-        selectedTab = 0
+        bankPageVisible = true
         automaticTask?.cancel(); automaticTask = nil
         lastAttempt = Date()
         if let raw = issue.operationURL, let url = URL(string: raw),
@@ -229,7 +231,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 self.message = "Карточка не открылась вовремя. Ошибка остаётся в списке; можно повторить."
             }
         } else if issue.monthOrdinal != nil && issue.identity != nil {
-            if webView.url?.path != "/my/transactions-history" { message = "Откройте «Банк» → «История», затем повторите поиск пропущенной операции."; return }
+            if webView.url?.path != "/my/transactions-history" { message = "Откройте «Настройки» → «Страница банка» → «История», затем повторите поиск пропущенной операции."; return }
             read(mode: "retry", lookbackDays: nil, retryIssue: issue)
         } else {
             message = "У старой ошибки нет ссылки или идентификатора. Откройте нужную карточку вручную; автоматически сопоставить её пока нельзя."
