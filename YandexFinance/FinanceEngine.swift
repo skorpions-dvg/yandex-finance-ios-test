@@ -552,29 +552,43 @@ enum FinancialEngine {
         let spentKopecks: Int64
         /// Spending at the same daily pace for the whole month.
         let projectedKopecks: Int64
-        /// Net expense of the whole previous month.
-        let previousMonthKopecks: Int64
         /// Income from the first day of the month through today.
         let incomeKopecks: Int64
+        /// Income of the whole previous month.
+        let previousMonthIncomeKopecks: Int64
+        /// Average income of the last three full months that have any saved operations.
+        let averageIncomeKopecks: Int64
         let elapsedDays: Int
         let daysInMonth: Int
+
+        /// What the month is expected to bring: the usual income, or more if it has already come in.
+        var expectedIncomeKopecks: Int64 { max(incomeKopecks, averageIncomeKopecks) }
+        /// Expected income minus projected spending; negative means the money is not expected to last.
+        var projectedBalanceKopecks: Int64 { expectedIncomeKopecks - projectedKopecks }
     }
 
-    /// Whether this month's spending pace fits: today's month-to-date numbers extrapolated linearly
-    /// to the end of the month, next to the previous month's total. Uses `report`, so the usual rules apply.
+    /// Whether this month's spending pace fits the expected income: month-to-date spending extrapolated
+    /// linearly to the end of the month, against the usual income. Uses `report`, so the usual rules apply.
     static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> MonthForecast {
         // The engine is also compiled on its own (statement import tests), so month bounds are computed here.
         let monthStartDate = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
         let endOfToday = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
-        let previousMonth = DateInterval(start: calendar.date(byAdding: .month, value: -1, to: monthStartDate)!, end: monthStartDate)
         let elapsed = calendar.dateComponents([.day], from: monthStartDate, to: endOfToday).day ?? 1
         let daysInMonth = calendar.range(of: .day, in: .month, for: monthStartDate)?.count ?? 30
         let soFar = report(operations, in: DateInterval(start: monthStartDate, end: endOfToday))
         let spent = soFar.netExpenseKopecks
+        // Months before the saved history starts have no operations at all and would drag the average down.
+        let fullMonths = (1...3).map { back -> FinanceReport in
+            let start = calendar.date(byAdding: .month, value: -back, to: monthStartDate)!
+            return report(operations, in: DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!))
+        }
+        let recorded = fullMonths.filter { $0.operationCount > 0 }
+        let average = recorded.isEmpty ? 0 : recorded.reduce(0) { $0 + $1.incomeKopecks } / Int64(recorded.count)
         return MonthForecast(spentKopecks: spent,
                              projectedKopecks: elapsed > 0 ? spent * Int64(daysInMonth) / Int64(elapsed) : spent,
-                             previousMonthKopecks: report(operations, in: previousMonth).netExpenseKopecks,
                              incomeKopecks: soFar.incomeKopecks,
+                             previousMonthIncomeKopecks: fullMonths[0].incomeKopecks,
+                             averageIncomeKopecks: average,
                              elapsedDays: elapsed,
                              daysInMonth: daysInMonth)
     }

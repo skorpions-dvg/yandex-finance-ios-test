@@ -112,6 +112,9 @@ struct OperationsHomeView: View {
                                       icon: "calendar",
                                       selected: periodIsCustom,
                                       action: { showCustomDates = true })
+                        capsuleButton(title: "Сегодня",
+                                      selected: period == .lastDays(1),
+                                      action: { period = .lastDays(1) })
                         capsuleButton(title: "7 дней",
                                       selected: period == .lastDays(7),
                                       action: { period = .lastDays(7) })
@@ -200,18 +203,23 @@ struct OperationsHomeView: View {
             let f = FinancialEngine.monthForecast(inputs)
             LabeledContent("Потрачено за \(f.elapsedDays) из \(f.daysInMonth) дн.", value: rubles(f.spentKopecks))
             LabeledContent("Если тратить так же", value: "≈ " + rubles(f.projectedKopecks))
-            if f.previousMonthKopecks > 0 {
-                if f.projectedKopecks <= f.previousMonthKopecks {
-                    Label("Укладываетесь: в прошлом месяце \(rubles(f.previousMonthKopecks))",
-                          systemImage: "checkmark.circle")
-                        .foregroundStyle(.green)
-                        .font(.subheadline)
-                } else {
-                    Label("Больше прошлого месяца на \(rubles(f.projectedKopecks - f.previousMonthKopecks))",
-                          systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                        .font(.subheadline)
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                LabeledContent("Ожидаемый доход", value: "≈ " + rubles(f.expectedIncomeKopecks))
+                Text("В этом месяце пока \(rubles(f.incomeKopecks)) · в прошлом \(rubles(f.previousMonthIncomeKopecks)) · в среднем за 3 мес. \(rubles(f.averageIncomeKopecks))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if f.expectedIncomeKopecks == 0 {
+                Label("Доходов пока нет — сравнить не с чем", systemImage: "questionmark.circle")
+                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+            } else if f.projectedBalanceKopecks >= 0 {
+                Label("Укладываетесь: останется ≈ \(rubles(f.projectedBalanceKopecks))", systemImage: "checkmark.circle")
+                    .foregroundStyle(.green)
+                    .font(.subheadline)
+            } else {
+                Label("Не хватит ≈ \(rubles(-f.projectedBalanceKopecks)), если тратить так же", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.subheadline)
             }
         }
     }

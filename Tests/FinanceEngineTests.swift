@@ -208,6 +208,9 @@ struct FinanceEngineTests {
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let now = calendar.date(from: DateComponents(year: 2024, month: 2, day: 6, hour: 10))!
         let operations = [
+            op(30_000, kind: "income", date: "2023-11-10T10:00:00Z"),
+            op(-50, kind: "expense", category: "Такси", date: "2023-12-12T10:00:00Z"),
+            op(60_000, kind: "income", date: "2024-01-10T10:00:00Z"),
             op(-10_000, kind: "expense", category: "Такси", date: "2024-01-15T10:00:00Z"),
             op(-600, kind: "expense", category: "Такси", date: "2024-02-02T10:00:00Z"),
             op(300, kind: "refund", category: "Возврат", date: "2024-02-03T10:00:00Z"),
@@ -216,11 +219,30 @@ struct FinanceEngineTests {
             op(-999, kind: "expense", category: "Такси", date: "2024-02-07T09:00:00Z"),
         ]
         let forecast = FinancialEngine.monthForecast(operations, now: now, calendar: calendar)
-        require(forecast == FinancialEngine.MonthForecast(spentKopecks: 600, projectedKopecks: 2_900, previousMonthKopecks: 10_000,
-                                                          incomeKopecks: 5_000, elapsedDays: 6, daysInMonth: 29),
-                "forecast: 600 spent in 6 of 29 days after the refund, paced to 2 900; tomorrow is not counted")
+        require(forecast == FinancialEngine.MonthForecast(spentKopecks: 600, projectedKopecks: 2_900, incomeKopecks: 5_000,
+                                                          previousMonthIncomeKopecks: 60_000, averageIncomeKopecks: 30_000,
+                                                          elapsedDays: 6, daysInMonth: 29),
+                "600 spent in 6 of 29 days after the refund, paced to 2 900; income averaged over Nov, Dec (no income) and Jan")
+        require(forecast.expectedIncomeKopecks == 30_000 && forecast.projectedBalanceKopecks == 27_100,
+                "expected income is the usual income while this month's income is lower")
+
+        // The user's case: last month brought much more than this month and the spending pace stays high.
+        let lowerIncome = [
+            op(200_000, kind: "income", date: "2024-01-05T10:00:00Z"),
+            op(100_000, kind: "income", date: "2024-02-05T10:00:00Z"),
+            op(-60_000, kind: "expense", category: "Электроника", date: "2024-02-06T08:00:00Z"),
+        ]
+        let tight = FinancialEngine.monthForecast(lowerIncome, now: now, calendar: calendar)
+        require(tight.averageIncomeKopecks == 200_000, "months without any saved operations are not averaged in")
+        require(tight.projectedKopecks == 290_000 && tight.projectedBalanceKopecks == -90_000,
+                "a pace of 60 000 in 6 days does not fit the usual 200 000 income")
+
+        let received = FinancialEngine.monthForecast([op(250_000, kind: "income", date: "2024-02-01T10:00:00Z")], now: now, calendar: calendar)
+        require(received.expectedIncomeKopecks == 250_000, "income already received this month counts when it is above the average")
+
         let firstDay = FinancialEngine.monthForecast([], now: calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!, calendar: calendar)
-        require(firstDay.elapsedDays == 1 && firstDay.projectedKopecks == 0 && firstDay.daysInMonth == 31, "first day of an empty month")
+        require(firstDay.elapsedDays == 1 && firstDay.projectedKopecks == 0 && firstDay.daysInMonth == 31 && firstDay.expectedIncomeKopecks == 0,
+                "first day of an empty month")
     }
 
     static func main() {
