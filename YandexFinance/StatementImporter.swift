@@ -292,7 +292,7 @@ enum StatementImporter {
             guard seenBounds.insert(key).inserted else { continue }
             // The glyph's center is authoritative: page.string/NSRange may count
             // inserted line breaks differently from characterBounds in PDFKit.
-            let center = rect.insetBy(dx: rect.width * 0.45, dy: rect.height * 0.45)
+            let center = rect.insetBy(dx: rect.width * 0.45, dy: -1)
             guard let character = page.selection(for: center)?.string, !character.isEmpty else { continue }
             glyphs.append(StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height))
         }
