@@ -5,12 +5,13 @@ struct SearchOperationsView: View {
     @ObservedObject var browser: BankBrowser
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var editedOperation: ManualOperation?
 
     /// Matching operations, newest first.
     private var results: [BankOperation] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }
-        return browser.history.operations
+        return browser.history.allOperations
             .filter { FinancialEngine.operationMatches($0.financialInput, query: text) }
             .map { ($0, BankDateParser.parse($0.occurredAt) ?? .distantPast) }
             .sorted { $0.1 > $1.1 }
@@ -29,14 +30,26 @@ struct SearchOperationsView: View {
                     let found = results
                     Section("Найдено: \(found.count)") {
                         ForEach(found.prefix(300)) { operation in
-                            NavigationLink {
-                                OperationDetailView(operation: operation)
-                            } label: {
-                                OperationRow(operation: operation, showsDate: true)
+                            if operation.isManual {
+                                Button {
+                                    editedOperation = browser.history.manualOperations?.first { $0.id == operation.manualID }
+                                } label: {
+                                    OperationRow(operation: operation, showsDate: true).foregroundStyle(.primary)
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                NavigationLink {
+                                    OperationDetailView(operation: operation)
+                                } label: {
+                                    OperationRow(operation: operation, showsDate: true)
+                                }
                             }
                         }
                     }
                 }
+            }
+            .sheet(item: $editedOperation) { operation in
+                ManualOperationFormView(browser: browser, operation: operation)
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Поиск")
             .navigationTitle("Поиск операций")

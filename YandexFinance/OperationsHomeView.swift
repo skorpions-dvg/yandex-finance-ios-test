@@ -11,6 +11,7 @@ struct OperationsHomeView: View {
     @State private var showAccounts = false
     @State private var showSearch = false
     @State private var showAdd = false
+    @State private var editedOperation: ManualOperation?
     @State private var showCustomDates = false
     @State private var customFrom = Date()
     @State private var customThrough = Date()
@@ -18,7 +19,7 @@ struct OperationsHomeView: View {
     
     // MARK: - Computed values
     private var inputs: [FinancialOperationInput] {
-        browser.history.operations.map(\.financialInput)
+        browser.history.allOperations.map(\.financialInput)
     }
     private var interval: DateInterval {
         historyInterval(period)
@@ -30,7 +31,7 @@ struct OperationsHomeView: View {
         historyExpanded ?? historyAlwaysExpanded
     }
     private var historyCount: Int {
-        browser.history.operations.reduce(0) { sum, op in
+        browser.history.allOperations.reduce(0) { sum, op in
             if let date = BankDateParser.parse(op.occurredAt), interval.contains(date) {
                 return sum + 1
             }
@@ -100,8 +101,10 @@ struct OperationsHomeView: View {
                 SearchOperationsView(browser: browser)
             }
             .sheet(isPresented: $showAdd) {
-                ComingSoonSheet(title: "Добавить",
-                                text: "Добавление доходов и расходов вручную появится в следующей версии.")
+                ManualOperationFormView(browser: browser)
+            }
+            .sheet(item: $editedOperation) { operation in
+                ManualOperationFormView(browser: browser, operation: operation)
             }
             .sheet(isPresented: $showCustomDates) {
                 CustomDatesSheet(period: $period,
@@ -300,7 +303,7 @@ struct OperationsHomeView: View {
     // MARK: - Day Sections
     /// Operations of the period grouped by calendar day, newest day and newest operation first.
     private var dayGroups: [(day: Date, operations: [BankOperation])] {
-        let dated = browser.history.operations.compactMap { op -> (BankOperation, Date)? in
+        let dated = browser.history.allOperations.compactMap { op -> (BankOperation, Date)? in
             guard let date = BankDateParser.parse(op.occurredAt), interval.contains(date) else { return nil }
             return (op, date)
         }
@@ -321,10 +324,19 @@ struct OperationsHomeView: View {
         ForEach(dayGroups, id: \.day) { group in
             Section {
                 ForEach(group.operations) { op in
-                    NavigationLink {
-                        OperationDetailView(operation: op)
-                    } label: {
-                        OperationRow(operation: op)
+                    if op.isManual {
+                        Button {
+                            editedOperation = browser.history.manualOperations?.first { $0.id == op.manualID }
+                        } label: {
+                            OperationRow(operation: op).foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        NavigationLink {
+                            OperationDetailView(operation: op)
+                        } label: {
+                            OperationRow(operation: op)
+                        }
                     }
                 }
             } header: {
@@ -340,8 +352,8 @@ struct OperationsHomeView: View {
     /// Sum of the accounts that show their balance, the same way the accounts screen counts them.
     private func currentBalance(_ accounts: [Account]) -> Int64 {
         accounts.filter(\.showsBalance).reduce(0) { total, account in
-            total + FinancialEngine.accountBalance(startKopecks: account.startBalanceKopecks, since: account.startDate,
-                                                   tracksBankCard: account.tracksBankCard, operations: inputs)
+            total + account.balance(bankOperations: browser.history.operations.map(\.financialInput),
+                                    manual: browser.history.manualOperations ?? [])
         }
     }
 
@@ -387,27 +399,5 @@ private struct CustomDatesSheet: View {
             }
         }
         .presentationDetents([.medium])
-    }
-}
-
-// MARK: - Coming Soon Sheet
-private struct ComingSoonSheet: View {
-    let title: String
-    let text: String
-    @Environment(\.dismiss) private var dismiss
-    
-    var body: some View {
-        NavigationStack {
-            ContentUnavailableView(title,
-                                   systemImage: "hammer",
-                                   description: Text(text))
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Закрыть") {
-                            dismiss()
-                        }
-                    }
-                }
-        }
     }
 }

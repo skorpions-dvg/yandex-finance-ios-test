@@ -34,7 +34,8 @@ struct OperationRow: View {
             parts.append(date.formatted(.dateTime.day().month().year()))
         }
         parts.append(operation.category)
-        if operation.status != "Выполнено" { parts.append(operation.status) }
+        if operation.isManual { parts.append("Вручную") }
+        else if operation.status != "Выполнено" { parts.append(operation.status) }
         return parts.joined(separator: " · ")
     }
 

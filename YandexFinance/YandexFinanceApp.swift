@@ -321,7 +321,7 @@ struct FinanceCategoryOperationsView: View {
     let selection: FinanceOperationSelection
 
     private var operations: [BankOperation] {
-        browser.history.operations
+        browser.history.allOperations
             .filter { operation in
                 guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { return false }
                 return selection.matches(operation)
@@ -459,7 +459,7 @@ struct FinanceDashboardView: View {
         // Compute the interval based on the selected month.
         let monthStart = selectedMonthStart
         let interval = DateInterval(start: monthStart, end: Calendar.current.date(byAdding: .month, value: 1, to: monthStart)!)
-        let inputs = browser.history.operations.map(\.financialInput)
+        let inputs = browser.history.allOperations.map(\.financialInput)
         let report = FinancialEngine.report(inputs, in: interval)
         let save = FinancialEngine.saveAccountSummary(inputs, in: interval)
         let periods = monthComparisonPeriods(selectedStart: monthStart)

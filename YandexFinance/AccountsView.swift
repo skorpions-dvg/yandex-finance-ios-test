@@ -20,9 +20,8 @@ private func accountMoney(_ kopecks: Int64) -> String {
 }
 
 private func accountBalance(_ account: Account, history: SavedHistory) -> Int64 {
-    FinancialEngine.accountBalance(startKopecks: account.startBalanceKopecks, since: account.startDate,
-                                   tracksBankCard: account.tracksBankCard,
-                                   operations: history.operations.map(\.financialInput))
+    account.balance(bankOperations: history.operations.map(\.financialInput),
+                    manual: history.manualOperations ?? [])
 }
 
 struct AccountsView: View {
