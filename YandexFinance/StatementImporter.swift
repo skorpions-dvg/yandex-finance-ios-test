@@ -283,18 +283,26 @@ enum StatementImporter {
 
     static func cells(from page: PDFPage) -> [StatementCell] {
         let bounds = page.bounds(for: .mediaBox)
-        var glyphs: [StatementCell] = []
+        var positions: [StatementCell] = []
         var seenBounds = Set<String>()
         for index in 0..<page.numberOfCharacters {
             let rect = page.characterBounds(at: index)
             guard rect.width > 0, rect.height > 0 else { continue }
             let key = "\(rect.minX)|\(rect.minY)|\(rect.width)|\(rect.height)"
             guard seenBounds.insert(key).inserted else { continue }
-            // The glyph's center is authoritative: page.string/NSRange may count
-            // inserted line breaks differently from characterBounds in PDFKit.
-            let center = rect.insetBy(dx: rect.width * 0.45, dy: -1)
-            guard let character = page.selection(for: center)?.string, !character.isEmpty else { continue }
-            glyphs.append(StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height))
+            positions.append(StatementCell(text: "position", x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height))
+        }
+        var glyphs: [StatementCell] = []
+        for line in physicalLines(positions) {
+            let top = line.map(\.y).min()!, bottom = line.map { $0.y + $0.height }.max()!
+            for position in line {
+                // Select through the whole physical line height. A dot's tiny ink
+                // bounds do not intersect PDFKit's text selection baseline by themselves.
+                let area = CGRect(x: position.x + position.width * 0.45, y: bounds.maxY - bottom - 0.5,
+                                  width: position.width * 0.1, height: bottom - top + 1)
+                guard let character = page.selection(for: area)?.string, !character.isEmpty else { continue }
+                glyphs.append(StatementCell(text: character, x: position.x, y: top, width: position.width, height: bottom - top))
+            }
         }
         var words: [StatementCell] = []
         for line in physicalLines(glyphs) {
