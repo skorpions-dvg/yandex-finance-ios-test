@@ -55,63 +55,35 @@ struct AccountsView: View {
         NavigationStack {
             List {
                 if editMode.isEditing {
-                    Section("Порядок групп") {
-                        ForEach(groups) { group in
-                            Label("\(group.name) · \(accounts.filter { $0.groupID == group.id }.count)",
-                                  systemImage: "folder")
-                        }
-                        .onMove { offsets, destination in
-                            persist { history in
-                                history.accountGroups?.move(fromOffsets: offsets, toOffset: destination)
-                            }
-                        }
-                        .onDelete { offsets in
-                            guard let index = offsets.first else { return }
-                            deletedGroup = groups[index]
-                            confirmGroupDeletion = true
-                        }
-                    }
+                    editableList
                 } else {
                     HStack {
                         Label("Все счета", systemImage: "wallet.pass")
                         Spacer()
                         Text(total(accounts)).bold().multilineTextAlignment(.trailing)
                     }
-                    .deleteDisabled(true)
-                    .moveDisabled(true)
 
                     if accounts.isEmpty && groups.isEmpty {
                         ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
                                                description: Text("Добавьте наличные, банковскую карту или копилку."))
                         Button("Создать стандартные группы", action: createStandardGroups)
                     }
-                }
-                ForEach(groups) { group in
-                    let rows = accounts.filter { $0.groupID == group.id }
-                    Section {
-                        if editMode.isEditing || !collapsed.contains(group.id) {
-                            ForEach(rows) { account in
+                    ForEach(groups) { group in
+                        Section {
+                            if !collapsed.contains(group.id) {
+                                ForEach(accounts.filter { $0.groupID == group.id }) { account in
+                                    accountRow(account)
+                                }
+                            }
+                        } header: {
+                            groupHeader(group)
+                        }
+                    }
+                    if !ungrouped.isEmpty {
+                        Section("Без группы") {
+                            ForEach(ungrouped) { account in
                                 accountRow(account)
                             }
-                            .onMove { offsets, destination in move(rows, from: offsets, to: destination) }
-                            .onDelete { offsets in
-                                deletedAccounts = Set(offsets.map { rows[$0].id })
-                                confirmAccountDeletion = true
-                            }
-                        }
-                    } header: {
-                        groupHeader(group)
-                    }
-                }
-                if !ungrouped.isEmpty {
-                    Section("Без группы") {
-                        ForEach(ungrouped) { account in
-                            accountRow(account)
-                        }
-                        .onMove { offsets, destination in move(ungrouped, from: offsets, to: destination) }
-                        .onDelete { offsets in
-                            deletedAccounts = Set(offsets.map { ungrouped[$0].id })
-                            confirmAccountDeletion = true
                         }
                     }
                 }
@@ -162,6 +134,61 @@ struct AccountsView: View {
         .alert("Не удалось сохранить", isPresented: $saveError) {
             Button("OK", role: .cancel) { }
         } message: { Text(browser.message) }
+    }
+
+    /// Edit mode: one list where group headers and accounts are dragged in place. A dragged group takes its
+    /// accounts along; an account dropped under another header moves to that group.
+    private var editableList: some View {
+        let items = AccountListItem.flatten(groups: groups, accounts: accounts)
+        let groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        return Section {
+            ForEach(items, id: \.self) { item in
+                switch item {
+                case .group(let id):
+                    if let group = groupsByID[id] {
+                        HStack {
+                            Image(systemName: "folder").foregroundStyle(.secondary)
+                            Text(group.name).font(.headline)
+                            Spacer()
+                            Text(total(accounts.filter { $0.groupID == id })).foregroundStyle(.secondary)
+                        }
+                        .contextMenu { groupActions(group) }
+                    }
+                case .account(let id):
+                    if let account = accountsByID[id] {
+                        accountRow(account).padding(.leading, 16)
+                    }
+                case .ungroupedHeader:
+                    Text("Без группы").font(.headline).foregroundStyle(.secondary)
+                        .moveDisabled(true)
+                        .deleteDisabled(true)
+                }
+            }
+            .onMove { source, destination in
+                let moved = AccountListItem.move(items, from: source, to: destination)
+                let result = AccountListItem.apply(moved, groups: groups, accounts: accounts)
+                persist { history in
+                    history.accountGroups = result.groups
+                    history.accounts = result.accounts
+                }
+            }
+            .onDelete { offsets in
+                guard let index = offsets.first else { return }
+                switch items[index] {
+                case .group(let id):
+                    deletedGroup = groupsByID[id]
+                    confirmGroupDeletion = deletedGroup != nil
+                case .account(let id):
+                    deletedAccounts = [id]
+                    confirmAccountDeletion = true
+                case .ungroupedHeader:
+                    break
+                }
+            }
+        } footer: {
+            Text("Перетащите группу за ручку — её счета переедут вместе с ней. Счёт, опущенный под другую группу, перейдёт в неё.")
+        }
     }
 
     private func total(_ accounts: [Account]) -> String {
@@ -223,20 +250,6 @@ struct AccountsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func move(_ rows: [Account], from offsets: IndexSet, to destination: Int) {
-        var reordered = rows
-        reordered.move(fromOffsets: offsets, toOffset: destination)
-        let ids = Set(rows.map(\.id))
-        persist { history in
-            var accounts = history.accounts ?? []
-            let slots = accounts.indices.filter { ids.contains(accounts[$0].id) }
-            guard slots.count == reordered.count else { return }
-            // Replace only this section's slots, preserving all other accounts' positions.
-            for (slot, account) in zip(slots, reordered) { accounts[slot] = account }
-            history.accounts = accounts
-        }
     }
 
     private func deleteGroup() {

@@ -199,15 +199,19 @@ struct OperationsHomeView: View {
             let accounts = browser.history.accounts ?? []
             if !accounts.isEmpty {
                 Button { showAccounts = true } label: {
-                    HStack {
-                        Label("Текущий остаток", systemImage: "wallet.pass")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Image(systemName: "wallet.pass")
+                            Text("Текущий остаток")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         Text(rubles(currentBalance(accounts)))
-                            .font(.headline)
+                            .font(.title3.weight(.semibold))
                             .foregroundStyle(.primary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

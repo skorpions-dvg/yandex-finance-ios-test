@@ -125,6 +125,91 @@ struct Account: Codable, Equatable, Identifiable {
     static let palette = ["orange", "red", "yellow", "green", "teal", "blue", "indigo", "purple", "pink", "gray"]
 }
 
+/// The accounts screen in edit mode is one flat list: each group header followed by its accounts, then the
+/// accounts without a group. Dragging a header moves the whole group; dragging an account moves it under
+/// whichever group header ends up above it.
+enum AccountListItem: Hashable {
+    case group(UUID)
+    case account(UUID)
+    case ungroupedHeader
+
+    var isHeader: Bool { if case .account = self { return false }; return true }
+
+    static func flatten(groups: [AccountGroup], accounts: [Account]) -> [AccountListItem] {
+        let groupIDs = Set(groups.map(\.id))
+        var items: [AccountListItem] = []
+        for group in groups {
+            items.append(.group(group.id))
+            items += accounts.filter { $0.groupID == group.id }.map { .account($0.id) }
+        }
+        let ungrouped = accounts.filter { $0.groupID.map { !groupIDs.contains($0) } ?? true }
+        if !ungrouped.isEmpty {
+            items.append(.ungroupedHeader)
+            items += ungrouped.map { .account($0.id) }
+        }
+        return items
+    }
+
+    /// The list after a drag from `source` to `destination` (SwiftUI `onMove` offsets).
+    static func move(_ items: [AccountListItem], from source: IndexSet, to destination: Int) -> [AccountListItem] {
+        guard source.count == 1, let index = source.first, items.indices.contains(index) else { return items }
+        switch items[index] {
+        case .ungroupedHeader:
+            return items
+        case .account:
+            // Same semantics as SwiftUI's move(fromOffsets:toOffset:), which is not available without SwiftUI.
+            var moved = items
+            let item = moved.remove(at: index)
+            moved.insert(item, at: min(destination > index ? destination - 1 : destination, moved.count))
+            return moved
+        case .group:
+            let blockEnd = items[(index + 1)...].firstIndex(where: \.isHeader) ?? items.count
+            if destination >= index && destination <= blockEnd { return items }
+            let block = Array(items[index..<blockEnd])
+            var rest = items
+            rest.removeSubrange(index..<blockEnd)
+            let insertion: Int
+            if destination < index {
+                // Moving up: land right before the group whose block contains the drop point.
+                insertion = rest[..<min(destination + 1, rest.count)].lastIndex(where: { if case .group = $0 { return true }; return false }) ?? 0
+                let target = min(destination, rest.count)
+                let landing = target < rest.count && rest[target].isHeader ? target : insertion
+                rest.insert(contentsOf: block, at: landing)
+                return rest
+            }
+            // Moving down: land after the block containing the drop point, never below the ungrouped accounts.
+            let target = destination - block.count
+            let ungroupedStart = rest.firstIndex(of: .ungroupedHeader) ?? rest.count
+            insertion = min(rest[target...].firstIndex(where: \.isHeader) ?? rest.count, ungroupedStart)
+            rest.insert(contentsOf: block, at: insertion)
+            return rest
+        }
+    }
+
+    /// Groups and accounts in the order of `items`; each account belongs to the nearest group header above it.
+    static func apply(_ items: [AccountListItem], groups: [AccountGroup], accounts: [Account]) -> (groups: [AccountGroup], accounts: [Account]) {
+        let groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+        let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        var orderedGroups: [AccountGroup] = []
+        var orderedAccounts: [Account] = []
+        var current: UUID?
+        for item in items {
+            switch item {
+            case .group(let id):
+                current = id
+                if let group = groupsByID[id] { orderedGroups.append(group) }
+            case .ungroupedHeader:
+                current = nil
+            case .account(let id):
+                guard var account = accountsByID[id] else { continue }
+                account.groupID = current
+                orderedAccounts.append(account)
+            }
+        }
+        return (orderedGroups, orderedAccounts)
+    }
+}
+
 /// Plain JSON copy of everything the app keeps, for the user's own backup.
 enum HistoryBackup {
     static let formatVersion = 1

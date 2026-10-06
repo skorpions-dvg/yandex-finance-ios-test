@@ -373,6 +373,31 @@ struct FinanceEngineTests {
                 "an account not linked to the card keeps its entered balance")
     }
 
+    static func testAccountReorder() {
+        let a = AccountGroup(name: "A"), b = AccountGroup(name: "B")
+        func account(_ name: String, _ group: AccountGroup?) -> Account {
+            Account(name: name, icon: "banknote", color: "gray", groupID: group?.id, startBalanceKopecks: 0, startDate: Date(timeIntervalSince1970: 0))
+        }
+        let a1 = account("a1", a), a2 = account("a2", a), b1 = account("b1", b), u1 = account("u1", nil)
+        let groups = [a, b], accounts = [a1, a2, b1, u1]
+        let items = AccountListItem.flatten(groups: groups, accounts: accounts)
+        typealias I = AccountListItem
+        require(items == [I.group(a.id), .account(a1.id), .account(a2.id), .group(b.id), .account(b1.id), .ungroupedHeader, .account(u1.id)],
+                "flat list: each group with its accounts, then the ungrouped ones")
+        func names(_ moved: [AccountListItem]) -> String {
+            let result = AccountListItem.apply(moved, groups: groups, accounts: accounts)
+            return result.groups.map(\.name).joined(separator: ",") + " | " +
+                result.accounts.map { acc in "\(acc.name)@\(result.groups.first { $0.id == acc.groupID }?.name ?? "-")" }.joined(separator: ",")
+        }
+        require(names(AccountListItem.move(items, from: [2], to: 4)) == "A,B | a1@A,a2@B,b1@B,u1@-", "an account dragged under another header changes group")
+        require(names(AccountListItem.move(items, from: [3], to: 0)) == "B,A | b1@B,a1@A,a2@A,u1@-", "a group dragged up takes its accounts along")
+        require(names(AccountListItem.move(items, from: [3], to: 1)) == "B,A | b1@B,a1@A,a2@A,u1@-", "a group dropped inside another group's accounts lands before that group")
+        require(names(AccountListItem.move(items, from: [0], to: 7)) == "B,A | b1@B,a1@A,a2@A,u1@-", "a group dragged to the end stays above the ungrouped accounts")
+        require(names(AccountListItem.move(items, from: [0], to: 2)) == "A,B | a1@A,a2@A,b1@B,u1@-", "a group dropped inside its own block does not move")
+        require(names(AccountListItem.move(items, from: [6], to: 1)) == "A,B | u1@A,a1@A,a2@A,b1@B", "an ungrouped account dragged into a group joins it")
+        require(AccountListItem.move(items, from: [5], to: 0) == items, "the ungrouped header does not move")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -751,6 +776,7 @@ struct FinanceEngineTests {
         testOperationSearch()
         testBackup()
         testAccountBalance()
+        testAccountReorder()
 
         print("Finance engine tests passed")
     }
