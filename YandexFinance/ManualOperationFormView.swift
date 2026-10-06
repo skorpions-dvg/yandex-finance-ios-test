@@ -74,6 +74,7 @@ struct ManualOperationFormView: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .tint(.orange)
             .navigationTitle(operation == nil ? "Добавить" : "Операция")
             .navigationBarTitleDisplayMode(.inline)
@@ -96,7 +97,15 @@ struct ManualOperationFormView: View {
         .onChange(of: accountID) { _, value in
             if toAccountID == value { toAccountID = nil }
         }
-        .sheet(isPresented: $newAccount) { AccountFormView(browser: browser, account: nil) }
+        .sheet(isPresented: $newAccount) {
+            AccountFormView(browser: browser, account: nil) { account in
+                if kind == .transfer || !account.tracksBankCard {
+                    accountID = account.id
+                }
+                // A new entry on the new account must not precede its opening balance.
+                if operation == nil && date < account.startDate { date = Date() }
+            }
+        }
         .confirmationDialog("Удалить операцию?", isPresented: $confirmDeletion, titleVisibility: .visible) {
             Button("Удалить операцию", role: .destructive, action: delete)
             Button("Отмена", role: .cancel) { }
@@ -158,13 +167,17 @@ struct ManualOperationFormView: View {
                 }
             }
             Section {
-                accountPicker(kind == .transfer ? "Откуда" : "Счёт", selection: $accountID, choices: eligibleAccounts)
-                if kind == .transfer {
-                    accountPicker("Куда", selection: $toAccountID, choices: accounts.filter { $0.id != accountID })
-                }
                 if eligibleAccounts.isEmpty {
-                    Button("Создать счёт") { newAccount = true }
+                    Text("Нет счетов для ручных операций").foregroundStyle(.secondary)
+                    Text("Создайте отдельный счёт, например «Наличные», без отметки «Карта Яндекс Банка».")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    accountPicker(kind == .transfer ? "Откуда" : "Счёт", selection: $accountID, choices: eligibleAccounts)
+                    if kind == .transfer {
+                        accountPicker("Куда", selection: $toAccountID, choices: accounts.filter { $0.id != accountID })
+                    }
                 }
+                Button("Создать счёт") { newAccount = true }
             } footer: {
                 if kind != .transfer {
                     Text("Операции по карте Яндекс Банка загружаются из банка автоматически")

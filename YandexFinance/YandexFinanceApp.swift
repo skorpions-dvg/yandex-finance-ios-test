@@ -60,6 +60,11 @@ struct ContentView: View {
                 .background(.bar)
             }
         }
+        .onChange(of: browser.busy) { _, busy in
+            // Automatic refresh can start before the sign-in watcher gets its next turn.
+            // Hide the login page while leaving the same WebView mounted for scanning.
+            if busy && browser.signInRequested { browser.finishSignIn() }
+        }
     }
 }
 

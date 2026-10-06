@@ -264,6 +264,7 @@ struct AccountFormView: View {
     @Environment(\.dismiss) private var dismiss
     private let account: Account?
     private let sessionInfo: Binding<Bool>?
+    private let onSave: ((Account) -> Void)?
     @State private var localInfo = true
     @State private var name: String
     @State private var icon: String
@@ -283,9 +284,11 @@ struct AccountFormView: View {
                              "Самолёт", "Дом", "Автомобиль", "Покупки", "Сумка", "Сердце", "Звезда", "Образование",
                              "Здоровье", "Игры", "Животные", "Лист"]
 
-    init(browser: BankBrowser, account: Account?, showsInfo: Binding<Bool>? = nil) {
+    init(browser: BankBrowser, account: Account?, showsInfo: Binding<Bool>? = nil,
+         onSave: ((Account) -> Void)? = nil) {
         self.browser = browser
         self.account = account
+        self.onSave = onSave
         sessionInfo = showsInfo
         _name = State(initialValue: account?.name ?? "")
         _icon = State(initialValue: account?.icon ?? "banknote")
@@ -465,7 +468,10 @@ struct AccountFormView: View {
             else { accounts.append(saved) }
             history.accounts = accounts
         }
-        if success { dismiss() } else { saveError = true }
+        if success {
+            onSave?(saved)
+            dismiss()
+        } else { saveError = true }
     }
 
     private func delete() {
