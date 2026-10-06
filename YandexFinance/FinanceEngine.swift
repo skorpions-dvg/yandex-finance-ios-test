@@ -568,6 +568,20 @@ enum FinancialEngine {
         var id: String { "\(isIncome)|\(title)|\(date.timeIntervalSince1970)" }
     }
 
+    /// One full month of the history behind the forecast, split the way the baseline sees it.
+    struct BaselineMonth: Equatable, Identifiable {
+        let month: Date
+        /// Net expense of the month after refunds.
+        let netExpenseKopecks: Int64
+        let recurringKopecks: Int64
+        let oneOffKopecks: Int64
+        /// What goes into the median: net expense without recurring payments and one-off purchases.
+        let variableKopecks: Int64
+        /// The largest one-off purchases of the month, for checking the rule.
+        let largestOneOffs: [String]
+        var id: Date { month }
+    }
+
     struct MonthForecast: Equatable {
         /// Net expense (after refunds) from the first day of the month through today.
         let spentKopecks: Int64
@@ -588,6 +602,8 @@ enum FinancialEngine {
         let upcoming: [UpcomingPayment]
         /// Full months the variable spending baseline is built from (0 means the current pace alone).
         let historyMonths: Int
+        /// Those months, newest first, for the "how it is calculated" view.
+        let baselineMonths: [BaselineMonth]
         let elapsedDays: Int
         let daysInMonth: Int
 
@@ -733,6 +749,16 @@ enum FinancialEngine {
             monthReport.netExpenseKopecks - sum(recurringItems, income: false, in: interval) - sum(oneOffItems, income: false, in: interval)
         }
         let variableExpenses = months.map { variableExpense(in: $0.interval, report: $0.report) }
+        let baselineMonths = months.map { month -> BaselineMonth in
+            let oneOffs = oneOffItems.filter { $0.date >= month.interval.start && $0.date < month.interval.end }
+            return BaselineMonth(month: month.interval.start,
+                                 netExpenseKopecks: month.report.netExpenseKopecks,
+                                 recurringKopecks: sum(recurringItems, income: false, in: month.interval),
+                                 oneOffKopecks: oneOffs.reduce(0) { $0 + $1.amount },
+                                 variableKopecks: variableExpense(in: month.interval, report: month.report),
+                                 largestOneOffs: oneOffs.sorted { $0.amount > $1.amount }.prefix(3)
+                                    .map { "\($0.title) \((Decimal($0.amount) / 100).formatted(.currency(code: "RUB")))" })
+        }
         let variableIncomes = months.map { $0.report.incomeKopecks - sum(recurringItems, income: true, in: $0.interval) }
 
         let soFarInterval = DateInterval(start: monthStartDate, end: endOfToday)
@@ -785,6 +811,7 @@ enum FinancialEngine {
                              oneOffKopecks: sum(oneOffItems, income: false, in: soFarInterval),
                              upcoming: upcoming,
                              historyMonths: variableExpenses.count,
+                             baselineMonths: baselineMonths,
                              elapsedDays: elapsed,
                              daysInMonth: daysInMonth)
     }

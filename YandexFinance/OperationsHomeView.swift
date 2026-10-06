@@ -247,6 +247,28 @@ struct OperationsHomeView: View {
                     }
                 }
             }
+            if !f.baselineMonths.isEmpty {
+                DisclosureGroup("Как посчитано") {
+                    ForEach(f.baselineMonths) { month in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(month.month.formatted(.dateTime.month(.wide).year())).font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Text(rubles(month.netExpenseKopecks)).font(.subheadline)
+                            }
+                            Text("переменные \(rubles(month.variableKopecks)) · регулярные \(rubles(month.recurringKopecks)) · разовые \(rubles(month.oneOffKopecks))")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if !month.largestOneOffs.isEmpty {
+                                Text("разовые: " + month.largestOneOffs.joined(separator: ", "))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Text("Расходы к концу месяца = потрачено + ещё ожидаемые регулярные + переменные траты до конца месяца по медиане этих месяцев с поправкой на темп. Вилка — по нижней и верхней четверти этих месяцев.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+            }
             if f.historyMonths < 3 {
                 Text("Истории пока мало (\(f.historyMonths) мес.), прогноз приблизительный.")
                     .font(.caption).foregroundStyle(.secondary)

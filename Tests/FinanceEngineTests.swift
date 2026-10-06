@@ -247,6 +247,10 @@ struct FinanceEngineTests {
         require(forecast.previousMonthIncomeKopecks == 100_000, "previous month income")
 
         require(forecast.oneOffKopecks == 0, "an ordinary grocery run is not one-off")
+        require(forecast.baselineMonths.count == 6 && forecast.baselineMonths[0].month == at(6, 1, 0), "breakdown lists the six months, newest first")
+        require(forecast.baselineMonths.map(\.variableKopecks) == variableTotals.reversed(), "breakdown variable spending matches the baseline input")
+        require(forecast.baselineMonths.allSatisfy { $0.recurringKopecks == 20_249 && $0.oneOffKopecks == 0 && $0.netExpenseKopecks == $0.variableKopecks + 20_249 },
+                "each month splits into recurring and variable spending")
 
         let late = FinancialEngine.monthForecast(july, now: at(7, 25), calendar: calendar)
         require(late.upcoming.map(\.overdue) == [true, true], "rent and phone that have not come by the 25th are flagged as overdue")
