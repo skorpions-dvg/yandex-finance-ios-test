@@ -70,6 +70,7 @@ struct ContentView: View {
 
 /// Full card of one saved operation: amounts, components, category, financial type and bank details.
 struct OperationDetailView: View {
+    @ObservedObject var browser: BankBrowser
     let operation: BankOperation
     var body: some View {
         Form {
@@ -89,7 +90,15 @@ struct OperationDetailView: View {
                     Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
                 }
             }
-            LabeledContent("Категория", value: operation.category)
+            if let id = browser.history.expenseCategoryID(for: operation),
+               let pair = browser.history.expenseCategory(id: id) {
+                NavigationLink {
+                    OperationExpenseCategoryView(browser: browser, operation: operation)
+                } label: {
+                    LabeledContent("Категория", value: pair.group.name + " / " + pair.category.name)
+                }
+                LabeledContent("Категория банка", value: operation.category)
+            } else { LabeledContent("Категория", value: operation.category) }
             LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
             if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
                 LabeledContent("Счета", value: route)
@@ -142,6 +151,9 @@ struct SettingsView: View {
                     Text("Ниже этой суммы запас до конца месяца показывается жёлтым.")
                         .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Отображение") }
+                Section {
+                    NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser) }
+                }
                 Section {
                     Button("Страница банка") { browser.bankPageVisible = true }
                     Text("Откройте, чтобы войти в банк или посмотреть, что происходит при проверке. Обычно страница скрыта: проверка идёт без неё.")
@@ -291,23 +303,23 @@ enum FinanceOperationSelection: Hashable {
         }
     }
 
-    func matches(_ operation: BankOperation) -> Bool {
-        let assessment = operation.financialAssessment
+    func matches(_ input: FinancialOperationInput) -> Bool {
+        let assessment = FinancialEngine.classify(input)
         switch self {
         case .expense(let group, let subcategory):
             guard assessment.type == .expense || assessment.type == .commission else { return false }
-            let path = FinancialEngine.expenseCategory(for: operation.financialInput, assessment: assessment)
+            let path = FinancialEngine.expenseCategory(for: input, assessment: assessment)
             return path.group == group && path.subcategory == subcategory
         case .income(let subcategory):
             guard assessment.type == .income || assessment.type == .interestIncome else { return false }
-            return FinancialEngine.incomeCategory(for: operation.financialInput, assessment: assessment) == subcategory
+            return FinancialEngine.incomeCategory(for: input, assessment: assessment) == subcategory
         case .refund:
             return assessment.type == .refund
         case .split:
             return assessment.type == .split
         case .movement(let subcategory):
             guard assessment.type == .internalTransfer else { return false }
-            return FinancialEngine.movementCategory(for: operation.financialInput) == subcategory
+            return FinancialEngine.movementCategory(for: input) == subcategory
         }
     }
 
@@ -331,13 +343,15 @@ struct FinanceCategoryOperationsView: View {
     @ObservedObject var browser: BankBrowser
     let interval: DateInterval
     let selection: FinanceOperationSelection
+    @State private var editedManualOperation: ManualOperation?
 
     private var operations: [BankOperation] {
-        browser.history.allOperations
-            .filter { operation in
+        zip(browser.history.allOperations, browser.history.financialInputs)
+            .filter { operation, input in
                 guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { return false }
-                return selection.matches(operation)
+                return selection.matches(input)
             }
+            .map { $0.0 }
             .sorted { lhs, rhs in
                 let left = BankDateParser.parse(lhs.occurredAt) ?? .distantPast
                 let right = BankDateParser.parse(rhs.occurredAt) ?? .distantPast
@@ -368,36 +382,18 @@ struct FinanceCategoryOperationsView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(visibleOperations, id: \.identity) { operation in
-                        NavigationLink {
-                            Form {
-                                LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
-                                LabeledContent("Дата", value: BankDateParser.parse(operation.occurredAt)?.formatted(date: .abbreviated, time: .shortened) ?? operation.occurredAt)
-                                LabeledContent("Статус", value: operation.status)
-                                LabeledContent("Категория приложения", value: selection.parentTitle + " → " + selection.title)
-                                LabeledContent("Категория банка", value: operation.category.isEmpty ? "Без категории" : operation.category)
-                                if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
-                                    LabeledContent("Счета", value: route)
-                                }
-                                if let purpose = operation.purpose, !purpose.isEmpty { LabeledContent("Назначение", value: purpose) }
-                                if let mcc = operation.mcc, !mcc.isEmpty { LabeledContent("MCC", value: mcc) }
-                                Section("Почему здесь") {
-                                    Text(operation.financialAssessment.reason)
-                                }
+                        if operation.isManual {
+                            Button {
+                                editedManualOperation = browser.history.manualOperations?.first { $0.id == operation.manualID }
+                            } label: {
+                                operationRow(operation)
                             }
-                            .navigationTitle(operation.description)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(operation.description.isEmpty ? "Операция без названия" : operation.description)
-                                    Spacer()
-                                    Text(operation.formattedAmount)
-                                }
-                                HStack {
-                                    Text(BankDateParser.parse(operation.occurredAt)?.formatted(date: .abbreviated, time: .omitted) ?? operation.occurredAt)
-                                    Spacer()
-                                    Text(operation.category.isEmpty ? "Без категории" : operation.category)
-                                }
-                                .font(.caption).foregroundStyle(.secondary)
+                            .buttonStyle(.plain)
+                        } else {
+                            NavigationLink {
+                                OperationDetailView(browser: browser, operation: operation)
+                            } label: {
+                                operationRow(operation)
                             }
                         }
                     }
@@ -405,7 +401,29 @@ struct FinanceCategoryOperationsView: View {
             }
         }
         .navigationTitle(selection.title)
+        .sheet(item: $editedManualOperation) { ManualOperationFormView(browser: browser, operation: $0) }
     }
+
+    private func operationRow(_ operation: BankOperation) -> some View {
+        let input = browser.history.financialInput(for: operation)
+        let assessment = FinancialEngine.classify(input)
+        let category = assessment.type == .expense || assessment.type == .commission
+            ? FinancialEngine.expenseCategory(for: input, assessment: assessment).subcategory : operation.category
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(operation.description.isEmpty ? "Операция без названия" : operation.description).foregroundStyle(.primary)
+                Spacer()
+                Text(operation.formattedAmount).foregroundStyle(.primary)
+            }
+            HStack {
+                Text(BankDateParser.parse(operation.occurredAt)?.formatted(date: .abbreviated, time: .omitted) ?? operation.occurredAt)
+                Spacer()
+                Text(category.isEmpty ? "Без категории" : category)
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
 }
 
 @MainActor
@@ -471,11 +489,11 @@ struct FinanceDashboardView: View {
         // Compute the interval based on the selected month.
         let monthStart = selectedMonthStart
         let interval = DateInterval(start: monthStart, end: Calendar.current.date(byAdding: .month, value: 1, to: monthStart)!)
-        let inputs = browser.history.allOperations.map(\.financialInput)
-        let report = FinancialEngine.report(inputs, in: interval)
+        let inputs = browser.history.financialInputs
+        let report = FinancialEngine.report(inputs, in: interval, taxonomy: browser.history.expenseTaxonomy)
         let save = FinancialEngine.saveAccountSummary(inputs, in: interval)
         let periods = monthComparisonPeriods(selectedStart: monthStart)
-        let comparison = FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous)
+        let comparison = FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous, taxonomy: browser.history.expenseTaxonomy)
         NavigationStack {
             List {
                     HStack {

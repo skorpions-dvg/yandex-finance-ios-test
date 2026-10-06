@@ -60,7 +60,7 @@ struct ManualOperationFormView: View {
         switch kind {
         case .expense:
             guard let group, let subcategory else { return false }
-            return subcategories(for: group).contains(subcategory)
+            return browser.history.categoryTree.contains { $0.name == group && $0.categories.contains { $0.name == subcategory } }
         case .income:
             return subcategory.map { FinancialEngine.incomeSubcategoryOrder.contains($0) } ?? false
         case .transfer:
@@ -138,7 +138,8 @@ struct ManualOperationFormView: View {
                     if let group, let subcategory {
                         Text("\(group) → \(subcategory)").font(.subheadline).foregroundStyle(.secondary)
                     }
-                    ForEach(FinancialEngine.expenseGroupOrder, id: \.self) { name in
+                    ForEach(browser.history.categoryTree) { categoryGroup in
+                        let name = categoryGroup.name
                         DisclosureGroup {
                             ForEach(subcategories(for: name), id: \.self) { category in
                                 Button {
@@ -221,15 +222,7 @@ struct ManualOperationFormView: View {
     }
 
     private func subcategories(for group: String) -> [String] {
-        let categories: [String]
-        switch group {
-        case "Еда": categories = ["Супермаркеты", "Кафе и рестораны", "Доставка еды"]
-        case "Транспорт": categories = ["Такси", "Общественный транспорт", "Топливо", "Авто"]
-        case "Покупки": categories = ["Маркетплейсы", "Одежда", "Электроника", "Дом и быт"]
-        case "Обязательные": categories = ["ЖКХ", "Связь и интернет", "Подписки", "Здоровье"]
-        default: categories = ["Развлечения", "Путешествия", "Подарки", "Доставка и курьеры", "Переводы другим", "Комиссии", "Прочее"]
-        }
-        return FinancialEngine.expenseSubcategoryOrder.filter { categories.contains($0) }
+        browser.history.categoryTree.first { $0.name == group }?.categories.map(\.name) ?? []
     }
 
     private func groupStyle(_ group: String) -> (icon: String, color: Color) {

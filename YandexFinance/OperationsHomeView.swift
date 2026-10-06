@@ -21,13 +21,13 @@ struct OperationsHomeView: View {
     
     // MARK: - Computed values
     private var inputs: [FinancialOperationInput] {
-        browser.history.allOperations.map(\.financialInput)
+        browser.history.financialInputs
     }
     private var interval: DateInterval {
         historyInterval(period)
     }
     private var report: FinanceReport {
-        FinancialEngine.report(inputs, in: interval)
+        FinancialEngine.report(inputs, in: interval, taxonomy: browser.history.expenseTaxonomy)
     }
     private var isHistoryExpanded: Bool {
         historyExpanded ?? historyAlwaysExpanded
@@ -111,7 +111,7 @@ struct OperationsHomeView: View {
                 }
                 .sheet(isPresented: $showForecast) {
                     let accounts = browser.history.accounts ?? []
-                    ForecastDetailView(forecast: FinancialEngine.monthForecast(inputs),
+                    ForecastDetailView(forecast: FinancialEngine.monthForecast(inputs, taxonomy: browser.history.expenseTaxonomy),
                                        balanceKopecks: accounts.isEmpty ? nil : currentBalance(accounts),
                                        bufferKopecks: Int64(reserveBufferRubles) * 100)
                 }
@@ -244,7 +244,7 @@ struct OperationsHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             let accounts = browser.history.accounts ?? []
-            let f = FinancialEngine.monthForecast(inputs)
+            let f = FinancialEngine.monthForecast(inputs, taxonomy: browser.history.expenseTaxonomy)
             HStack(alignment: .top) {
                 Button { showAccounts = true } label: {
                     VStack(alignment: .leading, spacing: 4) {
@@ -365,14 +365,14 @@ struct OperationsHomeView: View {
                         Button {
                             editedOperation = browser.history.manualOperations?.first { $0.id == op.manualID }
                         } label: {
-                            OperationRow(operation: op).foregroundStyle(.primary)
+                            OperationRow(operation: op, input: browser.history.financialInput(for: op)).foregroundStyle(.primary)
                         }
                         .buttonStyle(.plain)
                     } else {
                         NavigationLink {
-                            OperationDetailView(operation: op)
+                            OperationDetailView(browser: browser, operation: op)
                         } label: {
-                            OperationRow(operation: op)
+                            OperationRow(operation: op, input: browser.history.financialInput(for: op))
                         }
                     }
                 }

@@ -26,8 +26,8 @@ struct CategoryExpenseChart: View {
                     .foregroundStyle(by: .value("Категория", group.title))
                 }
                 .chartForegroundStyleScale(
-                    domain: ["Еда", "Транспорт", "Покупки", "Обязательные", "Другое"],
-                    range: [Color.orange, .blue, .purple, .teal, .gray]
+                    domain: groups.map(\.title),
+                    range: groups.map { color(for: $0.title) }
                 )
                 .chartLegend(.hidden)
                 .frame(height: 180)

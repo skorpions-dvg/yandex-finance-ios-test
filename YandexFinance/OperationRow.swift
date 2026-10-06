@@ -3,11 +3,12 @@ import SwiftUI
 /// One operation in a list: category icon, title, category and status, signed amount.
 struct OperationRow: View {
     let operation: BankOperation
+    var input: FinancialOperationInput? = nil
     /// Adds the operation date to the subtitle, for lists that are not grouped by day.
     var showsDate = false
 
     var body: some View {
-        let style = Self.icon(for: operation)
+        let style = Self.icon(for: operation, input: input)
         HStack(spacing: 12) {
             Image(systemName: style.name)
                 .font(.body)
@@ -33,14 +34,20 @@ struct OperationRow: View {
         if showsDate, let date = BankDateParser.parse(operation.occurredAt) {
             parts.append(date.formatted(.dateTime.day().month().year()))
         }
-        parts.append(operation.category)
+        let resolvedInput = input ?? operation.financialInput
+        let assessment = FinancialEngine.classify(resolvedInput)
+        if assessment.type == .expense || assessment.type == .commission {
+            parts.append(FinancialEngine.expenseCategory(for: resolvedInput, assessment: assessment).subcategory)
+        } else { parts.append(operation.category) }
         if operation.isManual { parts.append("Вручную") }
         else if operation.status != "Выполнено" { parts.append(operation.status) }
         return parts.joined(separator: " · ")
     }
 
-    static func icon(for operation: BankOperation) -> (name: String, color: Color) {
-        switch operation.financialAssessment.type {
+    static func icon(for operation: BankOperation, input: FinancialOperationInput? = nil) -> (name: String, color: Color) {
+        let resolvedInput = input ?? operation.financialInput
+        let assessment = FinancialEngine.classify(resolvedInput)
+        switch assessment.type {
         case .income, .interestIncome: return ("arrow.down", .green)
         case .refund: return ("arrow.uturn.backward", .green)
         case .internalTransfer: return ("arrow.left.arrow.right", .gray)
@@ -49,13 +56,17 @@ struct OperationRow: View {
         case .cancelled: return ("xmark", .gray)
         case .unknown: return ("questionmark", .gray)
         case .expense, .commission:
-            switch FinancialEngine.expenseCategory(for: operation.financialInput, assessment: operation.financialAssessment).group {
-            case "Еда": return ("fork.knife", .orange)
-            case "Транспорт": return ("car.fill", .blue)
-            case "Покупки": return ("bag.fill", .purple)
-            case "Обязательные": return ("house.fill", .teal)
-            default: return ("square.grid.2x2.fill", .gray)
-            }
+            return expenseGroupIcon(FinancialEngine.expenseCategory(for: resolvedInput, assessment: assessment).group)
+        }
+    }
+
+    static func expenseGroupIcon(_ group: String) -> (name: String, color: Color) {
+        switch group {
+        case "Еда": return ("fork.knife", .orange)
+        case "Транспорт": return ("car.fill", .blue)
+        case "Покупки": return ("bag.fill", .purple)
+        case "Обязательные": return ("house.fill", .teal)
+        default: return ("square.grid.2x2.fill", .gray)
         }
     }
 

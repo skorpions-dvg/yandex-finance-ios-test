@@ -11,8 +11,9 @@ struct SearchOperationsView: View {
     private var results: [BankOperation] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }
-        return browser.history.allOperations
-            .filter { FinancialEngine.operationMatches($0.financialInput, query: text) }
+        return zip(browser.history.allOperations, browser.history.financialInputs)
+            .filter { FinancialEngine.operationMatches($0.1, query: text) }
+            .map { $0.0 }
             .map { ($0, BankDateParser.parse($0.occurredAt) ?? .distantPast) }
             .sorted { $0.1 > $1.1 }
             .map(\.0)
@@ -34,14 +35,14 @@ struct SearchOperationsView: View {
                                 Button {
                                     editedOperation = browser.history.manualOperations?.first { $0.id == operation.manualID }
                                 } label: {
-                                    OperationRow(operation: operation, showsDate: true).foregroundStyle(.primary)
+                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true).foregroundStyle(.primary)
                                 }
                                 .buttonStyle(.plain)
                             } else {
                                 NavigationLink {
-                                    OperationDetailView(operation: operation)
+                                    OperationDetailView(browser: browser, operation: operation)
                                 } label: {
-                                    OperationRow(operation: operation, showsDate: true)
+                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true)
                                 }
                             }
                         }
