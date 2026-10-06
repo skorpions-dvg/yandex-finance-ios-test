@@ -270,11 +270,11 @@ enum StatementImporter {
     }
 
     private static func physicalLines(_ cells: [StatementCell]) -> [[StatementCell]] {
-        let sorted = cells.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y }
+        let sorted = cells.filter { !$0.text.isEmpty }.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y }
         var lines: [[StatementCell]] = []
         for cell in sorted {
             if let last = lines.last, let first = last.first,
-               abs((first.y + first.height / 2) - (cell.y + cell.height / 2)) <= max(2, min(first.height, cell.height) * 0.3) {
+               abs((first.y + first.height) - (cell.y + cell.height)) <= max(3, min(first.height, cell.height) * 0.5) {
                 lines[lines.count - 1].append(cell)
             } else { lines.append([cell]) }
         }
@@ -282,34 +282,35 @@ enum StatementImporter {
     }
 
     static func cells(from page: PDFPage) -> [StatementCell] {
-        guard let raw = page.string else { return [] }
-        let text = raw as NSString, bounds = page.bounds(for: .mediaBox)
-        var words: [StatementCell] = [], word: StatementCell?
-        // Keep explicit spaces: some fonts have a space narrower than a glyph's
-        // bounding-box tolerance. Page text order is irrelevant once words have coordinates.
-        for index in 0..<min(page.numberOfCharacters, text.length) {
-            let range = NSRange(location: index, length: 1)
-            // PDFKit may insert reading-order separators in page.string. A one-character
-            // selection uses the same character index as characterBounds, including ligatures.
-            let character = page.selection(for: range)?.string ?? text.substring(with: range)
-            if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                if let word { words.append(word) }; word = nil
-                continue
-            }
+        let bounds = page.bounds(for: .mediaBox)
+        var glyphs: [StatementCell] = []
+        var seenBounds = Set<String>()
+        for index in 0..<page.numberOfCharacters {
             let rect = page.characterBounds(at: index)
             guard rect.width > 0, rect.height > 0 else { continue }
-            let glyph = StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height)
-            if let current = word,
-               abs(current.y + current.height - (glyph.y + glyph.height)) <= max(3, glyph.height * 0.5),
-               glyph.x >= current.x, glyph.x - (current.x + current.width) < max(5, glyph.height * 0.7) {
-                word = StatementCell(text: current.text + character, x: current.x, y: min(current.y, glyph.y),
-                    width: max(current.width, glyph.x + glyph.width - current.x),
-                    height: max(current.y + current.height, glyph.y + glyph.height) - min(current.y, glyph.y))
-            } else {
-                if let word { words.append(word) }; word = glyph
-            }
+            let key = "\(rect.minX)|\(rect.minY)|\(rect.width)|\(rect.height)"
+            guard seenBounds.insert(key).inserted else { continue }
+            // The glyph's center is authoritative: page.string/NSRange may count
+            // inserted line breaks differently from characterBounds in PDFKit.
+            let center = rect.insetBy(dx: rect.width * 0.45, dy: rect.height * 0.45)
+            guard let character = page.selection(for: center)?.string, !character.isEmpty else { continue }
+            glyphs.append(StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height))
         }
-        if let word { words.append(word) }
+        var words: [StatementCell] = []
+        for line in physicalLines(glyphs) {
+            var word: StatementCell?
+            for glyph in line.sorted(by: { $0.x < $1.x }) {
+                if glyph.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if let word { words.append(word) }; word = nil; continue
+                }
+                if let current = word, glyph.x - (current.x + current.width) <= max(1.2, glyph.height * 0.16) {
+                    word = StatementCell(text: current.text + glyph.text, x: current.x, y: min(current.y, glyph.y),
+                        width: max(current.width, glyph.x + glyph.width - current.x),
+                        height: max(current.y + current.height, glyph.y + glyph.height) - min(current.y, glyph.y))
+                } else { if let word { words.append(word) }; word = glyph }
+            }
+            if let word { words.append(word) }
+        }
         return words
     }
 
