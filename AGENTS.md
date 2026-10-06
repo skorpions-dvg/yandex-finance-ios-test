@@ -1,0 +1,33 @@
+# Правила для ИИ-разработчика (Codex / GPT)
+
+Проект: личное iOS-приложение Finance Test (Swift, SwiftUI, iOS 26+) для учёта операций Яндекс Банка. Владелец — Дмитрий, общение по-русски, коротко и по делу. Ведущий разработчик и проверяющий — Claude: он пишет ТЗ этапов, проверяет накопленные изменения и сливает их в `main`.
+
+## Рабочий цикл
+1. Работай только в ветке текущего этапа `stage-NN` (узнать: `git branch --show-current`). В `main` не коммить и не пушь никогда.
+2. После правок запусти локальные проверки и не отправляй ничего при красном результате:
+   `powershell -NoProfile -ExecutionPolicy Bypass -File .local\check.ps1`
+3. В каждой сборке подними версию: в `YandexFinance.xcodeproj/project.pbxproj` четыре строки `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` (например 40.1 → 40.2) и первую строку README `Текущий номер сборки — …` плюс короткий раздел «Изменения …» сверху README. Проверка `reliability.test.js` сверяет эти номера.
+4. Новый `.swift` файл добавь в `project.pbxproj` (PBXFileReference, PBXBuildFile, группа YandexFinance, Sources) — по образцу `AccountsView.swift`.
+5. Коммит с понятным сообщением на английском, затем:
+   `git push` (если просит вход — пусть пользователь войдёт в окне браузера).
+6. Сборка и IPA:
+   - `powershell -NoProfile -ExecutionPolicy Bypass -File .local\ci.ps1 -Action run -Branch stage-NN` — запускает GitHub Actions и ждёт результат (5–15 минут, очередь macOS бывает долгой; «job was not acquired by Runner» — сбой GitHub, просто запустить ещё раз);
+   - при ошибке там же будут последние строки лога — исправь и повтори;
+   - при успехе: `... ci.ps1 -Action ipa -RunId <id>` скачивает `FinanceTest-<версия>.ipa` во временную папку; скажи пользователю путь (он ставит через SideStore на iPhone).
+7. Не утверждай, что что-то собралось или тесты прошли, если ты этого не запускал. Показывай реальный вывод команд.
+
+## Что нельзя без ТЗ от Claude
+- `Vault.swift` (хранилище и ключ шифрования), `StatementImporter.swift`, `Collector.js`, классификатор и расчёты в `FinanceEngine.swift` (доходы, расходы, возвраты, прогноз, запас), `.github/`, `scripts/`.
+- Любая финансовая логика — только вместе с тестами в `Tests/FinanceEngineTests.swift`.
+- Не удалять и не перезаписывать данные пользователя; новые поля в `SavedHistory` — только необязательные (старые данные должны открываться).
+- Никаких реальных банковских данных, выписок, токенов в репозитории (он публичный).
+
+## Где что
+- `YandexFinance/OperationsHomeView.swift` — главный экран (периоды, доходы/расходы, остаток, запас, история);
+- `ForecastDetailView.swift` — прогноз на месяц; `AccountsView.swift` — счета и группы; `SearchOperationsView.swift` — поиск;
+- `YandexFinanceApp.swift` — вкладки, «Отчёты», «Настройки», карточка операции;
+- `BankBrowser.swift` — скрытая страница банка, обновление, вход по коду, сохранение (`updateUserData`);
+- `Models.swift` — модели и резервная копия; `FinanceEngine.swift` — расчёты (только с тестами).
+
+## Стиль
+Как в существующем коде; интерфейс по образцу приложения Money Flow; иконки — SF Symbols; тексты интерфейса по-русски.
