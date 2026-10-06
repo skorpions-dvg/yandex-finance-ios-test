@@ -167,7 +167,12 @@ extension StatementImporterTests {
         }
         expect(cells.contains { $0.text == "Описание" }, "PDF extraction keeps heading word boundaries")
         expect(cells.contains { $0.text == "29.09.2026" }, "PDF extraction keeps date word boundaries")
-        let parsed = try StatementImporter.importPDF(at: url)
+        let parsed: StatementImportResult
+        do { parsed = try StatementImporter.importPDF(at: url) }
+        catch {
+            print("DIAG_PARSE_CELLS " + cells.map { Data($0.text.utf8).base64EncodedString() + ":\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";"))
+            throw error
+        }
         expect(parsed.operations.count == 4, "two physical tables with multiline descriptions")
         expect(parsed.operations.contains { $0.kind == "installment_payment" && $0.description == "Оплата товаров и услуг Yandex*5399*Ysplit" }, "Split description belongs to its own row")
         expect(parsed.operations.contains { $0.kind == "refund" && $0.description == "Возврат средств СБП QR Тестовый магазин" }, "refund physical row")

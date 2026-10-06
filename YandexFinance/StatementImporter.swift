@@ -199,7 +199,7 @@ enum StatementImporter {
         let source = try sourceType(fullText)
         var rows: [Row] = []
         for (pageIndex, lines) in pageLines.enumerated() {
-            let headers = lines.indices.filter { lineText(lines[$0]).contains("Описание операции") && lineText(lines[$0]).contains("Дата") }
+            let headers = lines.indices.filter { lineText(lines[$0]).contains("Описание") && lineText(lines[$0]).contains("Дата") }
             for (headerIndex, start) in headers.enumerated() {
                 let header = lines[start].sorted { $0.x < $1.x }
                 let dates = header.filter { $0.text.hasPrefix("Дата") }
@@ -273,8 +273,9 @@ enum StatementImporter {
         let sorted = cells.filter { !$0.text.isEmpty }.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y }
         var lines: [[StatementCell]] = []
         for cell in sorted {
-            if let last = lines.last, let first = last.first,
-               abs((first.y + first.height) - (cell.y + cell.height)) <= max(3, min(first.height, cell.height) * 0.5) {
+            if let last = lines.last,
+               let top = last.map(\.y).min(), let bottom = last.map({ $0.y + $0.height }).max(),
+               cell.y <= bottom + 0.5 && cell.y + cell.height >= top - 0.5 {
                 lines[lines.count - 1].append(cell)
             } else { lines.append([cell]) }
         }
