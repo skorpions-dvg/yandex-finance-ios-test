@@ -159,12 +159,12 @@ enum StatementImporter {
                 inferred = classify(description: row.description, amount: row.amount, holder: holder)
             } else {
                 let value = normalize(row.description), interest = normalize(row.description).contains("процент")
-                guard interest || value.contains("перевод между счетами") || value.contains("пополнение") || value.contains("вывод") else {
-                    throw AppFailure(message: "Неизвестный вид операции в выписке Сейва.")
-                }
                 let digest = SHA256.hash(data: Data("statement-save-v1|\(signature)|\(occurrence)".utf8))
                 identity = "statement-save:" + digest.map { String(format: "%02x", $0) }.joined()
-                inferred = (interest ? "Проценты" : "Переводы между своими счетами", interest ? "interest_income" : "internal_transfer", [], row.description)
+                if interest { inferred = ("Проценты", "interest_income", [], row.description) }
+                else if value.contains("перевод между счетами") || value.contains("пополнение") || value.contains("вывод") {
+                    inferred = ("Переводы между своими счетами", "internal_transfer", [], row.description)
+                } else { inferred = classify(description: row.description, amount: row.amount, holder: holder) }
             }
             operations.append(BankOperation(identity: identity, occurredAt: isoFormatter.string(from: date),
                 timePrecision: source == .account ? "statement_minute" : "statement_day", description: row.description,
@@ -207,10 +207,20 @@ enum StatementImporter {
                 let card = header.first { $0.text.hasPrefix("Карта") }
                 guard dates.count == (source == .account ? 2 : 1), sums.count == (source == .account ? 2 : 1),
                       source == .save || card != nil else { throw ambiguous(row: 0, page: pageIndex + 1) }
-                let starts = source == .save ? [dates[0].x, sums[0].x] : [dates[0].x, dates[1].x, card!.x, sums[0].x, sums[1].x]
-                let cuts = starts.map { $0 - 3 }
+                let seeds = source == .save ? [dates[0], sums[0]] : [dates[0], dates[1], card!, sums[0], sums[1]]
                 let end = headerIndex + 1 < headers.count ? headers[headerIndex + 1] : lines.count
                 let body = Array(lines[(start + 1)..<end])
+                // A centered multiline heading can start farther right than its values
+                // ("Дата" above "обработки"). Use the whole header, not its first word.
+                let headingEnd = body.firstIndex { line in line.contains { $0.text.range(of: #"^\d{2}\.\d{2}\.\d{4}$"#, options: .regularExpression) != nil } } ?? body.count
+                let headingCells = (header + body[..<headingEnd].flatMap { $0 }).filter { $0.x >= seeds[0].x - 8 }
+                var starts = seeds.map(\.x)
+                for cell in headingCells {
+                    let center = cell.x + cell.width / 2
+                    let nearest = seeds.indices.min { abs(seeds[$0].x + seeds[$0].width / 2 - center) < abs(seeds[$1].x + seeds[$1].width / 2 - center) }!
+                    starts[nearest] = min(starts[nearest], cell.x)
+                }
+                let cuts = starts.map { $0 - 3 }
                 func column(_ cells: [StatementCell], _ index: Int) -> [StatementCell] {
                     cells.filter { cell in
                         let center = cell.x + cell.width / 2
@@ -271,29 +281,31 @@ enum StatementImporter {
         return lines
     }
 
-    private static func cells(from page: PDFPage) -> [StatementCell] {
+    static func cells(from page: PDFPage) -> [StatementCell] {
         guard let raw = page.string else { return [] }
         let text = raw as NSString, bounds = page.bounds(for: .mediaBox)
-        var glyphs: [StatementCell] = []
+        var words: [StatementCell] = [], word: StatementCell?
+        // Keep explicit spaces: some fonts have a space narrower than a glyph's
+        // bounding-box tolerance. Page text order is irrelevant once words have coordinates.
         for index in 0..<min(page.numberOfCharacters, text.length) {
             let character = text.substring(with: NSRange(location: index, length: 1))
-            let rect = page.characterBounds(at: index)
-            guard rect.width > 0, rect.height > 0, !character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            glyphs.append(StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height))
-        }
-        var words: [StatementCell] = []
-        for line in physicalLines(glyphs) {
-            var word: StatementCell?
-            for glyph in line.sorted(by: { $0.x < $1.x }) {
-                if let current = word, glyph.x - (current.x + current.width) <= max(0.8, glyph.height * 0.18) {
-                    word = StatementCell(text: current.text + glyph.text, x: current.x, y: min(current.y, glyph.y),
-                        width: glyph.x + glyph.width - current.x, height: max(current.height, glyph.height))
-                } else {
-                    if let word { words.append(word) }; word = glyph
-                }
+            if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if let word { words.append(word) }; word = nil
+                continue
             }
-            if let word { words.append(word) }
+            let rect = page.characterBounds(at: index)
+            guard rect.width > 0, rect.height > 0 else { continue }
+            let glyph = StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height)
+            if let current = word,
+               abs(current.y - glyph.y) < max(2, glyph.height * 0.3),
+               glyph.x >= current.x, glyph.x - (current.x + current.width) < max(5, glyph.height * 0.7) {
+                word = StatementCell(text: current.text + character, x: current.x, y: min(current.y, glyph.y),
+                    width: max(current.width, glyph.x + glyph.width - current.x), height: max(current.height, glyph.height))
+            } else {
+                if let word { words.append(word) }; word = glyph
+            }
         }
+        if let word { words.append(word) }
         return words
     }
 

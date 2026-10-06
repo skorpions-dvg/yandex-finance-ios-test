@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import CoreText
+import PDFKit
 
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() {
@@ -91,6 +92,8 @@ struct StatementImporterTests {
         expect(save.operations.allSatisfy { $0.identity.hasPrefix("statement-save:") && $0.timePrecision == "statement_day" && $0.paymentMethod == "Сейв (выписка)" }, "Save source markers")
         expect(save.operations.contains { $0.kind == "interest_income" && $0.occurredAt == "2026-09-30T09:00:00.000Z" }, "interest at Moscow noon")
         expect(save.operations.contains { $0.kind == "internal_transfer" }, "Save top-up is internal")
+        let otherSave = try StatementImporter.parsePages([savePage.replacingOccurrences(of: "Страница 1 из 1", with: "Исходящий перевод СБП, Тестовый получатель 30.09.2026 –25,00 ₽\nСтраница 1 из 1")])
+        expect(otherSave.operations.contains { $0.description.contains("Тестовый получатель") && $0.financialAssessment.type == .expense }, "ordinary Save payment uses the existing classifier")
         var original = SavedHistory()
         original.operations = result.operations
         original.incomeCategoryOverrides = ["untouched": "Кэшбэк"]
@@ -133,7 +136,7 @@ extension StatementImporterTests {
             text("Выписка по Договору за период с 01.09.2026 по 30.09.2026", 20, 60)
             text("Описание операции", 20, 100)
             text("Дата и время", 210, 100); text("операции МСК", 210, 114)
-            text("Дата", 280, 100); text("обработки МСК", 280, 114)
+            text("Дата", 310, 100); text("обработки", 280, 114); text("МСК", 310, 128)
             text("Карта", 350, 100)
             text("Сумма в валюте", 410, 100); text("операции", 410, 114)
             text("Сумма в валюте", 505, 100); text("Договора", 505, 114)
@@ -155,6 +158,10 @@ extension StatementImporterTests {
             context.endPDFPage()
         }
         context.closePDF()
+        let document = PDFDocument(url: url)!
+        let cells = StatementImporter.cells(from: document.page(at: 0)!)
+        expect(cells.contains { $0.text == "Описание" }, "PDF extraction keeps heading word boundaries")
+        expect(cells.contains { $0.text == "29.09.2026" }, "PDF extraction keeps date word boundaries")
         let parsed = try StatementImporter.importPDF(at: url)
         expect(parsed.operations.count == 4, "two physical tables with multiline descriptions")
         expect(parsed.operations.contains { $0.kind == "installment_payment" && $0.description == "Оплата товаров и услуг Yandex*5399*Ysplit" }, "Split description belongs to its own row")
