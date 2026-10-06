@@ -322,6 +322,24 @@ struct FinanceEngineTests {
                 "first day of an empty month")
     }
 
+    static func testOperationSearch() {
+        let restaurant = op(-155_500, kind: "expense", category: "Фастфуд", description: "Ресторан", date: "2024-02-05T10:00:00Z")
+        let grocery = op(-143_693, kind: "expense", category: "Супермаркеты", description: "Пятёрочка", mcc: "5411", date: "2024-02-05T11:00:00Z")
+        let deposit = op(1_100_000, kind: "refund", category: "Денежные переводы", description: "Пополнение наличными", date: "2024-02-04T10:00:00Z")
+        func finds(_ operation: FinancialOperationInput, _ query: String) -> Bool { FinancialEngine.operationMatches(operation, query: query) }
+
+        require(finds(grocery, "пятерочка") && finds(grocery, "ПЯТЁРОЧКА"), "title, any case, ё and е alike")
+        require(finds(grocery, "супермаркет") && finds(grocery, "еда"), "bank category and the app's group")
+        require(finds(grocery, "5411"), "MCC")
+        require(finds(restaurant, "1555") && finds(restaurant, "1 555") && finds(restaurant, "1555,00") && finds(restaurant, "-1555"),
+                "whole rubles in any spelling")
+        require(finds(grocery, "1436,93") && finds(grocery, "1436"), "exact amount with kopecks, or its whole rubles")
+        require(!finds(grocery, "1437") && !finds(restaurant, "155"), "a different number is not a match")
+        require(finds(deposit, "пополнения") && finds(deposit, "доход"), "income subcategory and financial type")
+        require(finds(grocery, "пятерочка 1436") && !finds(grocery, "пятерочка такси"), "every word has to match")
+        require(!finds(grocery, "   "), "an empty query finds nothing")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -697,6 +715,7 @@ struct FinanceEngineTests {
         testExpenseByGroup()
         testHistoryInterval()
         testMonthForecast()
+        testOperationSearch()
 
         print("Finance engine tests passed")
     }

@@ -87,8 +87,7 @@ struct OperationsHomeView: View {
                                 text: "Счета и группы появятся в следующей версии.")
             }
             .sheet(isPresented: $showSearch) {
-                ComingSoonSheet(title: "Поиск",
-                                text: "Поиск операций появится в следующей версии.")
+                SearchOperationsView(browser: browser)
             }
             .sheet(isPresented: $showAdd) {
                 ComingSoonSheet(title: "Добавить",
@@ -339,7 +338,7 @@ struct OperationsHomeView: View {
                     NavigationLink {
                         OperationDetailView(operation: op)
                     } label: {
-                        operationRow(op)
+                        OperationRow(operation: op)
                     }
                 }
             } header: {
@@ -352,74 +351,6 @@ struct OperationsHomeView: View {
         }
     }
 
-    // MARK: - Row Helpers
-    private func operationRow(_ op: BankOperation) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon(for: op).name)
-                .font(.body)
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(icon(for: op).color, in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                Text(op.description)
-                    .lineLimit(1)
-                Text(op.category + (op.status != "Выполнено" ? " · " + op.status : ""))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text(op.formattedAmount)
-                .foregroundStyle(amountColor(for: op))
-        }
-    }
-    
-    private func icon(for op: BankOperation) -> (name: String, color: Color) {
-        let type = op.financialAssessment.type
-        switch type {
-        case .income, .interestIncome:
-            return ("arrow.down", .green)
-        case .refund:
-            return ("arrow.uturn.backward", .green)
-        case .internalTransfer:
-            return ("arrow.left.arrow.right", .gray)
-        case .split:
-            return ("creditcard", .indigo)
-        case .pending:
-            return ("clock", .gray)
-        case .cancelled:
-            return ("xmark", .gray)
-        case .unknown:
-            return ("questionmark", .gray)
-        case .expense, .commission:
-            let group = FinancialEngine.expenseCategory(for: op.financialInput,
-                                                        assessment: op.financialAssessment).group
-            switch group {
-            case "Еда":
-                return ("fork.knife", .orange)
-            case "Транспорт":
-                return ("car.fill", .blue)
-            case "Покупки":
-                return ("bag.fill", .purple)
-            case "Обязательные":
-                return ("house.fill", .teal)
-            default:
-                return ("square.grid.2x2.fill", .gray)
-            }
-        }
-    }
-    
-    private func amountColor(for op: BankOperation) -> Color {
-        let type = op.financialAssessment.type
-        switch type {
-        case .income, .interestIncome, .refund:
-            return .green
-        case .pending, .cancelled, .internalTransfer, .split, .unknown:
-            return .secondary
-        default:
-            return .primary
-        }
-    }
-    
     private func signedRubles(_ kopecks: Int64) -> String {
         let formatted = rubles(kopecks)
         return kopecks >= 0 ? "+" + formatted : formatted

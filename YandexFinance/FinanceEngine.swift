@@ -545,6 +545,43 @@ enum FinancialEngine {
             topExpenseGrowth: best)
     }
 
+    // MARK: - Search
+
+    /// Search over saved operations: every word of the query has to match. A word matches when it occurs in the title,
+    /// bank category, purpose, MCC, status, the app's category path or the financial type, or, for a number, when it is
+    /// the amount in rubles ("1555", "1 555", "2031,65", with or without the sign).
+    static func operationMatches(_ operation: FinancialOperationInput, query: String) -> Bool {
+        let assessment = classify(operation)
+        var fields = [operation.description, operation.category, operation.purpose ?? "", operation.mcc ?? "",
+                      operation.status, assessment.type.title]
+        switch assessment.type {
+        case .expense, .commission:
+            let path = expenseCategory(for: operation, assessment: assessment)
+            fields += [path.group, path.subcategory]
+        case .income, .interestIncome:
+            fields.append(incomeCategory(for: operation, assessment: assessment))
+        case .internalTransfer:
+            fields.append(movementCategory(for: operation))
+        default:
+            break
+        }
+        let haystack = normalized(fields.joined(separator: " "))
+        // "1 555" is one amount: join digit groups separated by spaces before splitting into words.
+        let words = normalized(query)
+            .replacingOccurrences(of: #"(?<=\d) (?=\d{3}\b)"#, with: "", options: .regularExpression)
+            .split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return false }
+        let amount = abs(operation.amountKopecks)
+        return words.allSatisfy { word in
+            if haystack.contains(word) { return true }
+            let number = word.trimmingCharacters(in: CharacterSet(charactersIn: "+-−₽р."))
+                .replacingOccurrences(of: ",", with: ".")
+            guard let value = Decimal(string: number), number.allSatisfy({ $0.isNumber || $0 == "." }) else { return false }
+            let kopecks = NSDecimalNumber(decimal: value * 100).int64Value
+            return number.contains(".") ? kopecks == amount : kopecks == amount - amount % 100 && kopecks > 0
+        }
+    }
+
     // MARK: - Month forecast
 
     /// A payment or income that repeats with a steady period and amount.
