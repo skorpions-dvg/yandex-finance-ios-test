@@ -64,15 +64,14 @@ struct ContentView: View {
                     .offset(x: -CGFloat(selectedTab - 1) * width + pageTranslation)
                     .allowsHitTesting(!drawerOpen)
                     if drawerMounted {
-                        ZStack(alignment: .leading) {
-                            Color.black.opacity(0.18 * drawerPosition / max(1, drawerWidth + 16))
-                                .ignoresSafeArea()
+                        ZStack(alignment: .topLeading) {
+                            Color.clear
+                                .contentShape(Rectangle())
                                 .onTapGesture { closeAccounts() }
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
-                                .frame(width: drawerWidth)
+                                .frame(width: drawerWidth, height: max(0, geometry.size.height - 24), alignment: .top)
                                 .glassEffect(.regular, in: .rect(cornerRadius: 24))
                                 .clipShape(.rect(cornerRadius: 24))
-                                .shadow(radius: 12)
                                 .gesture(
                                     HorizontalPanCapture(onPan: { translation, velocity, ended in
                                         if ended {

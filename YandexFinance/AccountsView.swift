@@ -48,7 +48,42 @@ struct AccountsView: View {
 
     var body: some View {
         let _ = presentation.prepare(browser.history)
-        NavigationStack {
+        Group {
+            if usesGlass {
+                accountContent
+            } else {
+                NavigationStack { accountContent }
+            }
+        }
+        .sheet(isPresented: $newAccount) {
+            AccountFormView(browser: browser, account: nil, showsInfo: $showsInfo)
+        }
+        .sheet(item: $editedAccount) { account in
+            AccountFormView(browser: browser, account: account, showsInfo: $showsInfo)
+        }
+        .sheet(isPresented: $newGroup) { AccountGroupFormView(browser: browser, group: nil) }
+        .sheet(item: $editedGroup) { group in AccountGroupFormView(browser: browser, group: group) }
+        .confirmationDialog("Удалить счёт? Операции банка не удаляются.",
+                            isPresented: $confirmAccountDeletion, titleVisibility: .visible) {
+            Button("Удалить счёт", role: .destructive) {
+                persist { history in history.accounts?.removeAll { deletedAccounts.contains($0.id) } }
+                deletedAccounts = []
+            }
+            Button("Отмена", role: .cancel) { deletedAccounts = [] }
+        }
+        .confirmationDialog("Удалить группу?", isPresented: $confirmGroupDeletion, titleVisibility: .visible) {
+            Button("Удалить группу", role: .destructive) { deleteGroup() }
+            Button("Отмена", role: .cancel) { deletedGroup = nil }
+        } message: {
+            Text("Счета останутся в разделе «Без группы».")
+        }
+        .alert("Не удалось сохранить", isPresented: $saveError) {
+            Button("OK", role: .cancel) { }
+        } message: { Text(browser.message) }
+    }
+
+    // The glass drawer has no navigation container: its material cannot extend into the status bar.
+    private var accountContent: some View {
             List {
                 Section {
                     HStack {
@@ -98,32 +133,6 @@ struct AccountsView: View {
                     }
                 }
             }
-        }
-        .sheet(isPresented: $newAccount) {
-            AccountFormView(browser: browser, account: nil, showsInfo: $showsInfo)
-        }
-        .sheet(item: $editedAccount) { account in
-            AccountFormView(browser: browser, account: account, showsInfo: $showsInfo)
-        }
-        .sheet(isPresented: $newGroup) { AccountGroupFormView(browser: browser, group: nil) }
-        .sheet(item: $editedGroup) { group in AccountGroupFormView(browser: browser, group: group) }
-        .confirmationDialog("Удалить счёт? Операции банка не удаляются.",
-                            isPresented: $confirmAccountDeletion, titleVisibility: .visible) {
-            Button("Удалить счёт", role: .destructive) {
-                persist { history in history.accounts?.removeAll { deletedAccounts.contains($0.id) } }
-                deletedAccounts = []
-            }
-            Button("Отмена", role: .cancel) { deletedAccounts = [] }
-        }
-        .confirmationDialog("Удалить группу?", isPresented: $confirmGroupDeletion, titleVisibility: .visible) {
-            Button("Удалить группу", role: .destructive) { deleteGroup() }
-            Button("Отмена", role: .cancel) { deletedGroup = nil }
-        } message: {
-            Text("Счета останутся в разделе «Без группы».")
-        }
-        .alert("Не удалось сохранить", isPresented: $saveError) {
-            Button("OK", role: .cancel) { }
-        } message: { Text(browser.message) }
     }
 
     private var compactHeader: some View {
@@ -150,8 +159,6 @@ struct AccountsView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var accountList: some View {
