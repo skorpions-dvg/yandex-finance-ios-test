@@ -170,7 +170,7 @@ extension StatementImporterTests {
         let parsed: StatementImportResult
         do { parsed = try StatementImporter.importPDF(at: url) }
         catch {
-            print("DIAG_PARSE_CELLS " + cells.map { Data($0.text.utf8).base64EncodedString() + ":\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";"))
+            fputs("DIAG_PARSE_CELLS " + cells.map { Data($0.text.utf8).base64EncodedString() + ":\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";") + "\n", stderr)
             throw error
         }
         expect(parsed.operations.count == 4, "two physical tables with multiline descriptions")
