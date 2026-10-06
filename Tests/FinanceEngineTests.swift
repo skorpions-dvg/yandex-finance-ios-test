@@ -358,6 +358,21 @@ struct FinanceEngineTests {
         require(old != nil && old?.accounts == nil, "older saved history without accounts still opens")
     }
 
+    static func testAccountBalance() {
+        let since = BankDateParser.parse("2024-02-05T12:00:00Z")!
+        let operations = [
+            op(-1_000, kind: "expense", category: "Такси", date: "2024-02-05T11:59:00Z"),
+            op(-2_000, kind: "expense", category: "Такси", date: "2024-02-05T12:00:00Z"),
+            op(50_000, kind: "income", date: "2024-02-06T10:00:00Z"),
+            op(-3_000, kind: "expense", status: "В обработке", category: "Супермаркеты", date: "2024-02-06T11:00:00Z"),
+            op(-9_000, kind: "expense", status: "Отменена", category: "Супермаркеты", date: "2024-02-06T12:00:00Z"),
+        ]
+        require(FinancialEngine.accountBalance(startKopecks: 100_000, since: since, tracksBankCard: true, operations: operations) == 145_000,
+                "card balance: start + movements from the moment it was entered, pending included, cancelled not")
+        require(FinancialEngine.accountBalance(startKopecks: 100_000, since: since, tracksBankCard: false, operations: operations) == 100_000,
+                "an account not linked to the card keeps its entered balance")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -735,6 +750,7 @@ struct FinanceEngineTests {
         testMonthForecast()
         testOperationSearch()
         testBackup()
+        testAccountBalance()
 
         print("Finance engine tests passed")
     }

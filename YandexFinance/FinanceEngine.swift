@@ -545,6 +545,20 @@ enum FinancialEngine {
             topExpenseGrowth: best)
     }
 
+    // MARK: - Account balances
+
+    /// Current balance of a user account: the balance entered at `since`, plus, for the scanned bank card, every
+    /// bank movement after that moment. Cancelled operations do not move money; pending ones already reduce the
+    /// available balance in the bank, so they count. Manual operations are added in a later version.
+    static func accountBalance(startKopecks: Int64, since: Date, tracksBankCard: Bool, operations: [FinancialOperationInput]) -> Int64 {
+        guard tracksBankCard else { return startKopecks }
+        return operations.reduce(startKopecks) { balance, operation in
+            guard let date = BankDateParser.parse(operation.occurredAt), date >= since,
+                  classify(operation).type != .cancelled else { return balance }
+            return balance + operation.amountKopecks
+        }
+    }
+
     // MARK: - Search
 
     /// Search over saved operations: every word of the query has to match. A word matches when it occurs in the title,

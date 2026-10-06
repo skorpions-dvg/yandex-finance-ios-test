@@ -57,6 +57,10 @@ struct OperationsHomeView: View {
                 }
             }
             .listStyle(.insetGrouped)
+            // Swipe right on the main screen opens the accounts, like in Money Flow.
+            .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
+                if drag.translation.width > 100 && abs(drag.translation.height) < 60 { showAccounts = true }
+            })
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -83,8 +87,7 @@ struct OperationsHomeView: View {
                 }
             }
             .sheet(isPresented: $showAccounts) {
-                ComingSoonSheet(title: "Счета",
-                                text: "Счета и группы появятся в следующей версии.")
+                AccountsView(browser: browser)
             }
             .sheet(isPresented: $showSearch) {
                 SearchOperationsView(browser: browser)
