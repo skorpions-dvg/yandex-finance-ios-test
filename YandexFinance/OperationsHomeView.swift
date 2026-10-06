@@ -3,6 +3,7 @@ import SwiftUI
 /// Main "Операции" screen
 struct OperationsHomeView: View {
     @ObservedObject var browser: BankBrowser
+    @State private var presentation = FinancePresentationCache()
     
     @State private var period: HistoryPeriod = .lastDays(30)
     @State private var historyExpanded: Bool? = nil
@@ -20,29 +21,29 @@ struct OperationsHomeView: View {
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
     
     // MARK: - Computed values
-    private var inputs: [FinancialOperationInput] {
-        browser.history.financialInputs
-    }
     private var interval: DateInterval {
         historyInterval(period)
     }
     private var report: FinanceReport {
-        FinancialEngine.report(inputs, in: interval, taxonomy: browser.history.expenseTaxonomy)
+        presentation.report(browser.history, interval: interval)
     }
     private var isHistoryExpanded: Bool {
         historyExpanded ?? historyAlwaysExpanded
     }
     private var historyCount: Int {
-        browser.history.allOperations.reduce(0) { sum, op in
-            if let date = BankDateParser.parse(op.occurredAt), interval.contains(date) {
-                return sum + 1
+        presentation.value("count:\(interval.start):\(interval.end)") {
+            browser.history.allOperations.reduce(0) { sum, op in
+                if let date = BankDateParser.parse(op.occurredAt), interval.contains(date) {
+                    return sum + 1
+                }
+                return sum
             }
-            return sum
         }
     }
     
     // MARK: - Body
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         NavigationStack {
             ScrollViewReader { proxy in
                 List {
@@ -106,12 +107,9 @@ struct OperationsHomeView: View {
                         }
                     }
                 }
-                .sheet(isPresented: $showAccounts) {
-                    AccountsView(browser: browser)
-                }
                 .sheet(isPresented: $showForecast) {
                     let accounts = browser.history.accounts ?? []
-                    ForecastDetailView(forecast: FinancialEngine.monthForecast(inputs, taxonomy: browser.history.expenseTaxonomy),
+                    ForecastDetailView(forecast: presentation.forecast(browser.history),
                                        balanceKopecks: accounts.isEmpty ? nil : currentBalance(accounts),
                                        bufferKopecks: Int64(reserveBufferRubles) * 100)
                 }
@@ -138,6 +136,30 @@ struct OperationsHomeView: View {
                 }
             }
         }
+        .overlay(alignment: .leading) {
+            if showAccounts {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Color.black.opacity(0.3)
+                            .ignoresSafeArea()
+                            .onTapGesture { showAccounts = false }
+                        AccountsView(browser: browser, onClose: { showAccounts = false })
+                            .frame(width: max(0, geometry.size.width - 24))
+                            .background(.background)
+                            .clipShape(.rect(bottomTrailingRadius: 20, topTrailingRadius: 20))
+                            .shadow(radius: 12)
+                            .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
+                                if drag.translation.width < -100 && abs(drag.translation.height) < 60 {
+                                    showAccounts = false
+                                }
+                            })
+                    }
+                }
+                .transition(.move(edge: .leading))
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: showAccounts)
+        .onChange(of: browser.selectedTab) { _, _ in showAccounts = false }
     }
 
     private func revealSavedOperation() {
@@ -244,7 +266,7 @@ struct OperationsHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             let accounts = browser.history.accounts ?? []
-            let f = FinancialEngine.monthForecast(inputs, taxonomy: browser.history.expenseTaxonomy)
+            let f = presentation.forecast(browser.history)
             HStack(alignment: .top) {
                 Button { showAccounts = true } label: {
                     VStack(alignment: .leading, spacing: 4) {
@@ -340,14 +362,24 @@ struct OperationsHomeView: View {
     // MARK: - Day Sections
     /// Operations of the period grouped by calendar day, newest day and newest operation first.
     private var dayGroups: [(day: Date, operations: [BankOperation])] {
-        let dated = browser.history.allOperations.compactMap { op -> (BankOperation, Date)? in
-            guard let date = BankDateParser.parse(op.occurredAt), interval.contains(date) else { return nil }
-            return (op, date)
+        presentation.value("days:\(interval.start):\(interval.end)") {
+            let dated = browser.history.allOperations.compactMap { op -> (BankOperation, Date)? in
+                guard let date = BankDateParser.parse(op.occurredAt), interval.contains(date) else { return nil }
+                return (op, date)
+            }
+            let byDay = Dictionary(grouping: dated) { Calendar.current.startOfDay(for: $0.1) }
+            return byDay.keys.sorted(by: >).map { day in
+                (day, byDay[day]!.sorted { $0.1 > $1.1 }.map(\.0))
+            }
         }
-        let byDay = Dictionary(grouping: dated) { Calendar.current.startOfDay(for: $0.1) }
-        return byDay.keys.sorted(by: >).map { day in
-            (day, byDay[day]!.sorted { $0.1 > $1.1 }.map(\.0))
+    }
+
+    private func resolvedInput(for operation: BankOperation) -> FinancialOperationInput? {
+        let byID: [String: FinancialOperationInput] = presentation.value("inputsByID") {
+            Dictionary(zip(browser.history.allOperations, presentation.inputs(browser.history)).map { ($0.identity, $1) },
+                       uniquingKeysWith: { _, last in last })
         }
+        return byID[operation.identity]
     }
 
     private func dayTotal(_ operations: [BankOperation]) -> Int64 {
@@ -365,14 +397,14 @@ struct OperationsHomeView: View {
                         Button {
                             editedOperation = browser.history.manualOperations?.first { $0.id == op.manualID }
                         } label: {
-                            OperationRow(operation: op, input: browser.history.financialInput(for: op)).foregroundStyle(.primary)
+                            OperationRow(operation: op, input: resolvedInput(for: op)).foregroundStyle(.primary)
                         }
                         .buttonStyle(.plain)
                     } else {
                         NavigationLink {
                             OperationDetailView(browser: browser, operation: op)
                         } label: {
-                            OperationRow(operation: op, input: browser.history.financialInput(for: op))
+                            OperationRow(operation: op, input: resolvedInput(for: op))
                         }
                     }
                 }
@@ -386,11 +418,13 @@ struct OperationsHomeView: View {
         }
     }
 
-    /// Sum of the accounts that show their balance, the same way the accounts screen counts them.
+    /// Accounts and groups selected for the main screen's current balance.
     private func currentBalance(_ accounts: [Account]) -> Int64 {
-        accounts.filter { $0.contributesToBalance(groups: browser.history.accountGroups ?? []) }.reduce(0) { total, account in
-            total + account.balance(bankOperations: browser.history.operations.map(\.financialInput),
-                                    manual: browser.history.manualOperations ?? [])
+        presentation.value("balance") {
+            let bankInputs = browser.history.operations.map(\.financialInput)
+            return accounts.filter { $0.contributesToBalance(groups: browser.history.accountGroups ?? []) }.reduce(0) { total, account in
+                total + account.balance(bankOperations: bankInputs, manual: browser.history.manualOperations ?? [])
+            }
         }
     }
 

@@ -1,0 +1,45 @@
+import Foundation
+
+/// UI-only memoization. Sync messages and tab changes do not alter financial data.
+final class FinancePresentationCache {
+    private var snapshot: SavedHistory?
+    private var values: [String: Any] = [:]
+
+    func prepare(_ history: SavedHistory) {
+        if let old = snapshot,
+           old.operations == history.operations,
+           old.manualOperations == history.manualOperations,
+           old.expenseCategories == history.expenseCategories,
+           old.categoryRules == history.categoryRules,
+           old.categoryOverrides == history.categoryOverrides,
+           old.accounts == history.accounts,
+           old.accountGroups == history.accountGroups {
+            return
+        }
+        snapshot = history
+        values.removeAll(keepingCapacity: true)
+    }
+
+    func value<T>(_ key: String, compute: () -> T) -> T {
+        if let cached = values[key] as? T { return cached }
+        let result = compute()
+        values[key] = result
+        return result
+    }
+
+    func inputs(_ history: SavedHistory) -> [FinancialOperationInput] {
+        value("inputs") { history.financialInputs }
+    }
+
+    func report(_ history: SavedHistory, interval: DateInterval) -> FinanceReport {
+        value("report:\(interval.start):\(interval.end)") {
+            FinancialEngine.report(inputs(history), in: interval, taxonomy: history.expenseTaxonomy)
+        }
+    }
+
+    func forecast(_ history: SavedHistory, now: Date = Date()) -> FinancialEngine.MonthForecast {
+        value("forecast:\(Calendar.current.startOfDay(for: now))") {
+            FinancialEngine.monthForecast(inputs(history), now: now, taxonomy: history.expenseTaxonomy)
+        }
+    }
+}

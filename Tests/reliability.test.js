@@ -634,7 +634,9 @@ assert.match(financeEngine, /date >= interval\.start && date < interval\.end/);
 assert.match(appSwift, /Не распознано дат/);
 assert.match(financeEngine, /Снятие наличных — перемещение денег, а не покупка/);
 assert.match(financeTests, /cash withdrawal/);
-assert.match(appSwift, /let report = FinancialEngine\.report/);
+assert.match(appSwift, /let report = presentation\.report\(browser\.history, interval: interval\)/);
+const presentationCacheSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinancePresentationCache.swift'), 'utf8');
+assert.match(presentationCacheSwift, /FinancialEngine\.report\(inputs\(history\), in: interval, taxonomy: history\.expenseTaxonomy\)/);
 assert.match(appSwift, /resetLocalStorage/);
 const vaultSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/Vault.swift'), 'utf8');
 assert.match(vaultSwift, /AES\.GCM\.open\(box, using: SymmetricKey\(data: bytes\)\)[\s\S]{0,120}remember\(bytes\)/,

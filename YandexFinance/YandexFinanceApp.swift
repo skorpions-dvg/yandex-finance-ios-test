@@ -127,6 +127,10 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Приложение") {
+                    LabeledContent("Версия", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
+                    LabeledContent("Сборка", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
+                }
                 if let storageError = browser.storageError {
                     Section("Хранилище недоступно") {
                         Label(storageError, systemImage: "exclamationmark.triangle.fill")
@@ -429,6 +433,7 @@ struct FinanceCategoryOperationsView: View {
 @MainActor
 struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
+    @State private var presentation = FinancePresentationCache()
     // Selected month start date (first day of the month). Defaults to current month.
     @State private var selectedMonthStart: Date = monthStart(of: Date())
 
@@ -489,11 +494,14 @@ struct FinanceDashboardView: View {
         // Compute the interval based on the selected month.
         let monthStart = selectedMonthStart
         let interval = DateInterval(start: monthStart, end: Calendar.current.date(byAdding: .month, value: 1, to: monthStart)!)
-        let inputs = browser.history.financialInputs
-        let report = FinancialEngine.report(inputs, in: interval, taxonomy: browser.history.expenseTaxonomy)
-        let save = FinancialEngine.saveAccountSummary(inputs, in: interval)
+        let _ = presentation.prepare(browser.history)
+        let inputs = presentation.inputs(browser.history)
+        let report = presentation.report(browser.history, interval: interval)
+        let save = presentation.value("save:\(interval.start):\(interval.end)") { FinancialEngine.saveAccountSummary(inputs, in: interval) }
         let periods = monthComparisonPeriods(selectedStart: monthStart)
-        let comparison = FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous, taxonomy: browser.history.expenseTaxonomy)
+        let comparison = presentation.value("comparison:\(periods.current):\(periods.previous)") {
+            FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous, taxonomy: browser.history.expenseTaxonomy)
+        }
         NavigationStack {
             List {
                     HStack {

@@ -26,6 +26,7 @@ private func accountBalance(_ account: Account, history: SavedHistory) -> Int64 
 
 struct AccountsView: View {
     @ObservedObject var browser: BankBrowser
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var editMode: EditMode = .inactive
     @State private var collapsed: Set<UUID> = []
@@ -68,7 +69,9 @@ struct AccountsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Закрыть", systemImage: "xmark") { dismiss() }
+                    Button("Закрыть", systemImage: "xmark") {
+                        if let onClose { onClose() } else { dismiss() }
+                    }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
