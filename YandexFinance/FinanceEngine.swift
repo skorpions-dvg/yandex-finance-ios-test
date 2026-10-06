@@ -449,7 +449,7 @@ enum FinancialEngine {
             }
         }
 
-        let incomeOrder = ["Переводы от других", "Пополнения", "Зарплата и выплаты", "Кэшбэк", "Проценты", "Прочие доходы"]
+        let incomeOrder = incomeSubcategoryOrder
         let expenseOrder = expenseGroupOrder + ["Сплит", "Возвраты"]
         let incompleteOrder = ["В обработке", "Не определено", "Отменено"]
         let incompleteLines = incompleteOrder.compactMap { title -> FinanceLine? in
@@ -971,7 +971,19 @@ enum FinancialEngine {
                                   interestIncomeKopecks: interest, operationCount: tracked)
     }
 
+    /// Operations entered by hand carry their chosen category in `purpose` as "manual-category:Group/Subcategory"
+    /// (or "manual-category:Subcategory" for income); it wins over any text guess.
+    static let manualCategoryPrefix = "manual-category:"
+
+    private static func manualCategory(_ operation: FinancialOperationInput) -> [String]? {
+        guard let purpose = operation.purpose, purpose.hasPrefix(manualCategoryPrefix) else { return nil }
+        return purpose.dropFirst(manualCategoryPrefix.count).split(separator: "/", maxSplits: 1).map(String.init)
+    }
+
+    static let incomeSubcategoryOrder = ["Переводы от других", "Пополнения", "Зарплата и выплаты", "Кэшбэк", "Проценты", "Прочие доходы"]
+
     static func incomeCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> String {
+        if let manual = manualCategory(operation), manual.count == 1, incomeSubcategoryOrder.contains(manual[0]) { return manual[0] }
         let assessment = assessment ?? classify(operation)
         let combined = normalized([operation.description, operation.category, operation.purpose ?? ""].joined(separator: " "))
         if containsAny(combined, ["кэшбэк", "кешбэк", "cashback"]) { return "Кэшбэк" }
@@ -992,6 +1004,10 @@ enum FinancialEngine {
     ]
 
     static func expenseCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> FinanceCategoryPath {
+        if let manual = manualCategory(operation), manual.count == 2,
+           expenseGroupOrder.contains(manual[0]), expenseSubcategoryOrder.contains(manual[1]) {
+            return FinanceCategoryPath(group: manual[0], subcategory: manual[1])
+        }
         let assessment = assessment ?? classify(operation)
         let category = normalized(operation.category)
         let kind = normalized(operation.kind)

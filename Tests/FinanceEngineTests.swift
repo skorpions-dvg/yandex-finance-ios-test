@@ -413,6 +413,46 @@ struct FinanceEngineTests {
         require(FinancialEngine.reserveStatus(0, bufferKopecks: 25_000) == .tight, "zero is tight, not short")
     }
 
+    static func testManualOperations() {
+        let day = Date(timeIntervalSince1970: 1_760_000_000)
+        let cash = Account(name: "Наличные", icon: "banknote", color: "green", startBalanceKopecks: 500_000, startDate: day)
+        let card = Account(name: "Карта", icon: "creditcard", color: "yellow", startBalanceKopecks: 1_000_000, startDate: day, tracksBankCard: true)
+        let coffee = ManualOperation(kind: .expense, amountKopecks: 25_000, date: day.addingTimeInterval(60), accountID: cash.id,
+                                     group: "Еда", subcategory: "Кафе и рестораны", note: "Кофе")
+        let gift = ManualOperation(kind: .income, amountKopecks: 300_000, date: day.addingTimeInterval(120), accountID: cash.id,
+                                   subcategory: "Переводы от других", note: "Подарок")
+        let toCard = ManualOperation(kind: .transfer, amountKopecks: 100_000, date: day.addingTimeInterval(180), accountID: cash.id, toAccountID: card.id)
+        let before = ManualOperation(kind: .expense, amountKopecks: 9_900, date: day.addingTimeInterval(-60), accountID: cash.id,
+                                     group: "Еда", subcategory: "Супермаркеты")
+        let manual = [coffee, gift, toCard, before]
+
+        let coffeeInput = coffee.bankOperation.financialInput
+        require(FinancialEngine.classify(coffeeInput).type == .expense, "manual expense is an expense")
+        require(FinancialEngine.expenseCategory(for: coffeeInput) == FinanceCategoryPath(group: "Еда", subcategory: "Кафе и рестораны"),
+                "the chosen category wins over the text guess")
+        let giftInput = gift.bankOperation.financialInput
+        require(FinancialEngine.classify(giftInput).type == .income && FinancialEngine.incomeCategory(for: giftInput) == "Переводы от других",
+                "manual income keeps its chosen subcategory")
+        require(FinancialEngine.classify(toCard.bankOperation.financialInput).type == .internalTransfer, "a transfer between own accounts is a movement")
+        require(coffee.bankOperation.isManual && coffee.bankOperation.manualID == coffee.id, "the record points back to its manual operation")
+
+        var history = SavedHistory()
+        history.manualOperations = manual
+        let interval = DateInterval(start: day.addingTimeInterval(-3_600), end: day.addingTimeInterval(3_600))
+        let report = FinancialEngine.report(history.allOperations.map(\.financialInput), in: interval)
+        require(report.incomeKopecks == 300_000 && report.netExpenseKopecks == 25_000 + 9_900,
+                "manual income and expenses enter the report; the transfer does not")
+
+        require(cash.balance(bankOperations: [], manual: manual) == 500_000 - 25_000 + 300_000 - 100_000,
+                "cash balance: entered balance, then expenses, income and transfers from its start date; earlier entries are already in it")
+        require(card.balance(bankOperations: [], manual: manual) == 1_000_000,
+                "the scanned card is moved only by the bank, never by manual entries")
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.manualOperations == manual, "manual operations survive a backup")
+        } catch { require(false, "backup with manual operations failed: \(error)") }
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -793,6 +833,7 @@ struct FinanceEngineTests {
         testAccountBalance()
         testAccountReorder()
         testMonthReserve()
+        testManualOperations()
 
         print("Finance engine tests passed")
     }

@@ -29,5 +29,16 @@
 - `BankBrowser.swift` — скрытая страница банка, обновление, вход по коду, сохранение (`updateUserData`);
 - `Models.swift` — модели и резервная копия; `FinanceEngine.swift` — расчёты (только с тестами).
 
+## Окружение на ПК пользователя (Windows 11)
+Доступно только Codex, запущенному на этом ПК (ярлык «Codex — Finance Test»). Облачный Codex из приложения ChatGPT работает только с репозиторием GitHub: локальных программ ниже у него нет — он правит код и пушит в ветку, а проверку и сборку делает GitHub Actions.
+- Git for Windows (`C:\Program Files\Git\cmd\git.exe`), доступ к GitHub сохранён в Git Credential Manager.
+- Swift 6.4 for Windows — компилирует и запускает финансовые тесты локально (`.local\check.ps1`; SwiftUI/Charts/PDFKit на Windows не собираются — их проверяет GitHub Actions).
+- Node.js — встроенный в Bionic: `%LOCALAPPDATA%\Programs\Bionic\resources\app\.webpack-bionic\bin\node.exe` (JS-тесты; `check.ps1` находит его сам).
+- Python 3 — для небольших скриптов.
+- LM Studio с локальной моделью gpt-oss-20b: сервер включается `%USERPROFILE%\.lmstudio\bin\lms.exe server start --port 1234`, задание — `python .local\lm.py <задание.md> <файлы…>` (ответ в `.local\lm-out`). Годится для мелких задач, ответы проверять: модель путает API.
+- `.local\ci.ps1` — сборка в GitHub Actions и скачивание IPA; `.local\check.ps1` — локальные проверки; `.local\apply.py` — применить ответ локальной модели; `.local\gpt.ps1` — вызов Codex из другого агента. Папка `.local` не в git.
+- Установка на iPhone — SideStore (iloader на ПК, LocalDevVPN на телефоне): пользователь сам ставит IPA, полученную из сборки.
+- Текущие задания этапов — в `docs/STAGE-NN.md`.
+
 ## Стиль
 Как в существующем коде; интерфейс по образцу приложения Money Flow; иконки — SF Symbols; тексты интерфейса по-русски.

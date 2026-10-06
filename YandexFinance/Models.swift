@@ -100,6 +100,91 @@ struct SavedHistory: Codable {
     /// re-imported from the bank, which is why the backup exists.
     var accountGroups: [AccountGroup]?
     var accounts: [Account]?
+    /// Income, expenses and transfers entered by hand (cash, other banks); not re-importable either.
+    var manualOperations: [ManualOperation]?
+
+    /// Bank operations together with the manual ones, for every list, report and forecast.
+    var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
+}
+
+/// An operation entered by hand. It becomes a regular `BankOperation` (identity "manual:<id>") for the reports,
+/// so all classification rules apply; its chosen category travels in `purpose`.
+struct ManualOperation: Codable, Equatable, Identifiable {
+    enum Kind: String, Codable, CaseIterable {
+        case expense, income, transfer
+    }
+
+    var id = UUID()
+    var kind: Kind
+    /// Always positive; the sign comes from `kind`.
+    var amountKopecks: Int64
+    var date: Date
+    /// Account the money leaves (expense, transfer) or arrives at (income).
+    var accountID: UUID?
+    /// Destination account of a transfer.
+    var toAccountID: UUID?
+    /// Expense: one of `FinancialEngine.expenseGroupOrder`; income: nil.
+    var group: String?
+    /// Expense: one of `FinancialEngine.expenseSubcategoryOrder`; income: one of `FinancialEngine.incomeSubcategoryOrder`.
+    var subcategory: String?
+    var note: String = ""
+
+    static let identityPrefix = "manual:"
+
+    var bankOperation: BankOperation {
+        let formatter = ISO8601DateFormatter()
+        let categoryPath: String?
+        switch kind {
+        case .expense: categoryPath = group.flatMap { g in subcategory.map { "\(g)/\($0)" } }
+        case .income: categoryPath = subcategory
+        case .transfer: categoryPath = nil
+        }
+        let title: String
+        switch kind {
+        case .expense, .income: title = note.isEmpty ? (subcategory ?? "Операция") : note
+        case .transfer: title = note.isEmpty ? "Перевод между своими счетами" : note
+        }
+        return BankOperation(identity: Self.identityPrefix + id.uuidString,
+                             occurredAt: formatter.string(from: date),
+                             timePrecision: "manual",
+                             description: title,
+                             amountKopecks: kind == .income ? amountKopecks : -amountKopecks,
+                             currency: "RUB",
+                             status: "Выполнено",
+                             category: kind == .transfer ? "Переводы между своими счетами" : (subcategory ?? "Прочее"),
+                             mcc: nil,
+                             purpose: categoryPath.map { FinancialEngine.manualCategoryPrefix + $0 },
+                             paymentMethod: "Вручную",
+                             providers: [],
+                             kind: kind == .income ? "income" : (kind == .expense ? "expense" : "internal_transfer"))
+    }
+}
+
+extension BankOperation {
+    var isManual: Bool { identity.hasPrefix(ManualOperation.identityPrefix) }
+    /// The id of the manual operation behind this record, if it was entered by hand.
+    var manualID: UUID? { isManual ? UUID(uuidString: String(identity.dropFirst(ManualOperation.identityPrefix.count))) : nil }
+}
+
+extension Account {
+    /// Current balance: the entered balance, card movements from the bank (for the card account) and manual
+    /// operations on this account dated from `startDate` on. Manual entries never move the scanned bank card,
+    /// because its side of a transfer arrives from the bank anyway.
+    func balance(bankOperations: [FinancialOperationInput], manual: [ManualOperation]) -> Int64 {
+        var total = FinancialEngine.accountBalance(startKopecks: startBalanceKopecks, since: startDate,
+                                                   tracksBankCard: tracksBankCard, operations: bankOperations)
+        guard !tracksBankCard else { return total }
+        for operation in manual where operation.date >= startDate {
+            switch operation.kind {
+            case .expense: if operation.accountID == id { total -= operation.amountKopecks }
+            case .income: if operation.accountID == id { total += operation.amountKopecks }
+            case .transfer:
+                if operation.accountID == id { total -= operation.amountKopecks }
+                if operation.toAccountID == id { total += operation.amountKopecks }
+            }
+        }
+        return total
+    }
 }
 
 struct AccountGroup: Codable, Equatable, Identifiable {
