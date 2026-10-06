@@ -164,6 +164,13 @@ struct SettingsView: View {
                     if !browser.message.isEmpty {
                         Text(browser.message).font(.footnote).accessibilityIdentifier("syncStatus")
                     }
+                    if let date = browser.history.lastCompletedSync {
+                        Text("Последнее сканирование новых операций: \(date.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Text("Сканирование новых операций ещё не завершалось успешно")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     Toggle("Обновлять при открытии", isOn: $browser.autoUpdate).disabled(browser.busy)
                     if !browser.autoUpdate {
                         Text("Автообновление выключено. Новые операции не будут проверяться при открытии приложения. После сброса хранилища это делается специально; включите его после ручной синхронизации.")

@@ -11,6 +11,8 @@ struct OperationsHomeView: View {
     @State private var showAccounts = false
     @State private var showSearch = false
     @State private var showAdd = false
+    @State private var pendingSavedOperation: ManualOperation?
+    @State private var lastSavedOperationID: UUID?
     @State private var editedOperation: ManualOperation?
     @State private var showCustomDates = false
     @State private var customFrom = Date()
@@ -42,84 +44,111 @@ struct OperationsHomeView: View {
     // MARK: - Body
     var body: some View {
         NavigationStack {
-            List {
-                periodRow
-                summary
-                if browser.busy {
-                    busyRow
-                }
-                Section {
-                    historyHeader
-                }
-                if historyCount == 0 {
-                    Text("За этот период операций нет")
-                        .foregroundStyle(.secondary)
-                } else if isHistoryExpanded {
-                    daySections
-                }
-            }
-            .listStyle(.insetGrouped)
-            // Swipe right on the main screen opens the accounts, like in Money Flow.
-            .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
-                if drag.translation.width > 100 && abs(drag.translation.height) < 60 { showAccounts = true }
-            })
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showAccounts = true
-                    } label: {
-                        Label("Все счета", systemImage: "wallet.pass")
-                            .labelStyle(.titleAndIcon)
+            ScrollViewReader { proxy in
+                List {
+                    periodRow.id("operations-top")
+                    summary
+                    if let operation = browser.history.manualOperations?.first(where: { $0.id == lastSavedOperationID }) {
+                        Section {
+                            HStack(alignment: .top) {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Операция сохранена").font(.subheadline.weight(.semibold))
+                                    Text("\(operation.date.formatted(date: .abbreviated, time: .shortened)) · \((Decimal(operation.amountKopecks) / 100).formatted(.currency(code: "RUB")))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Скрыть", systemImage: "xmark") { lastSavedOperationID = nil }
+                                    .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if browser.busy {
+                        busyRow
+                    }
+                    Section {
+                        historyHeader
+                    }
+                    if historyCount == 0 {
+                        Text("За этот период операций нет")
+                            .foregroundStyle(.secondary)
+                    } else if isHistoryExpanded {
+                        daySections
                     }
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        showSearch = true
-                    } label: {
-                        Image(systemName: "magnifyingglass")
+                .listStyle(.insetGrouped)
+                // Swipe right on the main screen opens the accounts, like in Money Flow.
+                .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
+                    if drag.translation.width > 100 && abs(drag.translation.height) < 60 { showAccounts = true }
+                })
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            showAccounts = true
+                        } label: {
+                            Label("Все счета", systemImage: "wallet.pass")
+                                .labelStyle(.titleAndIcon)
+                        }
                     }
-                    Button {
-                        showAdd = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.orange)
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button {
+                            showSearch = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        Button {
+                            showAdd = true
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(.orange)
+                        }
                     }
                 }
-            }
-            .sheet(isPresented: $showAccounts) {
-                AccountsView(browser: browser)
-            }
-            .sheet(isPresented: $showForecast) {
-                let accounts = browser.history.accounts ?? []
-                ForecastDetailView(forecast: FinancialEngine.monthForecast(inputs),
-                                   balanceKopecks: accounts.isEmpty ? nil : currentBalance(accounts),
-                                   bufferKopecks: Int64(reserveBufferRubles) * 100)
-            }
-            .sheet(isPresented: $showSearch) {
-                SearchOperationsView(browser: browser)
-            }
-            .sheet(isPresented: $showAdd) {
-                ManualOperationFormView(browser: browser, onSave: showSavedOperation)
-            }
-            .sheet(item: $editedOperation) { operation in
-                ManualOperationFormView(browser: browser, operation: operation)
-            }
-            .sheet(isPresented: $showCustomDates) {
-                CustomDatesSheet(period: $period,
-                                 from: $customFrom,
-                                 through: $customThrough)
+                .sheet(isPresented: $showAccounts) {
+                    AccountsView(browser: browser)
+                }
+                .sheet(isPresented: $showForecast) {
+                    let accounts = browser.history.accounts ?? []
+                    ForecastDetailView(forecast: FinancialEngine.monthForecast(inputs),
+                                       balanceKopecks: accounts.isEmpty ? nil : currentBalance(accounts),
+                                       bufferKopecks: Int64(reserveBufferRubles) * 100)
+                }
+                .sheet(isPresented: $showSearch) {
+                    SearchOperationsView(browser: browser)
+                }
+                .sheet(isPresented: $showAdd, onDismiss: {
+                    if pendingSavedOperation != nil {
+                        revealSavedOperation()
+                        withAnimation { proxy.scrollTo("operations-top", anchor: .top) }
+                    }
+                }) {
+                    ManualOperationFormView(browser: browser) { operation in
+                        pendingSavedOperation = operation
+                    }
+                }
+                .sheet(item: $editedOperation) { operation in
+                    ManualOperationFormView(browser: browser, operation: operation)
+                }
+                .sheet(isPresented: $showCustomDates) {
+                    CustomDatesSheet(period: $period,
+                                     from: $customFrom,
+                                     through: $customThrough)
+                }
             }
         }
     }
 
-    private func showSavedOperation(_ operation: ManualOperation) {
-        // Saving must immediately reveal the entry, even with collapsed history or an older selected period.
-        if !interval.contains(operation.date) {
-            period = .custom(from: operation.date, through: operation.date)
-        }
+    private func revealSavedOperation() {
+        guard let operation = pendingSavedOperation else { return }
+        pendingSavedOperation = nil
+        // Apply the selected day after the sheet closes so presentation updates cannot mask the saved entry.
+        customFrom = operation.date
+        customThrough = operation.date
+        period = .custom(from: operation.date, through: operation.date)
         historyExpanded = true
+        lastSavedOperationID = operation.id
     }
     
     // MARK: - Period Row

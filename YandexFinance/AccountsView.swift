@@ -50,7 +50,7 @@ struct AccountsView: View {
                     HStack {
                         Label("Все счета", systemImage: "wallet.pass")
                         Spacer()
-                        Text(total(accounts.filter { $0.contributesToBalance(groups: groups) })).bold().multilineTextAlignment(.trailing)
+                        Text(total(accounts)).bold().multilineTextAlignment(.trailing)
                     }
                     .moveDisabled(true)
                     .deleteDisabled(true)
@@ -174,7 +174,7 @@ struct AccountsView: View {
     }
 
     private func total(_ accounts: [Account]) -> String {
-        accountMoney(accounts.filter(\.showsBalance).reduce(0) { $0 + accountBalance($1, history: browser.history) })
+        accountMoney(accounts.reduce(0) { $0 + accountBalance($1, history: browser.history) })
     }
 
     private func groupHeader(_ group: AccountGroup) -> some View {
@@ -200,13 +200,16 @@ struct AccountsView: View {
             }
             .buttonStyle(.plain)
             .accessibilityValue(!editMode.isEditing && collapsed.contains(group.id) ? "Свёрнуто" : "Развёрнуто")
-            Button { toggleGroupBalance(group) } label: {
-                Image(systemName: group.includesInBalance == false ? "eye.slash" : "eye")
-                    .foregroundStyle(group.includesInBalance == false ? Color.secondary : Color.orange)
-                    .frame(width: 36, height: 44)
+            if editMode.isEditing {
+                Button { toggleGroupBalance(group) } label: {
+                    Image(systemName: group.includesInBalance == false ? "eye.slash" : "eye")
+                        .font(.caption)
+                        .foregroundStyle(group.includesInBalance == false ? Color.secondary : Color.primary)
+                        .frame(width: 30, height: 44)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(group.includesInBalance == false ? "Учитывать группу в текущем остатке" : "Исключить группу из текущего остатка")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(group.includesInBalance == false ? "Учитывать группу в общем балансе" : "Исключить группу из общего баланса")
         }
         .contextMenu { groupActions(group) }
     }
@@ -240,28 +243,27 @@ struct AccountsView: View {
                         .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
                     Text(account.name).foregroundStyle(.primary)
                     Spacer()
-                    if account.showsBalance {
-                        Text(accountMoney(accountBalance(account, history: browser.history)))
-                            .foregroundStyle(.primary).multilineTextAlignment(.trailing)
-                    } else {
-                        Text("—").foregroundStyle(.secondary)
-                    }
+                    Text(accountMoney(accountBalance(account, history: browser.history)))
+                        .foregroundStyle(.primary).multilineTextAlignment(.trailing)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button {
-                persist { history in
-                    guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
-                    history.accounts?[index].showsBalance.toggle()
+            if editMode.isEditing {
+                Button {
+                    persist { history in
+                        guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
+                        history.accounts?[index].showsBalance.toggle()
+                    }
+                } label: {
+                    Image(systemName: account.showsBalance ? "eye" : "eye.slash")
+                        .font(.caption)
+                        .foregroundStyle(account.showsBalance ? Color.primary : Color.secondary)
+                        .frame(width: 30, height: 44)
                 }
-            } label: {
-                Image(systemName: account.showsBalance ? "eye" : "eye.slash")
-                    .foregroundStyle(account.showsBalance ? Color.orange : Color.secondary)
-                    .frame(width: 36, height: 44)
+                .buttonStyle(.borderless)
+                .accessibilityLabel(account.showsBalance ? "Исключить счёт из текущего остатка" : "Учитывать счёт в текущем остатке")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(account.showsBalance ? "Исключить счёт из общего баланса" : "Учитывать счёт в общем балансе")
         }
     }
 
@@ -366,7 +368,7 @@ struct AccountFormView: View {
                     }
                 } footer: { Text("Остаток на счёте сейчас. Дальше он меняется операциями.") }
                 Section {
-                    Toggle("Показывать текущий остаток этого счёта в списке счетов", isOn: $showsBalance)
+                    Toggle("Учитывать счёт в текущем остатке", isOn: $showsBalance)
                 }
                 Section {
                     Toggle("Карта Яндекс Банка", isOn: $tracksBankCard)
@@ -526,9 +528,9 @@ struct AccountGroupFormView: View {
             Form {
                 TextField("Название группы", text: $name)
                 Section {
-                    Toggle("Учитывать в общем балансе", isOn: $includesInBalance)
+                    Toggle("Учитывать в текущем остатке", isOn: $includesInBalance)
                 } footer: {
-                    Text("Все счета группы учитываются в «Все счета», текущем остатке и запасе. Если выключить, счета и операции останутся доступны.")
+                    Text("Настройка влияет на текущий остаток и запас на главном экране. Суммы на странице счетов остаются видимыми.")
                 }
             }
                 .navigationTitle(group == nil ? "Новая группа" : "Группа")
