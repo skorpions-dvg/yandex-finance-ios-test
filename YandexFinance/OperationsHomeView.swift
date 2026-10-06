@@ -3,7 +3,8 @@ import SwiftUI
 /// Main "Операции" screen
 struct OperationsHomeView: View {
     @ObservedObject var browser: BankBrowser
-    @State private var presentation = FinancePresentationCache()
+    let presentation: FinancePresentationCache
+    var onTabSwipe: (Int) -> Void
     
     @State private var period: HistoryPeriod = .lastDays(30)
     @State private var historyExpanded: Bool? = nil
@@ -80,7 +81,10 @@ struct OperationsHomeView: View {
                 .listStyle(.insetGrouped)
                 // Swipe right on the main screen opens the accounts, like in Money Flow.
                 .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
-                    if drag.translation.width > 100 && abs(drag.translation.height) < 60 { showAccounts = true }
+                    guard abs(drag.translation.width) > 100, abs(drag.translation.height) < 50,
+                          drag.startLocation.y > 70 else { return }
+                    if drag.translation.width > 0 { showAccounts = true }
+                    else if drag.startLocation.x > 24 { onTabSwipe(1) }
                 })
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -140,13 +144,14 @@ struct OperationsHomeView: View {
             if showAccounts {
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
-                        Color.black.opacity(0.3)
+                        Color.black.opacity(0.12)
                             .ignoresSafeArea()
                             .onTapGesture { showAccounts = false }
-                        AccountsView(browser: browser, onClose: { showAccounts = false })
-                            .frame(width: max(0, geometry.size.width - 24))
-                            .background(.background)
-                            .clipShape(.rect(bottomTrailingRadius: 20, topTrailingRadius: 20))
+                        AccountsView(browser: browser, onClose: { showAccounts = false }, usesGlass: true)
+                            .frame(width: max(0, (geometry.size.width - 24) * 0.7))
+                            .glassEffect(.regular, in: .rect(cornerRadius: 24))
+                            .clipShape(.rect(cornerRadius: 24))
+                            .padding(.leading, 8)
                             .shadow(radius: 12)
                             .simultaneousGesture(DragGesture(minimumDistance: 40).onEnded { drag in
                                 if drag.translation.width < -100 && abs(drag.translation.height) < 60 {
@@ -159,7 +164,7 @@ struct OperationsHomeView: View {
             }
         }
         .animation(.snappy(duration: 0.25), value: showAccounts)
-        .onChange(of: browser.selectedTab) { _, _ in showAccounts = false }
+        .onDisappear { if showAccounts { showAccounts = false } }
     }
 
     private func revealSavedOperation() {
@@ -383,9 +388,11 @@ struct OperationsHomeView: View {
     }
 
     private func dayTotal(_ operations: [BankOperation]) -> Int64 {
-        operations.reduce(0) { sum, op in
-            let assessment = op.financialAssessment
-            return sum + assessment.incomeContributionKopecks + assessment.refundContributionKopecks - assessment.expenseContributionKopecks
+        presentation.value("dayTotal:\(operations.first?.identity ?? ""):\(operations.count)") {
+            operations.reduce(0) { sum, op in
+                let assessment = op.financialAssessment
+                return sum + assessment.incomeContributionKopecks + assessment.refundContributionKopecks - assessment.expenseContributionKopecks
+            }
         }
     }
 

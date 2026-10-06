@@ -588,7 +588,10 @@ assert.throws(() => parse(groupURL, groupCard.replace('2 операции','3 о
 assert.throws(() => parse(groupURL, groupCard.replace('17 марта, 12:34\n+312 ₽','Не загружено'), ''), /все составляющие/);
 assert.throws(() => parse(groupURL, groupCard + '\n' + purchase, ''), /несколько карточек/);
 assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Несколько разделов/);
-assert.match(appSwift, /TabView\(selection: \$browser.selectedTab\)/);
+assert.match(appSwift, /@State private var selectedTab = 1/);
+assert.match(appSwift, /TabView\(selection: \$selectedTab\)/);
+assert.doesNotMatch(appSwift, /TabView\(selection: \$browser.selectedTab\)/,
+  'tab navigation must not broadcast changes to every bank observer');
 assert.match(swift, /bankPageVisible = true/, 'card retry must bring the hidden bank page to the front');
 assert.match(swift, /one-time-code[\s\S]{0,300}введите код/, 'a confirmation code request must be detected, even on top of the history');
 assert.match(swift, /state == \.codeRequested \{[\s\S]{0,80}self\.requestSignIn\(\)/, 'auto update must show the bank page when a code is requested');

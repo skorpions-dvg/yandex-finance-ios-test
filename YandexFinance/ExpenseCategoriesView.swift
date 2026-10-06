@@ -14,6 +14,7 @@ private func saveExpenseCategoryChange(_ browser: BankBrowser,
 
 struct ExpenseCategoriesView: View {
     @ObservedObject var browser: BankBrowser
+    let presentation: FinancePresentationCache
     @State private var editMode: EditMode = .inactive
     @State private var collapsed: Set<UUID> = []
     @State private var newGroup = false
@@ -35,11 +36,11 @@ struct ExpenseCategoriesView: View {
     private var monthReport: FinanceReport {
         let start = monthStart(of: Date())
         let end = Calendar.current.date(byAdding: .month, value: 1, to: start)!
-        return FinancialEngine.report(browser.history.financialInputs, in: DateInterval(start: start, end: end),
-                                      taxonomy: browser.history.expenseTaxonomy)
+        return presentation.report(browser.history, interval: DateInterval(start: start, end: end))
     }
 
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         let lines = monthReport.expenseLines
         List {
             Section {

@@ -21,6 +21,8 @@ struct YandexFinanceApp: App {
 @MainActor
 struct ContentView: View {
     @ObservedObject var browser: BankBrowser
+    @State private var selectedTab = 1
+    @State private var presentation = FinancePresentationCache()
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
@@ -28,12 +30,12 @@ struct ContentView: View {
                 .padding(.top, browser.bankPageVisible ? (browser.signInRequested ? 110 : 52) : 0)
                 .allowsHitTesting(browser.bankPageVisible)
                 .accessibilityHidden(!browser.bankPageVisible)
-            TabView(selection: $browser.selectedTab) {
-                OperationsHomeView(browser: browser)
+            TabView(selection: $selectedTab) {
+                OperationsHomeView(browser: browser, presentation: presentation, onTabSwipe: switchTab)
                     .tabItem { Label("Операции", systemImage: "list.bullet.rectangle") }.tag(1)
-                FinanceDashboardView(browser: browser)
+                FinanceDashboardView(browser: browser, presentation: presentation, onTabSwipe: switchTab)
                     .tabItem { Label("Отчёты", systemImage: "chart.pie") }.tag(2)
-                SettingsView(browser: browser)
+                SettingsView(browser: browser, presentation: presentation, onTabSwipe: switchTab)
                     .tabItem { Label("Настройки", systemImage: "gearshape") }.tag(3)
             }
             .opacity(browser.bankPageVisible ? 0 : 1)
@@ -65,6 +67,23 @@ struct ContentView: View {
             // Hide the login page while leaving the same WebView mounted for scanning.
             if busy && browser.signInRequested { browser.finishSignIn() }
         }
+    }
+    private func switchTab(_ direction: Int) {
+        selectedTab = min(3, max(1, selectedTab + direction))
+    }
+}
+
+/// Root lists handle tab swipes; pushed cards keep the system's back gesture.
+struct TabSwipeModifier: ViewModifier {
+    var onSwipe: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(DragGesture(minimumDistance: 60).onEnded { drag in
+            guard abs(drag.translation.width) > 100,
+                  abs(drag.translation.height) < 50,
+                  drag.startLocation.x > 24 else { return }
+            onSwipe(drag.translation.width < 0 ? 1 : -1)
+        })
     }
 }
 
@@ -118,6 +137,8 @@ struct OperationDetailView: View {
 @MainActor
 struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
+    let presentation: FinancePresentationCache
+    var onTabSwipe: (Int) -> Void
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
@@ -125,12 +146,10 @@ struct SettingsView: View {
     @State private var showBackupImporter = false
     @State private var pendingRestore: URL?
     var body: some View {
+        let _ = presentation.prepare(browser.history)
+        let pendingCount = presentation.value("pending:\(Calendar.current.startOfDay(for: Date()))") { browser.stalePendingCount }
         NavigationStack {
             List {
-                Section("Приложение") {
-                    LabeledContent("Версия", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
-                    LabeledContent("Сборка", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
-                }
                 if let storageError = browser.storageError {
                     Section("Хранилище недоступно") {
                         Label(storageError, systemImage: "exclamationmark.triangle.fill")
@@ -156,7 +175,7 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Отображение") }
                 Section {
-                    NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser) }
+                    NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
                 }
                 Section {
                     Button("Страница банка") { browser.bankPageVisible = true }
@@ -211,8 +230,8 @@ struct SettingsView: View {
                     if let date = browser.history.lastCompletedSync {
                         Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
                     }
-                    if browser.stalePendingCount > 0 {
-                        Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(browser.stalePendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
+                    if pendingCount > 0 {
+                        Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(pendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
                             .font(.caption).foregroundStyle(.orange)
                     }
                     Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
@@ -253,7 +272,18 @@ struct SettingsView: View {
                             }
                         }
                     }
+                Section {
+                    EmptyView()
+                } footer: {
+                    Text("Версия \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · сборка \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
             }
+            .modifier(TabSwipeModifier(onSwipe: onTabSwipe))
             .navigationTitle("Настройки")
         }
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
@@ -433,7 +463,8 @@ struct FinanceCategoryOperationsView: View {
 @MainActor
 struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
-    @State private var presentation = FinancePresentationCache()
+    let presentation: FinancePresentationCache
+    var onTabSwipe: (Int) -> Void
     // Selected month start date (first day of the month). Defaults to current month.
     @State private var selectedMonthStart: Date = monthStart(of: Date())
 
@@ -606,6 +637,7 @@ struct FinanceDashboardView: View {
                     Text("Старое завершённое списание без современного типа считается расходом. Непонятное положительное поступление автоматически доходом не назначается.")
                 }.font(.footnote).foregroundStyle(.secondary)
             }
+            .modifier(TabSwipeModifier(onSwipe: onTabSwipe))
             .navigationTitle("Отчёты")
         }
     }

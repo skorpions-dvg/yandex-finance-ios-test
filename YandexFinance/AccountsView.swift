@@ -27,6 +27,8 @@ private func accountBalance(_ account: Account, history: SavedHistory) -> Int64 
 struct AccountsView: View {
     @ObservedObject var browser: BankBrowser
     var onClose: (() -> Void)? = nil
+    var usesGlass = false
+    @State private var presentation = FinancePresentationCache()
     @Environment(\.dismiss) private var dismiss
     @State private var editMode: EditMode = .inactive
     @State private var collapsed: Set<UUID> = []
@@ -45,6 +47,7 @@ struct AccountsView: View {
     private var groups: [AccountGroup] { browser.history.accountGroups ?? [] }
 
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         NavigationStack {
             List {
                 Section {
@@ -55,8 +58,9 @@ struct AccountsView: View {
                     }
                     .moveDisabled(true)
                     .deleteDisabled(true)
+                    .listRowBackground(usesGlass ? Color.clear : Color(uiColor: .systemBackground))
                 }
-                accountList
+                accountList.listRowBackground(usesGlass ? Color.clear : Color(uiColor: .systemBackground))
                 if accounts.isEmpty && groups.isEmpty {
                     ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
                                            description: Text("Добавьте наличные, банковскую карту или копилку."))
@@ -65,6 +69,10 @@ struct AccountsView: View {
             }
             .environment(\.editMode, $editMode)
             .listStyle(.plain)
+            .font(usesGlass ? .subheadline : .body)
+            .scrollContentBackground(usesGlass ? .hidden : .visible)
+            .containerBackground(usesGlass ? Color.clear : Color(uiColor: .systemBackground), for: .navigation)
+            .toolbarBackground(usesGlass ? .hidden : .automatic, for: .navigationBar)
             .navigationTitle("Счета")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -176,8 +184,12 @@ struct AccountsView: View {
         }
     }
 
+    private func cachedBalance(_ account: Account) -> Int64 {
+        presentation.value("account:\(account.id)") { accountBalance(account, history: browser.history) }
+    }
+
     private func total(_ accounts: [Account]) -> String {
-        accountMoney(accounts.reduce(0) { $0 + accountBalance($1, history: browser.history) })
+        accountMoney(accounts.reduce(0) { $0 + cachedBalance($1) })
     }
 
     private func groupHeader(_ group: AccountGroup) -> some View {
@@ -246,7 +258,7 @@ struct AccountsView: View {
                         .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
                     Text(account.name).foregroundStyle(.primary)
                     Spacer()
-                    Text(accountMoney(accountBalance(account, history: browser.history)))
+                    Text(accountMoney(cachedBalance(account)))
                         .foregroundStyle(.primary).multilineTextAlignment(.trailing)
                 }
                 .contentShape(Rectangle())
