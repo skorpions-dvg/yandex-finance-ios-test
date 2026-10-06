@@ -14,6 +14,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var signInWatch: Task<Void, Never>?
     @Published var busy = false
     @Published var message = ""
+    @Published private(set) var statementPreview: StatementImportPreview?
+    private var statementPreviewBase: Data?
     @Published var host = "bank.yandex.ru"
     @Published var history = SavedHistory()
     @Published private(set) var storageError: String?
@@ -270,17 +272,35 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         defer { busy = false }
         do {
             let results = try StatementImporter.importPDFs(urls)
-            let next = try StatementImporter.merging(results, into: history)
-            let accountCount = Set(results.filter { $0.source == .account }.flatMap { $0.operations.map(\.identity) }).count
-            let saveCount = Set(results.filter { $0.source == .save }.flatMap { $0.operations.map(\.identity) }).count
-            let ignored = results.reduce(0) { $0 + $1.ignoredAtOrAfterCutoff }
-            let unchanged = history.operations == next.operations
-            try vault.save(next)
-            history = next
-            message = "Импортировано: \(accountCount) операций платёжного счёта, \(saveCount) операций Сейва. Операций с 01.10.2026 оставлено сканеру: \(ignored)." + (unchanged ? " Операций новых нет." : "")
+            statementPreview = try StatementImporter.preview(results, into: history)
+            statementPreviewBase = try JSONEncoder().encode(history)
         } catch {
             message = "Не удалось импортировать выписки: \(error.localizedDescription)"
         }
+    }
+
+    func cancelStatementImport() {
+        statementPreview = nil; statementPreviewBase = nil
+        message = "Импорт выписок отменён."
+    }
+
+    func applyStatementImport() {
+        guard !busy, readable, let preview = statementPreview, let base = statementPreviewBase else { return }
+        do {
+            // A scan or another edit may finish while the confirmation is open.
+            // Never overwrite changes made after the preview was prepared.
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let old = try JSONDecoder().decode(SavedHistory.self, from: base)
+            guard try encoder.encode(old) == encoder.encode(history) else {
+                cancelStatementImport()
+                message = "История изменилась после просмотра. Выберите выписки ещё раз."
+                return
+            }
+            try vault.save(preview.history)
+            history = preview.history
+            message = preview.summary
+            statementPreview = nil; statementPreviewBase = nil
+        } catch { message = "Архив не сохранён: \(error.localizedDescription)" }
     }
 
     func retry(_ issue: ImportIssue) {

@@ -401,6 +401,10 @@ struct SettingsView: View {
                       defaultFilename: "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))") { result in
             if case .success = result { browser.message = "Резервная копия сохранена." }
         }
+        .alert("Импорт PDF-выписок", isPresented: Binding(get: { browser.statementPreview != nil }, set: { _ in })) {
+            Button("Применить") { browser.applyStatementImport() }
+            Button("Отмена", role: .cancel) { browser.cancelStatementImport() }
+        } message: { Text(browser.statementPreview?.summary ?? "") }
         .fileImporter(isPresented: $showBackupImporter, allowedContentTypes: [.json]) { result in
             if case .success(let url) = result { pendingRestore = url }
         }

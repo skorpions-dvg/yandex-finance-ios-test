@@ -11,6 +11,30 @@ struct StatementImportResult {
     let ignoredAtOrAfterCutoff: Int
 }
 
+/// A word in physical page coordinates (points, top-left origin).
+struct StatementCell {
+    let text: String
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+}
+
+struct StatementImportPreview {
+    let history: SavedHistory
+    let replaced: Int
+    let corrected: Int
+    let transferred: Int
+    let ambiguousChoices: Int
+    let accountCount: Int
+    let saveCount: Int
+    let ignored: Int
+    let unchanged: Bool
+    var summary: String {
+        "Будет заменено записей: \(replaced)\nИз них исправлены названия: \(corrected)\nВыборов категорий перенесено: \(transferred)\nНе перенесено (неоднозначно): \(ambiguousChoices)\n\nИмпортировано: \(accountCount) операций платёжного счёта, \(saveCount) операций Сейва. Операций с 01.10.2026 оставлено сканеру: \(ignored)." + (unchanged ? " Операций новых нет." : "")
+    }
+}
+
 enum StatementImporter {
     // Old history comes from statements. The live WebView scanner owns this date and everything newer.
     static let archiveCutoffISO = "2026-09-30T21:00:00Z" // 01.10.2026 00:00 Moscow
@@ -63,136 +87,214 @@ enum StatementImporter {
             throw AppFailure(message: "Не удалось открыть PDF-выписку.")
         }
         let pages = (0..<document.pageCount).compactMap { document.page(at: $0)?.string }
-        return try parsePages(pages)
+        let geometry = (0..<document.pageCount).map { document.page(at: $0).map(cells(from:)) ?? [] }
+        if geometry.allSatisfy({ $0.isEmpty }) { return try parsePages(pages) }
+        return try parseRows(geometry, metadata: pages.joined(separator: "\n"))
     }
 
-    // Internal on purpose: synthetic CI tests validate the parser without publishing real bank data.
+    private struct Row {
+        let description: String
+        let date: String
+        let time: String
+        let processed: String
+        let card: String?
+        let amount: Int64
+    }
+
+    // Text fixtures retain the historical parsing order; real PDFs use physical cells.
     static func parsePages(_ pages: [String]) throws -> StatementImportResult {
         let fullText = pages.joined(separator: "\n")
-        guard fullText.localizedCaseInsensitiveContains("Яндекс Банк"),
-              fullText.localizedCaseInsensitiveContains("Выписка по Договору") else {
-            throw AppFailure(message: "Это не похоже на выписку Яндекс Банка.")
-        }
-
-        if fullText.localizedCaseInsensitiveContains("банковского вклада") {
-            return try parseSavePages(pages)
-        }
-        let holder = parseHolder(fullText)
-        let coverage = parseCoverage(fullText)
-        let requiredThrough = archiveCutoff.addingTimeInterval(-86400)
-        guard let coverageEnd = coverage.end, coverageEnd >= requiredThrough else {
-            throw AppFailure(message: "Выписка заканчивается раньше 30.09.2026. Нужна выписка, которая покрывает архив до конца сентября.")
-        }
-
-        var rawRows: [(description: String, date: String, time: String, processed: String, card: String?, amount: Int64)] = []
-        for page in pages {
-            let body = transactionBody(from: page)
-            guard !body.isEmpty else { continue }
-            let ns = body as NSString
-            let matches = rowRegex.matches(in: body, range: NSRange(location: 0, length: ns.length))
-            for match in matches {
+        let source = try sourceType(fullText)
+        var rows: [Row] = []
+        let saveRegex = try NSRegularExpression(pattern: #"(?s)(.+?)\s+(\d{2}\.\d{2}\.\d{4})\s+([+−–-]\s*\d[\d\u00A0 ]*,\d{2}\s*₽)"#)
+        for (pageIndex, page) in pages.enumerated() {
+            let body = transactionBody(from: page), ns = transactionBody(from: page) as NSString
+            let regex = source == .account ? rowRegex : saveRegex
+            for (rowIndex, match) in regex.matches(in: body, range: NSRange(location: 0, length: ns.length)).enumerated() {
                 let description = collapseWhitespace(ns.substring(with: match.range(at: 1)))
-                guard !description.isEmpty,
-                      let amount = parseAmount(ns.substring(with: match.range(at: 6))) else { continue }
-                rawRows.append((description,
-                                ns.substring(with: match.range(at: 2)),
-                                ns.substring(with: match.range(at: 3)),
-                                ns.substring(with: match.range(at: 4)),
-                                match.range(at: 5).location == NSNotFound ? nil : ns.substring(with: match.range(at: 5)),
-                                amount))
+                try validateDescription(description, row: rowIndex + 1, page: pageIndex + 1)
+                guard let amount = parseAmount(ns.substring(with: match.range(at: source == .account ? 6 : 3))) else {
+                    throw ambiguous(row: rowIndex + 1, page: pageIndex + 1)
+                }
+                rows.append(Row(description: description, date: ns.substring(with: match.range(at: 2)),
+                    time: source == .account ? ns.substring(with: match.range(at: 3)) : "12:00",
+                    processed: source == .account ? ns.substring(with: match.range(at: 4)) : "",
+                    card: source == .account && match.range(at: 5).location != NSNotFound ? ns.substring(with: match.range(at: 5)) : nil,
+                    amount: amount))
             }
         }
-
-        guard !rawRows.isEmpty else {
-            throw AppFailure(message: "В выписке не удалось найти операции.")
-        }
-
-        var seenSignatures: [String: Int] = [:]
-        var operations: [BankOperation] = []
-        var ignored = 0
-
-        for row in rawRows {
-            guard let date = operationDateFormatter.date(from: row.date + " " + row.time) else { continue }
-            if date >= archiveCutoff {
-                ignored += 1
-                continue
-            }
-
-            let signature = [row.date, row.time, row.processed, row.card ?? "", String(row.amount), row.description].joined(separator: "|")
-            let occurrence = seenSignatures[signature, default: 0]
-            seenSignatures[signature] = occurrence + 1
-            let identity = statementIdentity(signature: signature, occurrence: occurrence)
-            let inferred = classify(description: row.description, amount: row.amount, holder: holder)
-
-            operations.append(BankOperation(
-                identity: identity,
-                occurredAt: isoFormatter.string(from: date),
-                timePrecision: "statement_minute",
-                description: row.description,
-                amountKopecks: row.amount,
-                currency: "RUB",
-                status: "Выполнено",
-                category: inferred.category,
-                mcc: nil,
-                purpose: inferred.purpose,
-                paymentMethod: row.card.map { "Карта *\($0)" } ?? "Выписка",
-                providers: inferred.providers,
-                kind: inferred.kind,
-                components: nil,
-                verifiedAt: isoFormatter.string(from: Date())
-            ))
-        }
-
-        guard !operations.isEmpty else {
-            throw AppFailure(message: "В выписке нет операций раньше 01.10.2026 для архивного импорта.")
-        }
-
-        operations.sort {
-            if $0.occurredAt != $1.occurredAt { return $0.occurredAt > $1.occurredAt }
-            return $0.identity < $1.identity
-        }
-        return StatementImportResult(source: .account, operations: operations,
-                                     coverageStart: coverage.start,
-                                     coverageEnd: coverage.end,
-                                     ignoredAtOrAfterCutoff: ignored)
+        return try makeResult(rows, source: source, fullText: fullText)
     }
 
-    private static func parseSavePages(_ pages: [String]) throws -> StatementImportResult {
-        let text = pages.joined(separator: "\n")
-        let pattern = #"(?s)(.+?)\s+(\d{2}\.\d{2}\.\d{4})\s+([+−–-]\s*\d[\d\u00A0 ]*,\d{2}\s*₽)"#
-        let regex = try NSRegularExpression(pattern: pattern)
-        var operations: [BankOperation] = [], seen: [String: Int] = [:]
+    private static func sourceType(_ text: String) throws -> StatementImportResult.Source {
+        guard text.localizedCaseInsensitiveContains("Яндекс Банк"), text.localizedCaseInsensitiveContains("Выписка по Договору") else {
+            throw AppFailure(message: "Это не похоже на выписку Яндекс Банка.")
+        }
+        return text.localizedCaseInsensitiveContains("банковского вклада") ? .save : .account
+    }
+
+    private static func makeResult(_ rows: [Row], source: StatementImportResult.Source, fullText: String) throws -> StatementImportResult {
+        let holder = parseHolder(fullText), coverage = parseCoverage(fullText)
+        if source == .account {
+            guard let end = coverage.end, end >= archiveCutoff.addingTimeInterval(-86400) else {
+                throw AppFailure(message: "Выписка заканчивается раньше 30.09.2026. Нужна выписка, которая покрывает архив до конца сентября.")
+            }
+        }
+        guard !rows.isEmpty else { throw AppFailure(message: "В выписке не удалось найти операции.") }
+        var seen: [String: Int] = [:], operations: [BankOperation] = []
         var ignored = 0
-        for page in pages {
-            let body = transactionBody(from: page), ns = transactionBody(from: page) as NSString
-            for match in regex.matches(in: body, range: NSRange(location: 0, length: ns.length)) {
-                let description = collapseWhitespace(ns.substring(with: match.range(at: 1)))
-                let day = ns.substring(with: match.range(at: 2))
-                guard let amount = parseAmount(ns.substring(with: match.range(at: 3))),
-                      let date = operationDateFormatter.date(from: day + " 12:00") else {
-                    throw AppFailure(message: "Не удалось разобрать строку выписки Сейва.")
-                }
-                if date >= archiveCutoff { ignored += 1; continue }
-                let interest = normalize(description).contains("процент")
-                guard interest || normalize(description).contains("перевод между счетами") ||
-                        normalize(description).contains("пополнение") || normalize(description).contains("вывод") else {
+        for row in rows {
+            guard let date = operationDateFormatter.date(from: row.date + " " + row.time) else {
+                throw AppFailure(message: "Не удалось определить дату строки выписки.")
+            }
+            if date >= archiveCutoff { ignored += 1; continue }
+            let signature = source == .account
+                ? [row.date, row.time, row.processed, row.card ?? "", String(row.amount), row.description].joined(separator: "|")
+                : [row.date, String(row.amount), row.description].joined(separator: "|")
+            let occurrence = seen[signature, default: 0]; seen[signature] = occurrence + 1
+            let identity: String
+            let inferred: (category: String, kind: String, providers: [String], purpose: String?)
+            if source == .account {
+                identity = statementIdentity(signature: signature, occurrence: occurrence)
+                inferred = classify(description: row.description, amount: row.amount, holder: holder)
+            } else {
+                let value = normalize(row.description), interest = normalize(row.description).contains("процент")
+                guard interest || value.contains("перевод между счетами") || value.contains("пополнение") || value.contains("вывод") else {
                     throw AppFailure(message: "Неизвестный вид операции в выписке Сейва.")
                 }
-                let signature = [day, String(amount), description].joined(separator: "|")
-                let occurrence = seen[signature, default: 0]; seen[signature] = occurrence + 1
                 let digest = SHA256.hash(data: Data("statement-save-v1|\(signature)|\(occurrence)".utf8))
-                operations.append(BankOperation(identity: "statement-save:" + digest.map { String(format: "%02x", $0) }.joined(),
-                    occurredAt: isoFormatter.string(from: date), timePrecision: "statement_day", description: description,
-                    amountKopecks: amount, currency: "RUB", status: "Выполнено",
-                    category: interest ? "Проценты" : "Переводы между своими счетами", mcc: nil, purpose: description,
-                    paymentMethod: "Сейв (выписка)", providers: [], kind: interest ? "interest_income" : "internal_transfer"))
+                identity = "statement-save:" + digest.map { String(format: "%02x", $0) }.joined()
+                inferred = (interest ? "Проценты" : "Переводы между своими счетами", interest ? "interest_income" : "internal_transfer", [], row.description)
             }
+            operations.append(BankOperation(identity: identity, occurredAt: isoFormatter.string(from: date),
+                timePrecision: source == .account ? "statement_minute" : "statement_day", description: row.description,
+                amountKopecks: row.amount, currency: "RUB", status: "Выполнено", category: inferred.category,
+                mcc: nil, purpose: inferred.purpose,
+                paymentMethod: source == .save ? "Сейв (выписка)" : (row.card.map { "Карта *\($0)" } ?? "Выписка"),
+                providers: inferred.providers, kind: inferred.kind, verifiedAt: isoFormatter.string(from: Date())))
         }
         guard !operations.isEmpty else { throw AppFailure(message: "В выписке нет операций раньше 01.10.2026 для архивного импорта.") }
         operations.sort { $0.occurredAt == $1.occurredAt ? $0.identity < $1.identity : $0.occurredAt > $1.occurredAt }
-        let coverage = parseCoverage(text)
-        return StatementImportResult(source: .save, operations: operations, coverageStart: coverage.start,
-                                     coverageEnd: coverage.end, ignoredAtOrAfterCutoff: ignored)
+        return StatementImportResult(source: source, operations: operations, coverageStart: coverage.start,
+            coverageEnd: coverage.end, ignoredAtOrAfterCutoff: ignored)
+    }
+
+    private static func ambiguous(row: Int, page: Int) -> AppFailure {
+        AppFailure(message: "Строка \(row) страницы \(page) разобрана неоднозначно. Импорт отменён.")
+    }
+
+    private static func validateDescription(_ text: String, row: Int, page: Int) throws {
+        // A card number inside a meaningful description (a card top-up) is valid;
+        // an isolated card cell, date/time or signed money is never a description.
+        let contamination = #"\d{2}\.\d{2}\.\d{4}|\bв\s+\d{2}:\d{2}|[+−–-]\s*\d[\d\s]*,\d{2}\s*₽|^\*\d{4}$"#
+        guard !text.isEmpty, text.range(of: contamination, options: .regularExpression) == nil else {
+            throw ambiguous(row: row, page: page)
+        }
+    }
+
+    /// Coordinates are in page points, x rightwards, y downwards from the page top.
+    static func parseRows(_ pages: [[StatementCell]], metadata: String? = nil) throws -> StatementImportResult {
+        let pageLines = pages.map(physicalLines)
+        let fullText = metadata ?? pageLines.map { $0.map { lineText($0) }.joined(separator: "\n") }.joined(separator: "\n")
+        let source = try sourceType(fullText)
+        var rows: [Row] = []
+        for (pageIndex, lines) in pageLines.enumerated() {
+            let headers = lines.indices.filter { lineText(lines[$0]).contains("Описание операции") && lineText(lines[$0]).contains("Дата") }
+            for (headerIndex, start) in headers.enumerated() {
+                let header = lines[start].sorted { $0.x < $1.x }
+                let dates = header.filter { $0.text.hasPrefix("Дата") }
+                let sums = header.filter { $0.text.hasPrefix("Сумма") }
+                let card = header.first { $0.text.hasPrefix("Карта") }
+                guard dates.count == (source == .account ? 2 : 1), sums.count == (source == .account ? 2 : 1),
+                      source == .save || card != nil else { throw ambiguous(row: 0, page: pageIndex + 1) }
+                let starts = source == .save ? [dates[0].x, sums[0].x] : [dates[0].x, dates[1].x, card!.x, sums[0].x, sums[1].x]
+                let cuts = starts.map { $0 - 3 }
+                let end = headerIndex + 1 < headers.count ? headers[headerIndex + 1] : lines.count
+                let body = Array(lines[(start + 1)..<end])
+                func column(_ cells: [StatementCell], _ index: Int) -> [StatementCell] {
+                    cells.filter { cell in
+                        let center = cell.x + cell.width / 2
+                        return (index == 0 || center >= cuts[index - 1]) && (index == cuts.count || center < cuts[index])
+                    }
+                }
+                let anchors = body.indices.filter { index in
+                    column(body[index], 1).contains { $0.text.range(of: #"^\d{2}\.\d{2}\.\d{4}$"#, options: .regularExpression) != nil }
+                }
+                for (rowIndex, anchor) in anchors.enumerated() {
+                    let next = rowIndex + 1 < anchors.count ? anchors[rowIndex + 1] : body.count
+                    var band = Array(body[anchor..<next])
+                    if let footer = band.firstIndex(where: { line in
+                        let text = lineText(line)
+                        return text.hasPrefix("Входящий остаток") || text.hasPrefix("Исходящий остаток") || text.hasPrefix("Страница ") || text.hasPrefix("Продолжение ")
+                    }) { band = Array(band[..<footer]) }
+                    func value(_ index: Int) -> String { collapseWhitespace(band.map { lineText(column($0, index)) }.joined(separator: " ")) }
+                    let description = value(0), date = lineText(column(body[anchor], 1))
+                    try validateDescription(description, row: rowIndex + 1, page: pageIndex + 1)
+                    let datePattern = #"^\d{2}\.\d{2}\.\d{4}$"#
+                    let moneyPattern = #"^[+−–-]\s*\d[\d\s]*,\d{2}\s*₽$"#
+                    let amountText = value(source == .save ? 2 : 4)
+                    guard date.range(of: datePattern, options: .regularExpression) != nil,
+                          amountText.range(of: moneyPattern, options: .regularExpression) != nil,
+                          let amount = parseAmount(amountText) else { throw ambiguous(row: rowIndex + 1, page: pageIndex + 1) }
+                    var time = "12:00", processed = "", cardNumber: String?
+                    if source == .account {
+                        let timing = value(1), cardText = value(3)
+                        guard let timeRange = timing.range(of: #"\b\d{2}:\d{2}\b"#, options: .regularExpression),
+                              value(2).range(of: datePattern, options: .regularExpression) != nil,
+                              value(5).range(of: moneyPattern, options: .regularExpression) != nil,
+                              cardText.isEmpty || cardText.range(of: #"^\*\d{4}$"#, options: .regularExpression) != nil else {
+                            throw ambiguous(row: rowIndex + 1, page: pageIndex + 1)
+                        }
+                        time = String(timing[timeRange]); processed = value(2)
+                        cardNumber = cardText.isEmpty ? nil : String(cardText.dropFirst())
+                    }
+                    rows.append(Row(description: description, date: date, time: time, processed: processed, card: cardNumber, amount: amount))
+                }
+            }
+        }
+        return try makeResult(rows, source: source, fullText: fullText)
+    }
+
+    private static func lineText(_ cells: [StatementCell]) -> String {
+        cells.sorted { $0.x < $1.x }.map(\.text).joined(separator: " ")
+    }
+
+    private static func physicalLines(_ cells: [StatementCell]) -> [[StatementCell]] {
+        let sorted = cells.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y }
+        var lines: [[StatementCell]] = []
+        for cell in sorted {
+            if let last = lines.last, let first = last.first,
+               abs((first.y + first.height / 2) - (cell.y + cell.height / 2)) <= max(2, min(first.height, cell.height) * 0.3) {
+                lines[lines.count - 1].append(cell)
+            } else { lines.append([cell]) }
+        }
+        return lines
+    }
+
+    private static func cells(from page: PDFPage) -> [StatementCell] {
+        guard let raw = page.string else { return [] }
+        let text = raw as NSString, bounds = page.bounds(for: .mediaBox)
+        var glyphs: [StatementCell] = []
+        for index in 0..<min(page.numberOfCharacters, text.length) {
+            let character = text.substring(with: NSRange(location: index, length: 1))
+            let rect = page.characterBounds(at: index)
+            guard rect.width > 0, rect.height > 0, !character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            glyphs.append(StatementCell(text: character, x: rect.minX, y: bounds.maxY - rect.maxY, width: rect.width, height: rect.height))
+        }
+        var words: [StatementCell] = []
+        for line in physicalLines(glyphs) {
+            var word: StatementCell?
+            for glyph in line.sorted(by: { $0.x < $1.x }) {
+                if let current = word, glyph.x - (current.x + current.width) <= max(0.8, glyph.height * 0.18) {
+                    word = StatementCell(text: current.text + glyph.text, x: current.x, y: min(current.y, glyph.y),
+                        width: glyph.x + glyph.width - current.x, height: max(current.height, glyph.height))
+                } else {
+                    if let word { words.append(word) }; word = glyph
+                }
+            }
+            if let word { words.append(word) }
+        }
+        return words
     }
 
     /// Parse the entire selection before preparing a single atomic history replacement.
@@ -239,6 +341,64 @@ enum StatementImporter {
         next.statementOperationCount = next.operations.filter { $0.identity.hasPrefix("statement:") || $0.identity.hasPrefix("statement-save:") }.count
         next.lastStopReason = "statement_archive_imported"; next.lastSync = Date()
         return next
+    }
+
+    private struct MigrationKey: Hashable {
+        let date: String
+        let amount: Int64
+        let method: String?
+        init(_ operation: BankOperation) {
+            date = operation.occurredAt; amount = operation.amountKopecks; method = operation.paymentMethod
+        }
+    }
+
+    /// Preview is a value copy. No category choice is guessed and storage is not touched.
+    static func preview(_ results: [StatementImportResult], into original: SavedHistory) throws -> StatementImportPreview {
+        var next = try merging(results, into: original)
+        let hasAccount = results.contains { $0.source == .account }
+        let hasSave = results.contains { $0.source == .save }
+        let replaced = original.operations.filter { operation in
+            if operation.identity.hasPrefix("statement-save:") { return hasSave }
+            return hasAccount && (BankDateParser.parse(operation.occurredAt).map { $0 < archiveCutoff } ?? false)
+        }.count
+        let newAccount = next.operations.filter { $0.identity.hasPrefix("statement:") }
+        let newIDs = Set(newAccount.map(\.identity))
+        let oldRows = hasAccount ? original.operations.filter { $0.identity.hasPrefix("statement:") && !newIDs.contains($0.identity) } : []
+        let candidates = Dictionary(grouping: newAccount, by: MigrationKey.init)
+        let oldKeys = Dictionary(grouping: oldRows, by: MigrationKey.init)
+        var occupied = Set(original.operations.filter { newIDs.contains($0.identity) }.map(\.identity))
+        var corrected = 0, transferred = 0, ambiguousChoices = 0
+        for old in oldRows.sorted(by: { $0.identity < $1.identity }) {
+            let matches = candidates[MigrationKey(old)] ?? []
+            let expense = original.categoryOverrides?[old.identity]
+            let income = original.incomeCategoryOverrides?[old.identity]
+            let choices = (expense == nil ? 0 : 1) + (income == nil ? 0 : 1)
+            guard matches.count == 1, oldKeys[MigrationKey(old)]?.count == 1,
+                  let match = matches.first, !occupied.contains(match.identity),
+                  next.categoryOverrides?[match.identity] == nil, next.incomeCategoryOverrides?[match.identity] == nil else {
+                ambiguousChoices += choices
+                continue
+            }
+            occupied.insert(match.identity)
+            if old.description != match.description { corrected += 1 }
+            if let expense {
+                if next.categoryOverrides == nil { next.categoryOverrides = [:] }
+                next.categoryOverrides?[match.identity] = expense
+                next.categoryOverrides?.removeValue(forKey: old.identity)
+                transferred += 1
+            }
+            if let income {
+                if next.incomeCategoryOverrides == nil { next.incomeCategoryOverrides = [:] }
+                next.incomeCategoryOverrides?[match.identity] = income
+                next.incomeCategoryOverrides?.removeValue(forKey: old.identity)
+                transferred += 1
+            }
+        }
+        return StatementImportPreview(history: next, replaced: replaced, corrected: corrected, transferred: transferred,
+            ambiguousChoices: ambiguousChoices,
+            accountCount: Set(results.filter { $0.source == .account }.flatMap { $0.operations.map(\.identity) }).count,
+            saveCount: Set(results.filter { $0.source == .save }.flatMap { $0.operations.map(\.identity) }).count,
+            ignored: results.reduce(0) { $0 + $1.ignoredAtOrAfterCutoff }, unchanged: original.operations == next.operations)
     }
 
     private static func transactionBody(from page: String) -> String {
