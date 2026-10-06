@@ -559,6 +559,29 @@ enum FinancialEngine {
         }
     }
 
+    // MARK: - Month reserve
+
+    enum ReserveStatus: Equatable {
+        /// The reserve is at least the buffer.
+        case fine
+        /// Positive but below the buffer.
+        case tight
+        /// The current balance will not last until the end of the month at this pace.
+        case short
+    }
+
+    /// What stays from the current balance at the end of the month if spending continues as forecast:
+    /// balance minus the spending still expected this month (recurring payments and the variable tail).
+    /// Income that has not arrived yet is deliberately left out.
+    static func monthReserve(balanceKopecks: Int64, forecast: MonthForecast) -> Int64 {
+        balanceKopecks - max(0, forecast.projectedExpenseKopecks - forecast.spentKopecks)
+    }
+
+    static func reserveStatus(_ reserveKopecks: Int64, bufferKopecks: Int64) -> ReserveStatus {
+        if reserveKopecks < 0 { return .short }
+        return reserveKopecks >= bufferKopecks ? .fine : .tight
+    }
+
     // MARK: - Search
 
     /// Search over saved operations: every word of the query has to match. A word matches when it occurs in the title,

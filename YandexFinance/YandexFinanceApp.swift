@@ -104,6 +104,7 @@ struct OperationDetailView: View {
 @MainActor
 struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
+    @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
     @State private var exportedBackup: BackupDocument?
@@ -129,6 +130,11 @@ struct SettingsView: View {
                 Section {
                     Toggle("История всегда развёрнута", isOn: $historyAlwaysExpanded)
                     Text("Иначе список операций на главном экране открывается по нажатию на «Операции».")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Stepper(value: $reserveBufferRubles, in: 0...500_000, step: 5_000) {
+                        Text("Запас «впритык» ниже: \(reserveBufferRubles.formatted(.number.locale(Locale(identifier: "ru_RU")))) ₽")
+                    }
+                    Text("Ниже этой суммы запас до конца месяца показывается жёлтым.")
                         .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Отображение") }
                 Section {

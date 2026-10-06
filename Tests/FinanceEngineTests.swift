@@ -398,6 +398,21 @@ struct FinanceEngineTests {
         require(AccountListItem.move(items, from: [5], to: 0) == items, "the ungrouped header does not move")
     }
 
+    static func testMonthReserve() {
+        let forecast = FinancialEngine.MonthForecast(spentKopecks: 24_913, incomeKopecks: 11_000, projectedExpenseKopecks: 129_940,
+                                                     projectedExpenseLowKopecks: 117_098, projectedExpenseHighKopecks: 144_877,
+                                                     projectedIncomeKopecks: 11_000, previousMonthIncomeKopecks: 252_693,
+                                                     typicalIrregularIncomeKopecks: 224_000, irregularIncomeSoFarKopecks: 11_000,
+                                                     oneOffKopecks: 0, upcoming: [], historyMonths: 3, baselineMonths: [],
+                                                     elapsedDays: 6, daysInMonth: 31)
+        let reserve = FinancialEngine.monthReserve(balanceKopecks: 80_460, forecast: forecast)
+        require(reserve == 80_460 - (129_940 - 24_913), "reserve = balance minus the spending still expected this month")
+        require(FinancialEngine.reserveStatus(reserve, bufferKopecks: 25_000) == .short, "negative reserve is short")
+        require(FinancialEngine.reserveStatus(8_400, bufferKopecks: 25_000) == .tight, "below the buffer is tight")
+        require(FinancialEngine.reserveStatus(25_000, bufferKopecks: 25_000) == .fine, "at least the buffer is fine")
+        require(FinancialEngine.reserveStatus(0, bufferKopecks: 25_000) == .tight, "zero is tight, not short")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -777,6 +792,7 @@ struct FinanceEngineTests {
         testBackup()
         testAccountBalance()
         testAccountReorder()
+        testMonthReserve()
 
         print("Finance engine tests passed")
     }

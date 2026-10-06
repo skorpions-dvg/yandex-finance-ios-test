@@ -43,53 +43,28 @@ struct AccountsView: View {
 
     private var accounts: [Account] { browser.history.accounts ?? [] }
     private var groups: [AccountGroup] { browser.history.accountGroups ?? [] }
-    private var ungrouped: [Account] {
-        let ids = Set(groups.map(\.id))
-        return accounts.filter { account in
-            guard let id = account.groupID else { return true }
-            return !ids.contains(id)
-        }
-    }
 
     var body: some View {
         NavigationStack {
             List {
-                if editMode.isEditing {
-                    editableList
-                } else {
+                Section {
                     HStack {
                         Label("Все счета", systemImage: "wallet.pass")
                         Spacer()
                         Text(total(accounts)).bold().multilineTextAlignment(.trailing)
                     }
-
-                    if accounts.isEmpty && groups.isEmpty {
-                        ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
-                                               description: Text("Добавьте наличные, банковскую карту или копилку."))
-                        Button("Создать стандартные группы", action: createStandardGroups)
-                    }
-                    ForEach(groups) { group in
-                        Section {
-                            if !collapsed.contains(group.id) {
-                                ForEach(accounts.filter { $0.groupID == group.id }) { account in
-                                    accountRow(account)
-                                }
-                            }
-                        } header: {
-                            groupHeader(group)
-                        }
-                    }
-                    if !ungrouped.isEmpty {
-                        Section("Без группы") {
-                            ForEach(ungrouped) { account in
-                                accountRow(account)
-                            }
-                        }
-                    }
+                    .moveDisabled(true)
+                    .deleteDisabled(true)
+                }
+                accountList
+                if accounts.isEmpty && groups.isEmpty {
+                    ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
+                                           description: Text("Добавьте наличные, банковскую карту или копилку."))
+                    Button("Создать стандартные группы", action: createStandardGroups)
                 }
             }
             .environment(\.editMode, $editMode)
-            .listStyle(.insetGrouped)
+            .listStyle(.plain)
             .navigationTitle("Счета")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -136,10 +111,15 @@ struct AccountsView: View {
         } message: { Text(browser.message) }
     }
 
-    /// Edit mode: one list where group headers and accounts are dragged in place. A dragged group takes its
-    /// accounts along; an account dropped under another header moves to that group.
-    private var editableList: some View {
-        let items = AccountListItem.flatten(groups: groups, accounts: accounts)
+    private var accountList: some View {
+        let accountsByGroup = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0.groupID) })
+        let fullItems = AccountListItem.flatten(groups: groups, accounts: accounts)
+        let items = editMode.isEditing ? fullItems : fullItems.filter { item in
+            if case .account(let id) = item, let groupID = accountsByGroup[id] ?? nil {
+                return !collapsed.contains(groupID)
+            }
+            return true
+        }
         let groupsByID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
         let accountsByID = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
         return Section {
@@ -147,25 +127,30 @@ struct AccountsView: View {
                 switch item {
                 case .group(let id):
                     if let group = groupsByID[id] {
-                        HStack {
-                            Image(systemName: "folder").foregroundStyle(.secondary)
-                            Text(group.name).font(.headline)
-                            Spacer()
-                            Text(total(accounts.filter { $0.groupID == id })).foregroundStyle(.secondary)
-                        }
-                        .contextMenu { groupActions(group) }
+                        groupHeader(group)
+                            .moveDisabled(!editMode.isEditing)
+                            .deleteDisabled(!editMode.isEditing)
                     }
                 case .account(let id):
                     if let account = accountsByID[id] {
-                        accountRow(account).padding(.leading, 16)
+                        accountRow(account).padding(.leading, 20)
+                            .moveDisabled(!editMode.isEditing)
+                            .deleteDisabled(!editMode.isEditing)
                     }
                 case .ungroupedHeader:
-                    Text("Без группы").font(.headline).foregroundStyle(.secondary)
+                    HStack {
+                        Text("Без группы").font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(total(accounts.filter { account in
+                            account.groupID.map { id in !groups.contains { $0.id == id } } ?? true
+                        })).foregroundStyle(.secondary)
+                    }
                         .moveDisabled(true)
                         .deleteDisabled(true)
                 }
             }
             .onMove { source, destination in
+                guard editMode.isEditing else { return }
                 let moved = AccountListItem.move(items, from: source, to: destination)
                 let result = AccountListItem.apply(moved, groups: groups, accounts: accounts)
                 persist { history in
@@ -174,7 +159,7 @@ struct AccountsView: View {
                 }
             }
             .onDelete { offsets in
-                guard let index = offsets.first else { return }
+                guard editMode.isEditing, let index = offsets.first else { return }
                 switch items[index] {
                 case .group(let id):
                     deletedGroup = groupsByID[id]
@@ -187,7 +172,9 @@ struct AccountsView: View {
                 }
             }
         } footer: {
-            Text("Перетащите группу за ручку — её счета переедут вместе с ней. Счёт, опущенный под другую группу, перейдёт в неё.")
+            if editMode.isEditing {
+                Text("Перетащите группу за ручку — её счета переедут вместе с ней. Счёт, опущенный под другую группу, перейдёт в неё.")
+            }
         }
     }
 
@@ -196,30 +183,27 @@ struct AccountsView: View {
     }
 
     private func groupHeader(_ group: AccountGroup) -> some View {
-        HStack {
-            Button {
-                withAnimation {
-                    if collapsed.contains(group.id) { collapsed.remove(group.id) }
-                    else { collapsed.insert(group.id) }
-                }
-            } label: {
-                HStack {
+        Button {
+            guard !editMode.isEditing else { return }
+            withAnimation {
+                if collapsed.contains(group.id) { collapsed.remove(group.id) }
+                else { collapsed.insert(group.id) }
+            }
+        } label: {
+            HStack {
+                if !editMode.isEditing {
                     Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
-                    Text(group.name)
-                    Spacer()
-                    Text(total(accounts.filter { $0.groupID == group.id }))
-                        .multilineTextAlignment(.trailing)
+                        .foregroundStyle(.secondary)
                 }
-                .contentShape(Rectangle())
+                Text(group.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                Spacer()
+                Text(total(accounts.filter { $0.groupID == group.id }))
+                    .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
             }
-            .buttonStyle(.plain)
-            .accessibilityValue(collapsed.contains(group.id) ? "Свёрнуто" : "Развёрнуто")
-            if editMode.isEditing {
-                Menu { groupActions(group) } label: { Image(systemName: "ellipsis.circle") }
-                    .accessibilityLabel("Изменить группу \(group.name)")
-            }
+            .contentShape(Rectangle())
         }
-        .textCase(nil)
+        .buttonStyle(.plain)
+        .accessibilityValue(!editMode.isEditing && collapsed.contains(group.id) ? "Свёрнуто" : "Развёрнуто")
         .contextMenu { groupActions(group) }
     }
 

@@ -6,6 +6,8 @@ struct OperationsHomeView: View {
     
     @State private var period: HistoryPeriod = .lastDays(30)
     @State private var historyExpanded: Bool? = nil
+    @State private var showForecast = false
+    @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var showAccounts = false
     @State private var showSearch = false
     @State private var showAdd = false
@@ -42,7 +44,6 @@ struct OperationsHomeView: View {
             List {
                 periodRow
                 summary
-                forecast
                 if browser.busy {
                     busyRow
                 }
@@ -88,6 +89,12 @@ struct OperationsHomeView: View {
             }
             .sheet(isPresented: $showAccounts) {
                 AccountsView(browser: browser)
+            }
+            .sheet(isPresented: $showForecast) {
+                let accounts = browser.history.accounts ?? []
+                ForecastDetailView(forecast: FinancialEngine.monthForecast(inputs),
+                                   balanceKopecks: accounts.isEmpty ? nil : currentBalance(accounts),
+                                   bufferKopecks: Int64(reserveBufferRubles) * 100)
             }
             .sheet(isPresented: $showSearch) {
                 SearchOperationsView(browser: browser)
@@ -197,7 +204,8 @@ struct OperationsHomeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             let accounts = browser.history.accounts ?? []
-            if !accounts.isEmpty {
+            let f = FinancialEngine.monthForecast(inputs)
+            HStack(alignment: .top) {
                 Button { showAccounts = true } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -206,9 +214,33 @@ struct OperationsHomeView: View {
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        Text(rubles(currentBalance(accounts)))
+                        Text(accounts.isEmpty ? "—" : rubles(currentBalance(accounts)))
                             .font(.title3.weight(.semibold))
                             .foregroundStyle(.primary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button { showForecast = true } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Image(systemName: "gauge.with.dots.needle.33percent")
+                            Text("Запас до конца месяца")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        if accounts.isEmpty {
+                            Text("—").font(.title3.weight(.semibold))
+                            Text("добавьте счета").font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            let reserve = FinancialEngine.monthReserve(balanceKopecks: currentBalance(accounts), forecast: f)
+                            Text(signedRubles(reserve))
+                                .font(.title3.weight(.semibold))
+                                .foregroundStyle(reserveColor(reserve))
+                            Text(reserveCaption(reserve))
+                                .font(.caption).foregroundStyle(reserveColor(reserve))
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -218,92 +250,24 @@ struct OperationsHomeView: View {
         }
     }
     
-    // MARK: - Forecast
-    private var forecast: some View {
-        Section(header: Text("Прогноз на месяц")) {
-            let f = FinancialEngine.monthForecast(inputs)
-            LabeledContent("Потрачено за \(f.elapsedDays) из \(f.daysInMonth) дн.", value: rubles(f.spentKopecks))
-            VStack(alignment: .leading, spacing: 2) {
-                LabeledContent("Расходы к концу месяца", value: "≈ " + rubles(f.projectedExpenseKopecks))
-                Text("обычно от \(rubles(f.projectedExpenseLowKopecks)) до \(rubles(f.projectedExpenseHighKopecks))")
-                    .font(.caption).foregroundStyle(.secondary)
-                if f.oneOffKopecks > 0 {
-                    Text("Разовые покупки \(rubles(f.oneOffKopecks)) учтены как потраченные, но не в темпе")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                LabeledContent("Доход за месяц", value: "≈ " + rubles(f.projectedIncomeKopecks))
-                Text("пришло пока \(rubles(f.incomeKopecks)) + ожидаемая зарплата · в прошлом месяце \(rubles(f.previousMonthIncomeKopecks))")
-                    .font(.caption).foregroundStyle(.secondary)
-                if f.typicalIrregularIncomeKopecks > 0 {
-                    Text("Нерегулярные поступления обычно ≈ \(rubles(f.typicalIrregularIncomeKopecks)) в месяц")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            balanceLine(f.projectedBalanceKopecks, scenario: "Без новых поступлений")
-            if f.balanceWithTypicalIncomeKopecks != f.projectedBalanceKopecks {
-                balanceLine(f.balanceWithTypicalIncomeKopecks, scenario: "С обычными поступлениями")
-            }
-            if !f.upcoming.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Ещё ожидается").font(.caption).foregroundStyle(.secondary)
-                    ForEach(f.upcoming) { payment in
-                        HStack {
-                            Image(systemName: payment.isIncome ? "arrow.down.circle" : "arrow.up.circle")
-                                .foregroundStyle(payment.isIncome ? .green : .secondary)
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(payment.title).lineLimit(1)
-                                Text(payment.overdue
-                                     ? "ожидался \(payment.date.formatted(.dateTime.day().month())), не пришёл"
-                                     : payment.date.formatted(.dateTime.day().month()))
-                                    .font(.caption)
-                                    .foregroundStyle(payment.overdue ? .orange : .secondary)
-                            }
-                            Spacer()
-                            Text((payment.isIncome ? "+" : "−") + rubles(payment.amountKopecks))
-                                .foregroundStyle(payment.isIncome ? .green : .primary)
-                        }
-                        .font(.subheadline)
-                    }
-                }
-            }
-            if !f.baselineMonths.isEmpty {
-                DisclosureGroup("Как посчитано") {
-                    ForEach(f.baselineMonths) { month in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(month.month.formatted(.dateTime.month(.wide).year())).font(.subheadline.weight(.semibold))
-                                Spacer()
-                                Text(rubles(month.netExpenseKopecks)).font(.subheadline)
-                            }
-                            Text("переменные \(rubles(month.variableKopecks)) · регулярные \(rubles(month.recurringKopecks)) · разовые \(rubles(month.oneOffKopecks))")
-                                .font(.caption).foregroundStyle(.secondary)
-                            if !month.largestOneOffs.isEmpty {
-                                Text("разовые: " + month.largestOneOffs.joined(separator: ", "))
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    Text("Расходы к концу месяца = потрачено + ещё ожидаемые регулярные + переменные траты до конца месяца по медиане этих месяцев с поправкой на темп. Вилка — по нижней и верхней четверти этих месяцев.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                .font(.subheadline)
-            }
-            if f.historyMonths < 3 {
-                Text("Истории пока мало (\(f.historyMonths) мес.), прогноз приблизительный.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+    private func reserveColor(_ reserve: Int64) -> Color {
+        switch FinancialEngine.reserveStatus(reserve, bufferKopecks: Int64(reserveBufferRubles) * 100) {
+        case .fine: return .green
+        case .tight: return .yellow
+        case .short: return .red
         }
     }
-    
-    private func balanceLine(_ balance: Int64, scenario: String) -> some View {
-        Label(balance >= 0
-              ? "\(scenario): останется ≈ \(rubles(balance))"
-              : "\(scenario): не хватит ≈ \(rubles(-balance))",
-              systemImage: balance >= 0 ? "checkmark.circle" : "exclamationmark.triangle")
-            .foregroundStyle(balance >= 0 ? .green : .orange)
-            .font(.subheadline)
+
+    private func signedRubles(_ kopecks: Int64) -> String {
+        (kopecks >= 0 ? "+" : "−") + rubles(kopecks >= 0 ? kopecks : -kopecks)
+    }
+
+    private func reserveCaption(_ reserve: Int64) -> String {
+        switch FinancialEngine.reserveStatus(reserve, bufferKopecks: Int64(reserveBufferRubles) * 100) {
+        case .fine: return "хватит"
+        case .tight: return "впритык"
+        case .short: return "не хватает"
+        }
     }
 
     // MARK: - Busy Row
@@ -381,10 +345,6 @@ struct OperationsHomeView: View {
         }
     }
 
-    private func signedRubles(_ kopecks: Int64) -> String {
-        let formatted = rubles(kopecks)
-        return kopecks >= 0 ? "+" + formatted : formatted
-    }
     
     // MARK: - Money Helper
     private func rubles(_ kopecks: Int64) -> String {
