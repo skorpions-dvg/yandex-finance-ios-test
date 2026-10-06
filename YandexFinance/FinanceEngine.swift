@@ -625,12 +625,18 @@ enum FinancialEngine {
         var category = ""
     }
 
+    /// Counterparty key from the bank text: letters only, so amounts, dates and account numbers that change from
+    /// month to month (for example a utility bill "ЭЭ 3732.24, ГВС …, ПРД08.2026") do not split one payee into many.
+    private static func counterpartyKey(_ text: String) -> String {
+        String(normalized(text).map { $0.isLetter ? $0 : " " }).split(separator: " ").joined(separator: " ")
+    }
+
     /// Completed income and expense movements with their counterparty; refunds, transfers, split and pending are left out.
     private static func datedAmounts(_ operations: [FinancialOperationInput]) -> [DatedAmount] {
         operations.compactMap { operation in
             guard let date = BankDateParser.parse(operation.occurredAt) else { return nil }
             let assessment = classify(operation)
-            let key = normalized(operation.description)
+            let key = counterpartyKey(operation.description)
             if assessment.incomeContributionKopecks > 0 {
                 return DatedAmount(date: date, key: key, title: operation.description, isIncome: true, amount: assessment.incomeContributionKopecks)
             }
@@ -663,7 +669,10 @@ enum FinancialEngine {
     private static func quantile(_ values: [Int64], _ q: Double) -> Int64 {
         guard !values.isEmpty else { return 0 }
         let sorted = values.sorted()
-        return sorted[Int((Double(sorted.count - 1) * q).rounded())]
+        let position = Double(sorted.count - 1) * q
+        let lower = Int(position.rounded(.down))
+        let upper = min(lower + 1, sorted.count - 1)
+        return sorted[lower] + Int64((Double(sorted[upper] - sorted[lower]) * (position - Double(lower))).rounded())
     }
 
     /// Payments and income from the same counterparty at least three times, about every 7, 14, 30 or 365 days,
@@ -697,8 +706,9 @@ enum FinancialEngine {
     /// of the month. The variable baseline is the median of up to six full months without recurring items and
     /// one-off purchases; the current month only moves it by a pace factor clamped to 0.6–1.6 and softened during
     /// the first week. The low and high values use the quartiles of the same months; recurring items stay exact.
-    /// A purchase is one-off when it is more than twice the median purchase of its category, or, for a category
-    /// with fewer than three purchases in the history, more than 5% of the usual monthly variable spending.
+    /// A purchase is one-off when its payee does not show up in another month and it is more than twice the median
+    /// purchase of its category, or, for a category with fewer than three purchases in the history, more than 5% of
+    /// the usual monthly variable spending. Months with fewer than three expenses are not used.
     /// Built on `report`, so the usual rules apply.
     static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> MonthForecast {
         // The engine is also compiled on its own (statement import tests), so month bounds are computed here.
@@ -711,8 +721,8 @@ enum FinancialEngine {
         let remaining = max(0, daysInMonth - elapsed)
 
         let patterns = recurringPatterns(operations, now: now, calendar: calendar)
-        let recurringKeys = Set(patterns.map { "\($0.isIncome)|\(normalized($0.title))" })
         let allItems = datedAmounts(operations)
+        let recurringKeys = Set(patterns.map { "\($0.isIncome)|\(counterpartyKey($0.title))" })
         let recurringItems = allItems.filter { recurringKeys.contains("\($0.isIncome)|\($0.key)") }
         func sum(_ items: [DatedAmount], income: Bool, in interval: DateInterval) -> Int64 {
             items.filter { $0.isIncome == income && $0.date >= interval.start && $0.date < interval.end }.reduce(0) { $0 + $1.amount }
@@ -728,7 +738,9 @@ enum FinancialEngine {
             let month = DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!)
             let monthReport = report(operations, in: month)
             if back == 1 { previousMonthIncome = monthReport.incomeKopecks }
-            if monthReport.operationCount > 0, let firstSaved, firstSaved < calendar.date(byAdding: .day, value: 7, to: start)! {
+            // A month with almost no spending saved (an incompletely covered archive month) is not representative.
+            let expenseCount = allItems.filter { !$0.isIncome && $0.date >= month.start && $0.date < month.end }.count
+            if expenseCount >= 3, let firstSaved, firstSaved < calendar.date(byAdding: .day, value: 7, to: start)! {
                 months.append((month, monthReport))
             }
         }
@@ -739,7 +751,12 @@ enum FinancialEngine {
         let historyByCategory = Dictionary(grouping: variableItems.filter { $0.date >= historyStart && $0.date < monthStartDate }, by: \.category)
             .mapValues { $0.map(\.amount) }
         let roughBaseline = median(months.map { $0.report.netExpenseKopecks - sum(recurringItems, income: false, in: $0.interval) })
+        // A payee seen in two or more different months is a habit (a person you send money to, a utility bill),
+        // not a one-off, even when single amounts are large.
+        let monthsByPayee = Dictionary(grouping: variableItems, by: \.key)
+            .mapValues { Set($0.map { calendar.dateComponents([.year, .month], from: $0.date) }).count }
         func isOneOff(_ item: DatedAmount) -> Bool {
+            if (monthsByPayee[item.key] ?? 0) >= 2 { return false }
             if let history = historyByCategory[item.category], history.count >= 3 { return item.amount > 2 * median(history) }
             return roughBaseline > 0 && item.amount * 20 > roughBaseline
         }

@@ -238,10 +238,10 @@ struct FinanceEngineTests {
             FinancialEngine.UpcomingPayment(title: "УК Жилищник", amountKopecks: 20_000, date: at(7, 15), isIncome: false, overdue: false),
             FinancialEngine.UpcomingPayment(title: "Rush", amountKopecks: 249, date: at(7, 20), isIncome: false, overdue: false),
         ], "rent and phone are still expected this month; this month's salary already came")
-        // Variable baseline: median 30 000, quartiles 29 000 and 31 000. 12 000 in 10 days is a pace of 1.24,
+        // Variable baseline: median 30 000, quartiles 29 250 and 30 750. 12 000 in 10 days is a pace of 1.24,
         // so the rest of the month adds 12 000 × 21 / 10 = 25 200 to the 12 000 spent and 20 249 still expected.
         require(forecast.projectedExpenseKopecks == 57_449, "spent + recurring still expected + variable tail")
-        require(forecast.projectedExpenseLowKopecks == 56_609 && forecast.projectedExpenseHighKopecks == 58_289, "range from the quartiles")
+        require(forecast.projectedExpenseLowKopecks == 56_819 && forecast.projectedExpenseHighKopecks == 58_079, "range from the interpolated quartiles")
         require(forecast.projectedIncomeKopecks == 100_000 && forecast.projectedBalanceKopecks == 42_551,
                 "salary already received, no other income usual")
         require(forecast.previousMonthIncomeKopecks == 100_000, "previous month income")
@@ -268,23 +268,51 @@ struct FinanceEngineTests {
         let lowerIncome = [
             op(200_000, kind: "income", description: "Перевод от Ивана", date: iso(1, 5)),
             op(-100_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(1, 10)),
+            op(-1_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(1, 11)),
+            op(-1_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(1, 12)),
             op(100_000, kind: "income", description: "Перевод от Ивана", date: iso(2, 5)),
-            op(-100_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(2, 6)),
+            op(-100_000, kind: "expense", category: "Электроника", description: "М.Видео", date: iso(2, 6)),
         ]
         let tight = FinancialEngine.monthForecast(lowerIncome, now: at(2, 6), calendar: calendar)
         require(tight.projectedIncomeKopecks == 100_000, "irregular income is not assumed: only what came counts")
         require(tight.typicalIrregularIncomeKopecks == 200_000, "the usual irregular income is reported separately")
-        require(tight.oneOffKopecks == 100_000 && tight.projectedExpenseKopecks == 100_000, "the big purchase is one-off and not stretched")
+        require(tight.oneOffKopecks == 100_000, "a big purchase from a new payee is one-off")
+        require(tight.projectedExpenseKopecks < 110_000, "the one-off is not stretched over the month")
         require(tight.balanceWithTypicalIncomeKopecks == tight.projectedBalanceKopecks + 100_000,
                 "the optimistic scenario adds only the part of the usual irregular income that has not come yet")
 
         // A history that starts mid-month: that partial month must not enter the baseline.
         let partial = [
             op(-1_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(3, 20)),
-            op(-30_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(4, 10)),
+            op(-10_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(4, 10)),
+            op(-10_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(4, 17)),
+            op(-10_000, kind: "expense", category: "Супермаркеты", description: "Магнит", date: iso(4, 24)),
         ]
         let fromPartial = FinancialEngine.monthForecast(partial, now: at(5, 10), calendar: calendar)
         require(fromPartial.historyMonths == 1, "March is only partly covered and is skipped; April counts")
+
+        // Shaped like the real archive: transfers to one person of varying size, a utility bill whose text carries
+        // the amounts and the period, groceries, and one large transfer to someone new.
+        var habits: [FinancialOperationInput] = [op(-500, kind: "expense", category: "Такси", description: "Такси", date: iso(4, 3))]
+        let elizaveta = "Исходящий перевод СБП, Елизавета Павловна В., +7 923 000-00-00, Сбербанк"
+        let transfers: [(Int, Int, Int64)] = [(7, 2, 25_000), (7, 21, 16_000), (8, 9, 20_000), (9, 4, 20_000), (9, 23, 12_000)]
+        for (month, day, amount) in transfers {
+            habits.append(op(-amount, kind: "transfer", category: "Перевод", description: elizaveta, date: iso(month, day)))
+        }
+        let bills: [Int64] = [25_147, 18_310, 22_905]
+        let groceries: [[Int64]] = [[1_100, 2_700], [900, 3_400], [1_800, 2_200]]
+        for (index, month) in [7, 8, 9].enumerated() {
+            habits.append(op(-bills[index], kind: "expense", category: "ЖКХ", description: "ЭЭ \(index + 3).24, ГВС 8501.79 <ЛСИ62952740715;ПРД0\(month).2026>", date: iso(month, 12)))
+            habits.append(op(-groceries[index][0], kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 6)))
+            habits.append(op(-groceries[index][1], kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 19)))
+        }
+        habits.append(op(-66_000, kind: "transfer", category: "Перевод", description: "Исходящий перевод СБП, Юрий Олегович А., +7 996 000-00-00", date: iso(9, 25)))
+        let habitual = FinancialEngine.monthForecast(habits, now: at(10, 6), calendar: calendar)
+        require(habitual.historyMonths == 3, "April with a single expense is not representative; July to September are")
+        require(habitual.baselineMonths.map(\.oneOffKopecks) == [66_000, 0, 0],
+                "transfers to the same person every month and the utility bill with changing numbers are habits; only the new payee is one-off")
+        require(habitual.baselineMonths[0].variableKopecks == 20_000 + 12_000 + 4_000 && habitual.baselineMonths[0].recurringKopecks == 22_905,
+                "September keeps the usual transfers and groceries as variable; the monthly bill is recognised as recurring")
 
         let empty = FinancialEngine.monthForecast([], now: calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!, calendar: calendar)
         require(empty.elapsedDays == 1 && empty.projectedExpenseKopecks == 0 && empty.projectedIncomeKopecks == 0 && empty.historyMonths == 0,
