@@ -74,7 +74,13 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             for _ in 0..<120 {
                 do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
                 guard let self, self.foreground, self.autoUpdate, !self.busy else { return }
-                guard await self.historyPageReady() else { continue }
+                let state = await self.bankPageState()
+                if state == .codeRequested {
+                    self.automaticTask = nil
+                    self.requestSignIn()
+                    return
+                }
+                guard state == .history else { continue }
                 guard !Task.isCancelled, self.foreground, self.autoUpdate else { return }
                 self.automaticTask = nil
                 self.read(mode: "history", lookbackDays: self.incrementalDays(), initialImport: false, automaticRun: true)
@@ -127,16 +133,31 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         bankPageVisible = false
     }
 
-    /// True when the bank's history page is loaded and signed in (its account filter is visible).
-    private func historyPageReady() async -> Bool {
-        guard webView.url?.host == "bank.yandex.ru", webView.url?.path == "/my/transactions-history", !webView.isLoading else { return false }
+    enum BankPageState { case history, codeRequested, other }
+
+    /// What the bank page shows: the signed-in history (its account filter is visible), a request for a
+    /// confirmation code (a one-time-code field or "введите код" text, even on top of the history), or anything else.
+    private func bankPageState() async -> BankPageState {
+        guard webView.url != nil, !webView.isLoading else { return .other }
         let probe = """
-        if (location.hostname !== 'bank.yandex.ru' || location.pathname !== '/my/transactions-history') return false;
-        return (document.body?.innerText || '').includes('Все карты и счета');
+        const visible = element => !!element && element.getClientRects().length > 0;
+        const text = document.body?.innerText || '';
+        const codeField = [...document.querySelectorAll('input')].some(input => visible(input) &&
+            (input.autocomplete === 'one-time-code' || /код/i.test(input.placeholder || '') || /otp|sms|code/i.test(input.name || '')));
+        if (codeField || /введите код|код из sms|код из смс|код подтверждения/i.test(text)) return 'code';
+        if (location.hostname === 'bank.yandex.ru' && location.pathname === '/my/transactions-history' && text.includes('Все карты и счета')) return 'history';
+        return 'other';
         """
         let value = try? await webView.callAsyncJavaScript(probe, arguments: [:], in: nil, contentWorld: .defaultClient)
-        return value as? Bool == true
+        switch value as? String {
+        case "history": return .history
+        case "code": return .codeRequested
+        default: return .other
+        }
     }
+
+    /// True when the bank's history page is loaded, signed in and not asking for a code.
+    private func historyPageReady() async -> Bool { await bankPageState() == .history }
 
     /// Manual refresh: opens the history page when needed and, if the bank asks to sign in,
     /// says so and brings the bank page to the front instead of failing silently.
@@ -152,7 +173,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 self.webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
                 for _ in 0..<30 where !ready && !self.cancelled {
                     try? await Task.sleep(nanoseconds: 500_000_000)
-                    ready = await self.historyPageReady()
+                    let state = await self.bankPageState()
+                    if state == .codeRequested { break }
+                    ready = state == .history
                 }
             }
             self.busy = false

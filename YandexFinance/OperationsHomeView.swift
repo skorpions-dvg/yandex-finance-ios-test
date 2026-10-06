@@ -196,6 +196,21 @@ struct OperationsHomeView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            let accounts = browser.history.accounts ?? []
+            if !accounts.isEmpty {
+                Button { showAccounts = true } label: {
+                    HStack {
+                        Label("Текущий остаток", systemImage: "wallet.pass")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(rubles(currentBalance(accounts)))
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
     
@@ -351,6 +366,14 @@ struct OperationsHomeView: View {
                     Text(signedRubles(dayTotal(group.operations)))
                 }
             }
+        }
+    }
+
+    /// Sum of the accounts that show their balance, the same way the accounts screen counts them.
+    private func currentBalance(_ accounts: [Account]) -> Int64 {
+        accounts.filter(\.showsBalance).reduce(0) { total, account in
+            total + FinancialEngine.accountBalance(startKopecks: account.startBalanceKopecks, since: account.startDate,
+                                                   tracksBankCard: account.tracksBankCard, operations: inputs)
         }
     }
 

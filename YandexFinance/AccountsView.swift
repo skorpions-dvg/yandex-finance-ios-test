@@ -54,32 +54,69 @@ struct AccountsView: View {
     var body: some View {
         NavigationStack {
             List {
-                HStack {
-                    Label("Все счета", systemImage: "wallet.pass")
-                    Spacer()
-                    Text(total(accounts)).bold().multilineTextAlignment(.trailing)
-                }
-                .deleteDisabled(true)
-                .moveDisabled(true)
+                if editMode.isEditing {
+                    Section("Порядок групп") {
+                        ForEach(groups) { group in
+                            Label("\(group.name) · \(accounts.filter { $0.groupID == group.id }.count)",
+                                  systemImage: "folder")
+                        }
+                        .onMove { offsets, destination in
+                            persist { history in
+                                history.accountGroups?.move(fromOffsets: offsets, toOffset: destination)
+                            }
+                        }
+                        .onDelete { offsets in
+                            guard let index = offsets.first else { return }
+                            deletedGroup = groups[index]
+                            confirmGroupDeletion = true
+                        }
+                    }
+                } else {
+                    HStack {
+                        Label("Все счета", systemImage: "wallet.pass")
+                        Spacer()
+                        Text(total(accounts)).bold().multilineTextAlignment(.trailing)
+                    }
+                    .deleteDisabled(true)
+                    .moveDisabled(true)
 
-                if accounts.isEmpty && groups.isEmpty {
-                    ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
-                                           description: Text("Добавьте наличные, банковскую карту или копилку."))
-                    Button("Создать стандартные группы", action: createStandardGroups)
+                    if accounts.isEmpty && groups.isEmpty {
+                        ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
+                                               description: Text("Добавьте наличные, банковскую карту или копилку."))
+                        Button("Создать стандартные группы", action: createStandardGroups)
+                    }
                 }
                 ForEach(groups) { group in
+                    let rows = accounts.filter { $0.groupID == group.id }
                     Section {
-                        if !collapsed.contains(group.id) {
-                            accountRows(accounts.filter { $0.groupID == group.id })
+                        if editMode.isEditing || !collapsed.contains(group.id) {
+                            ForEach(rows) { account in
+                                accountRow(account)
+                            }
+                            .onMove { offsets, destination in move(rows, from: offsets, to: destination) }
+                            .onDelete { offsets in
+                                deletedAccounts = Set(offsets.map { rows[$0].id })
+                                confirmAccountDeletion = true
+                            }
                         }
                     } header: {
                         groupHeader(group)
                     }
                 }
                 if !ungrouped.isEmpty {
-                    Section("Без группы") { accountRows(ungrouped) }
+                    Section("Без группы") {
+                        ForEach(ungrouped) { account in
+                            accountRow(account)
+                        }
+                        .onMove { offsets, destination in move(ungrouped, from: offsets, to: destination) }
+                        .onDelete { offsets in
+                            deletedAccounts = Set(offsets.map { ungrouped[$0].id })
+                            confirmAccountDeletion = true
+                        }
+                    }
                 }
             }
+            .environment(\.editMode, $editMode)
             .listStyle(.insetGrouped)
             .navigationTitle("Счета")
             .navigationBarTitleDisplayMode(.inline)
@@ -99,7 +136,6 @@ struct AccountsView: View {
                     }
                 }
             }
-            .environment(\.editMode, $editMode)
         }
         .sheet(isPresented: $newAccount) {
             AccountFormView(browser: browser, account: nil, showsInfo: $showsInfo)
@@ -168,32 +204,25 @@ struct AccountsView: View {
         }
     }
 
-    private func accountRows(_ rows: [Account]) -> some View {
-        ForEach(rows) { account in
-            Button { editedAccount = account } label: {
-                HStack {
-                    Image(systemName: account.icon)
-                        .foregroundStyle(accountColor(account.color))
-                        .frame(width: 28, height: 28)
-                        .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                    Text(account.name).foregroundStyle(.primary)
-                    Spacer()
-                    if account.showsBalance {
-                        Text(accountMoney(accountBalance(account, history: browser.history)))
-                            .foregroundStyle(.primary).multilineTextAlignment(.trailing)
-                    } else {
-                        Text("—").foregroundStyle(.secondary)
-                    }
+    private func accountRow(_ account: Account) -> some View {
+        Button { editedAccount = account } label: {
+            HStack {
+                Image(systemName: account.icon)
+                    .foregroundStyle(accountColor(account.color))
+                    .frame(width: 28, height: 28)
+                    .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                Text(account.name).foregroundStyle(.primary)
+                Spacer()
+                if account.showsBalance {
+                    Text(accountMoney(accountBalance(account, history: browser.history)))
+                        .foregroundStyle(.primary).multilineTextAlignment(.trailing)
+                } else {
+                    Text("—").foregroundStyle(.secondary)
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
         }
-        .onMove { offsets, destination in move(rows, from: offsets, to: destination) }
-        .onDelete { offsets in
-            deletedAccounts = Set(offsets.map { rows[$0].id })
-            confirmAccountDeletion = true
-        }
+        .buttonStyle(.plain)
     }
 
     private func move(_ rows: [Account], from offsets: IndexSet, to destination: Int) {
