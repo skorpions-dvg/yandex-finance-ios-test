@@ -307,11 +307,14 @@ struct FinanceEngineTests {
             habits.append(op(-groceries[index][1], kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 19)))
         }
         habits.append(op(-66_000, kind: "transfer", category: "Перевод", description: "Исходящий перевод СБП, Юрий Олегович А., +7 996 000-00-00", date: iso(9, 25)))
+        // A utility bill paid once under a new name and a small purchase in a rare category are not one-offs.
+        habits.append(op(-25_147, kind: "expense", category: "ЖКХ", description: "ЖКУ сентябрь, лицевой счёт", date: iso(9, 14)))
+        habits.append(op(-1_200, kind: "expense", category: "Развлечения", description: "KDTS MAIAKOVSKII", date: iso(8, 15)))
         let habitual = FinancialEngine.monthForecast(habits, now: at(10, 6), calendar: calendar)
         require(habitual.historyMonths == 3, "April with a single expense is not representative; July to September are")
         require(habitual.baselineMonths.map(\.oneOffKopecks) == [66_000, 0, 0],
                 "transfers to the same person every month and the utility bill with changing numbers are habits; only the new payee is one-off")
-        require(habitual.baselineMonths[0].variableKopecks == 20_000 + 12_000 + 4_000 && habitual.baselineMonths[0].recurringKopecks == 22_905,
+        require(habitual.baselineMonths[0].variableKopecks == 20_000 + 12_000 + 4_000 + 25_147 && habitual.baselineMonths[0].recurringKopecks == 22_905,
                 "September keeps the usual transfers and groceries as variable; the monthly bill is recognised as recurring")
 
         let empty = FinancialEngine.monthForecast([], now: calendar.date(from: DateComponents(year: 2024, month: 3, day: 1))!, calendar: calendar)

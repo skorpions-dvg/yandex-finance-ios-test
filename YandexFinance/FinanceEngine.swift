@@ -706,7 +706,8 @@ enum FinancialEngine {
     /// of the month. The variable baseline is the median of up to six full months without recurring items and
     /// one-off purchases; the current month only moves it by a pace factor clamped to 0.6–1.6 and softened during
     /// the first week. The low and high values use the quartiles of the same months; recurring items stay exact.
-    /// A purchase is one-off when its payee does not show up in another month and it is more than twice the median
+    /// A purchase is one-off when its payee does not show up in another month, it is not an obligation (group
+    /// "Обязательные"), it is above 3% of the usual monthly variable spending, and it is more than twice the median
     /// purchase of its category, or, for a category with fewer than three purchases in the history, more than 5% of
     /// the usual monthly variable spending. Months with fewer than three expenses are not used.
     /// Built on `report`, so the usual rules apply.
@@ -757,6 +758,10 @@ enum FinancialEngine {
             .mapValues { Set($0.map { calendar.dateComponents([.year, .month], from: $0.date) }).count }
         func isOneOff(_ item: DatedAmount) -> Bool {
             if (monthsByPayee[item.key] ?? 0) >= 2 { return false }
+            // Bills, phone, subscriptions and health are obligations, not one-off purchases.
+            if item.category.hasPrefix("Обязательные/") { return false }
+            // Too small to matter for the month: at most 3% of the usual monthly variable spending.
+            if roughBaseline > 0 && item.amount * 100 <= roughBaseline * 3 { return false }
             if let history = historyByCategory[item.category], history.count >= 3 { return item.amount > 2 * median(history) }
             return roughBaseline > 0 && item.amount * 20 > roughBaseline
         }
