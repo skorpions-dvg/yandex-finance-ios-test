@@ -631,10 +631,11 @@ const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.sw
 assert.match(projectV25, /FinanceEngine\.swift/);
 // Build numbers and README consistency are checked together above.
 assert.match(appSwift, /\("Отчёты", "chart\.pie"\)/);
-assert.match(appSwift, /Button \{ shift\(-1\) \}[\s\S]{0,700}Button \{ shift\(1\) \}[\s\S]{0,300}\}\s*(?:\/\/[^\n]*\s*)?\.buttonStyle\(\.borderless\)/,
-  'period switcher buttons share a List row and must be borderless, otherwise one tap fires all of them');
-assert.match(appSwift, /Банковские списания/);
-assert.match(appSwift, /DisclosureGroup/);
+const reportsSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/ReportsView.swift'), 'utf8');
+assert.match(reportsSwift, /case structure, dynamics, balances, flow/, 'the reports have four tabs');
+assert.match(reportsSwift, /header\(first: first\)\s*List \{/,
+  'the tabs, the ribbon of months and the filters stay above the list, so the chart never moves when a period is chosen');
+assert.match(reportsSwift, /\.chartXScale\(domain: keys\)/, 'every bucket stays on the axis, with or without operations');
 assert.match(financeEngine, /case internalTransfer = "internal_transfer"/);
 assert.match(financeEngine, /case interestIncome = "interest_income"/);
 assert.match(financeEngine, /kind == "grouped_operation"/);
@@ -642,10 +643,9 @@ assert.match(financeEngine, /components are diagnostic detail only/i);
 assert.match(financeTests, /positive unknown kind must not be guessed as income/);
 assert.match(financeEngine, /includingFractionalSeconds:\s*true/);
 assert.match(financeEngine, /date >= interval\.start && date < interval\.end/);
-assert.match(appSwift, /Не распознано дат/);
 assert.match(financeEngine, /Снятие наличных — перемещение денег, а не покупка/);
 assert.match(financeTests, /cash withdrawal/);
-assert.match(appSwift, /let report = presentation\.report\(browser\.history, interval: interval\)/);
+assert.match(reportsSwift, /let report = presentation\.report\(browser\.history, interval: interval\)/);
 const presentationCacheSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinancePresentationCache.swift'), 'utf8');
 assert.match(presentationCacheSwift, /FinancialEngine\.report\(inputs\(history\), in: interval, taxonomy: history\.expenseTaxonomy\)/);
 assert.match(appSwift, /resetLocalStorage/);
@@ -658,7 +658,6 @@ assert.match(swift, /Не сохранено после проверки/);
 assert.match(source, /V34\.6\.3 keeps conservative verification/);
 assert.match(source, /перевод между счетами одного клиента/);
 assert.doesNotMatch(appSwift, /Section\("Сейв"\)/, 'the Save block was removed from the reports at the user\'s request');
-assert.match(appSwift, /Карта ↔ Сейв/);
 console.log('v25: finance engine handles fractional ISO8601 dates, half-open periods, and surfaces invalid dates.');
 
 
@@ -676,8 +675,8 @@ assert.match(financeEngine, /operation\.mcc/, 'expense taxonomy should use MCC a
 assert.deepStrictEqual([...financeEngine.matchAll(/Group\(name: "([^"]+)", subcategories:/g)].map(m => m[1]),
   ['Еда', 'Транспорт', 'Покупки', 'Обязательные', 'Другое', 'Переводы'], 'the built-in expense tree must use the agreed user-facing hierarchy');
 assert.match(appSwift, /FinanceCategoryOperationsView/, 'subcategory taps must open a filtered operations list');
-assert.match(appSwift, /selection: \.expense\(group: line\.title, subcategory: child\.title\)/, 'expense subcategory navigation must reuse the same taxonomy');
-assert.match(appSwift, /selection: \.income\(subcategory: line\.title\)/, 'income subcategories must open their operations');
+assert.match(reportsSwift, /selection: \.expense\(group: slice\.title, subcategory: child\.title\)/, 'expense subcategory navigation must reuse the same taxonomy');
+assert.match(reportsSwift, /\.income\(subcategory: slice\.title\)/, 'income categories must open their operations');
 
 assert.match(financeEngine, /technical fallback into financial income|Collector uses .unclassified_income./s, 'unclassified positive movements must not be promoted blindly');
 assert.match(financeTests, /technical unclassified income must stay unknown/, 'Swift tests must cover positive unclassified safety');

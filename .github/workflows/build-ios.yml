@@ -31,7 +31,7 @@ jobs:
 
       - name: Проверка финансового движка Swift
         run: |
-          swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift YandexFinance/PeriodSelectionLogic.swift YandexFinance/Models.swift YandexFinance/UncategorizedReview.swift YandexFinance/ReportSeries.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
+          swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift YandexFinance/PeriodSelectionLogic.swift YandexFinance/Models.swift YandexFinance/UncategorizedReview.swift YandexFinance/ReportSeries.swift YandexFinance/ReportEngine.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
           /tmp/finance-tests
 
       - name: Проверка импорта выписки

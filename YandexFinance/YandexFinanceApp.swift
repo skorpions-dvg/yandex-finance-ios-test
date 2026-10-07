@@ -79,8 +79,7 @@ struct ContentView: View {
                                     }
                                 }
                                 .id(1)
-                            FinanceDashboardView(browser: browser, presentation: presentation,
-                                                 onHorizontalPan: { _, _, _ in })
+                            ReportsView(browser: browser, presentation: presentation)
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, Self.barSpace)
                                 .frame(width: width, height: height)
@@ -820,21 +819,31 @@ enum FinanceOperationSelection: Hashable {
     case refund
     case split
     case movement(subcategory: String)
+    /// A whole group of expenses, all expenses or all income of the period, one payee (by its rule key).
+    case expenseGroup(String)
+    case allExpenses
+    case allIncome
+    case payee(key: String, income: Bool, title: String)
 
     var title: String {
         switch self {
         case .expense(_, let subcategory), .income(let subcategory), .movement(let subcategory): return subcategory
         case .refund: return "Возвраты"
         case .split: return "Сплит"
+        case .expenseGroup(let group): return group
+        case .allExpenses: return "Все расходы"
+        case .allIncome: return "Все доходы"
+        case .payee(_, _, let title): return title
         }
     }
 
     var parentTitle: String {
         switch self {
         case .expense(let group, _): return group
-        case .income: return "Доходы"
-        case .refund, .split: return "Расходы"
+        case .income, .allIncome: return "Доходы"
+        case .refund, .split, .expenseGroup, .allExpenses: return "Расходы"
         case .movement: return "Перемещения"
+        case .payee(_, let income, _): return income ? "Доходы" : "Расходы"
         }
     }
 
@@ -855,16 +864,31 @@ enum FinanceOperationSelection: Hashable {
         case .movement(let subcategory):
             guard assessment.type == .internalTransfer else { return false }
             return FinancialEngine.movementCategory(for: input) == subcategory
+        case .expenseGroup(let group):
+            guard assessment.type == .expense || assessment.type == .commission else { return false }
+            return FinancialEngine.expenseCategory(for: input, assessment: assessment).group == group
+        case .allExpenses:
+            return assessment.expenseContributionKopecks > 0
+        case .allIncome:
+            return assessment.incomeContributionKopecks > 0
+        case .payee(let key, let income, _):
+            let isIncome = assessment.type == .income || assessment.type == .interestIncome
+            let isExpense = assessment.type == .expense || assessment.type == .commission
+            guard income ? isIncome : isExpense else { return false }
+            let payee = FinancialEngine.payeeRuleKey(input.description)
+            return (payee.isEmpty ? "—" : payee) == key
         }
     }
 
     func contribution(_ operation: BankOperation) -> Int64 {
         let assessment = operation.financialAssessment
         switch self {
-        case .expense:
+        case .expense, .expenseGroup, .allExpenses:
             return assessment.expenseContributionKopecks
-        case .income:
+        case .income, .allIncome:
             return assessment.incomeContributionKopecks
+        case .payee(_, let income, _):
+            return income ? assessment.incomeContributionKopecks : assessment.expenseContributionKopecks
         case .refund:
             return assessment.refundContributionKopecks
         case .split, .movement:
@@ -965,510 +989,6 @@ struct FinanceCategoryOperationsView: View {
 
 }
 
-@MainActor
-struct FinanceDashboardView: View {
-    @ObservedObject var browser: BankBrowser
-    let presentation: FinancePresentationCache
-    var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
-    /// Shown period: a day, a month or a year, by its first moment. Defaults to the current month.
-    @State private var unit: ReportUnit = .month
-    @State private var selectedStart: Date = monthStart(of: Date())
-    @State private var showCalendar = false
-    @State private var calendarDate = Date()
-    @State private var pendingTrendStart: Date?
-    @State private var selectedTrendGroupID: UUID?
-
-    private func selectTrendPeriod(_ start: Date) {
-        if unit == .year {
-            pendingTrendStart = start
-            unit = .month
-        }
-        selectedStart = start
-    }
-
-    private func shift(_ step: Int) {
-        if let start = shiftedReportStart(selectedStart, unit: unit, by: step) { selectedStart = start }
-    }
-
-    private var periodTitle: String {
-        switch unit {
-        case .day: return selectedStart.formatted(.dateTime.day().month(.abbreviated).year())
-        case .month: return selectedStart.formatted(.dateTime.month(.wide).year())
-        case .year: return selectedStart.formatted(.dateTime.year())
-        }
-    }
-
-    private var unitWord: String {
-        switch unit {
-        case .day: return "дня"
-        case .month: return "месяца"
-        case .year: return "года"
-        }
-    }
-
-    private func rubles(_ kopecks: Int64) -> String {
-        (Decimal(kopecks) / 100).formatted(.currency(code: "RUB"))
-    }
-
-    private func signed(_ kopecks: Int64) -> String {
-        let prefix = kopecks > 0 ? "+" : ""
-        return prefix + rubles(kopecks)
-    }
-
-    private func relativeText(_ change: FinancialEngine.MonthlyChange) -> String {
-        switch change.relative {
-        case .percent(let value):
-            return (value / 100).formatted(.percent.precision(.fractionLength(1)).sign(strategy: .always()))
-        case .new:
-            return "новое"
-        case .notApplicable:
-            return "—"
-        }
-    }
-
-    private func periodText(_ period: DateInterval) -> String {
-        let last = period.end.addingTimeInterval(-1)
-        if Calendar.current.isDate(period.start, inSameDayAs: last) {
-            return period.start.formatted(.dateTime.day().month())
-        }
-        return "\(period.start.formatted(.dateTime.day().month())) — \(last.formatted(.dateTime.day().month()))"
-    }
-
-    private enum ComparisonStyle { case moreIsBetter, lessIsBetter, total }
-
-    private func wholeRubles(_ kopecks: Int64) -> String {
-        (Decimal(kopecks) / 100).formatted(.currency(code: "RUB").precision(.fractionLength(0)))
-    }
-
-    private func comparisonRow(_ title: String, _ change: FinancialEngine.MonthlyChange, style: ComparisonStyle) -> some View {
-        let delta = change.delta
-        let amount = wholeRubles(abs(delta))
-        let better: Bool
-        let words: String
-        switch style {
-        case .moreIsBetter:
-            better = delta > 0; words = delta > 0 ? "▲ больше на \(amount)" : "▼ меньше на \(amount)"
-        case .lessIsBetter:
-            better = delta < 0; words = delta > 0 ? "▲ больше на \(amount)" : "▼ меньше на \(amount)"
-        case .total:
-            better = delta > 0; words = delta > 0 ? "лучше на \(amount)" : "хуже на \(amount)"
-        }
-        // Rounded to whole rubles, a few kopecks are no change.
-        let unchanged = abs(delta) < 100
-        return VStack(alignment: .trailing, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title).font(.subheadline)
-                Spacer(minLength: 0)
-                Text(wholeRubles(change.current)).font(.subheadline.weight(.semibold))
-                    .frame(width: 104, alignment: .trailing)
-                Text(wholeRubles(change.previous)).font(.subheadline).foregroundStyle(.secondary)
-                    .frame(width: 104, alignment: .trailing)
-            }
-            .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-            Text(unchanged ? "без изменений" : words)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(unchanged ? Color.secondary : (better ? Color.green : Color.red))
-        }
-        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
-    }
-
-    private func changeRow(_ title: String, _ change: FinancialEngine.MonthlyChange) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(title).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Text(rubles(change.current))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-            }
-            .font(.subheadline)
-            Text("было \(rubles(change.previous)) · \(signed(change.delta)) · \(relativeText(change))")
-                .font(.caption2).foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
-    }
-
-
-
-    var body: some View {
-        // The interval of the selected day, month or year.
-        let interval = reportInterval(start: selectedStart, unit: unit)
-        let _ = presentation.prepare(browser.history)
-        let inputs = presentation.inputs(browser.history)
-        let report = presentation.report(browser.history, interval: interval)
-        let trend = presentation.value("report-series:\(unit.rawValue):\(interval.start):\(interval.end)") {
-            ReportSeries.periods(inputs: inputs,
-                                 intervals: ReportSeries.intervals(selectedStart: selectedStart, unit: unit),
-                                 taxonomy: browser.history.expenseTaxonomy)
-        }
-        let periods = reportComparisonPeriods(start: selectedStart, unit: unit)
-        let comparison = presentation.value("comparison:\(periods.current):\(periods.previous)") {
-            FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous, taxonomy: browser.history.expenseTaxonomy)
-        }
-        NavigationStack {
-            List {
-                Section {
-                    Picker("Период", selection: $unit) {
-                        Text("День").tag(ReportUnit.day)
-                        Text("Месяц").tag(ReportUnit.month)
-                        Text("Год").tag(ReportUnit.year)
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: unit) { _, newUnit in
-                        if let start = pendingTrendStart {
-                            selectedStart = start
-                            pendingTrendStart = nil
-                            return
-                        }
-                        // Keep the period that contains the shown one (or today, if the shown one is current).
-                        let anchor = min(Date(), max(selectedStart, interval.start))
-                        selectedStart = reportStart(of: anchor, unit: newUnit)
-                    }
-                    HStack {
-                        Button { shift(-1) } label: { Image(systemName: "chevron.left") }
-                        Spacer()
-                        // A tap on the period opens a calendar to jump straight to a date.
-                        Button {
-                            calendarDate = selectedStart
-                            showCalendar = true
-                        } label: {
-                            Text(periodTitle).fontWeight(.semibold).foregroundStyle(.primary)
-                        }
-                        Spacer()
-                        Button { shift(1) } label: { Image(systemName: "chevron.right") }
-                            .disabled(shiftedReportStart(selectedStart, unit: unit, by: 1) == nil)
-                    }
-                    // In a List row every default-style button fires on any tap in the row.
-                    .buttonStyle(.borderless)
-                }.glassRows()
-                Section("Расходы по категориям") {
-                    CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
-                }.glassRows()
-
-                Section("Динамика") {
-                    TrendChart(periods: trend, unit: unit, onSelect: selectTrendPeriod)
-                    if let group = browser.history.categoryTree.first(where: { $0.id == selectedTrendGroupID })
-                        ?? ReportSeries.defaultGroup(report, groups: browser.history.categoryTree) {
-                        Picker("Группа расходов", selection: Binding(get: { group.id }, set: { selectedTrendGroupID = $0 })) {
-                            ForEach(browser.history.categoryTree) { item in
-                                Text(item.name).tag(item.id)
-                            }
-                        }
-                        let points = presentation.value("category-series:\(group.id):\(unit.rawValue):\(interval.start):\(interval.end)") {
-                            ReportSeries.categoryPoints(trend, group: group.name)
-                        }
-                        CategoryTrendChart(points: points, group: group.name, unit: unit,
-                                           intervals: trend.map(\.interval), onSelect: selectTrendPeriod)
-                    }
-                }.glassRows()
-
-                // Income and expenses open straight into subcategories and operations.
-                incomeBlock(report, interval: interval)
-                expenseBlock(report, interval: interval)
-
-                if !report.movementLines.isEmpty {
-                    movementBlock(report, interval: interval)
-                }
-                if !report.incompleteLines.isEmpty {
-                    incompleteBlock(report)
-                }
-
-                Section("Итог \(unitWord)") {
-                    LabeledContent("Разница", value: signed(report.differenceKopecks))
-                    LabeledContent("Операций", value: String(report.operationCount))
-                    if report.invalidDateCount > 0 {
-                        LabeledContent("Не распознано дат в базе", value: String(report.invalidDateCount))
-                            .foregroundStyle(.orange)
-                    }
-                    Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.glassRows()
-
-                Section {
-                    // Two plain columns and the change in words: «now», «before», «more/less by».
-                    HStack(spacing: 8) {
-                        Spacer(minLength: 0)
-                        Text(periods.isPartial ? periodText(periods.current) : "Сейчас")
-                            .frame(width: 104, alignment: .trailing)
-                        Text(periods.isPartial ? periodText(periods.previous) : "Было")
-                            .frame(width: 104, alignment: .trailing)
-                    }
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(1).minimumScaleFactor(0.7)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 2, trailing: 20))
-                    comparisonRow("Доходы", comparison.income, style: .moreIsBetter)
-                    comparisonRow("Расходы", comparison.netExpense, style: .lessIsBetter)
-                    comparisonRow("Итог", comparison.difference, style: .total)
-                    if let growth = comparison.topExpenseGrowth {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Больше всего выросли").font(.caption).foregroundStyle(.secondary)
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(growth.subcategory).font(.subheadline.weight(.semibold))
-                                Text(growth.group).font(.caption).foregroundStyle(.secondary)
-                                Spacer(minLength: 6)
-                                Text("\(wholeRubles(growth.change.current)), было \(wholeRubles(growth.change.previous))")
-                                    .font(.subheadline).monospacedDigit()
-                                    .lineLimit(1).minimumScaleFactor(0.7)
-                            }
-                        }
-                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
-                    }
-                } header: {
-                    Text("Сравнение с \(periodText(periods.previous))")
-                }.glassRows()
-
-                Section("Полнота данных") {
-                    if !browser.bootstrapComplete {
-                        Text("Архив до 01.10.2026 ещё не импортирован. Итоги за старые месяцы будут неполными до импорта PDF-выписки.")
-                    }
-                    let issues = browser.history.unresolvedIssues?.count ?? 0
-                    if issues > 0 { Text("Не прочитано операций: \(issues). Итоги могут быть неполными.").foregroundStyle(.orange) }
-                    if browser.busy { ProgressView("Обновление данных…") }
-                    Text("Разница доходов и расходов не является остатком на банковских счетах.")
-                }.glassRows().font(.footnote)
-
-                Section("Сверка с банком") {
-                    LabeledContent("Банковские списания", value: rubles(report.bankDebitKopecks))
-                    LabeledContent("Банковские поступления", value: rubles(report.bankCreditKopecks))
-                    Text("Это оборот сохранённых карточек за период: все завершённые и находящиеся в обработке движения по знаку суммы, кроме отменённых. Сводные карточки здесь учитываются по общему итогу; их внутренние списания и поступления могут отличаться от оборота банка. Этот показатель помогает при сверке и не равен финансовым доходам/расходам: сюда могут входить свои переводы, снятие наличных, Сплит и возвраты.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if report.invalidDateCount > 0 {
-                        Text("В базе есть операции с нераспознанной датой. Их нельзя надёжно отнести к этому месяцу, поэтому сверка с банком может быть неполной.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                }.glassRows()
-
-                Section("Правила") {
-                    Text("Возвраты уменьшают расходы и не считаются доходом. Переводы Карта ↔ Сейв и другие подтверждённые переводы между своими счетами относятся к перемещениям; проценты по Сейву считаются доходом.")
-                    Text("Сплит показывается отдельно и пока не входит в итог расходов, пока исходная покупка и платежи не связаны — так мы не создаём двойной расход.")
-                    Text("Старое завершённое списание без современного типа считается расходом. Непонятное положительное поступление автоматически доходом не назначается.")
-                }.glassRows().font(.footnote).foregroundStyle(.secondary)
-            }
-            .appSurface()
-            .navigationTitle("Отчёты")
-            // Large titles lose their leading margin inside the horizontal pages; inline matches «Операции».
-            .navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented: $showCalendar) {
-                NavigationStack {
-                    DatePicker("Дата", selection: $calendarDate, in: ...Date(), displayedComponents: .date)
-                        .datePickerStyle(.graphical)
-                        .padding()
-                        .navigationTitle("Перейти к дате")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarLeading) {
-                                Button("Отмена", systemImage: "xmark") { showCalendar = false }
-                            }
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("Готово", systemImage: "checkmark") {
-                                    selectedStart = reportStart(of: calendarDate, unit: unit)
-                                    showCalendar = false
-                                }
-                            }
-                        }
-                }
-                .presentationDetents([.medium, .large])
-            }
-        }
-    }
-
-    private var reviewGroups: [ReviewGroup] {
-        presentation.value("uncategorized") { UncategorizedReview.groups(browser.history) }
-    }
-
-    private func needsExpenseReview(group: String, category: String) -> Bool {
-        guard let pair = browser.history.expenseCategory(id: UncategorizedReview.otherExpenseID) else { return false }
-        return pair.group.name == group && pair.category.name == category && reviewGroups.contains { $0.kind == .expense }
-    }
-
-    private func incomeBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
-        Section {
-            DisclosureGroup {
-                if report.incomeLines.isEmpty {
-                    Text("Доходов за месяц нет.").foregroundStyle(.secondary)
-                } else {
-                    ForEach(report.incomeLines) { line in
-                        NavigationLink {
-                            if (line.title == "Прочие доходы" || line.title == "Не определено"), reviewGroups.contains(where: { $0.kind == .income }) {
-                                UncategorizedReviewView(browser: browser, presentation: presentation)
-                            } else {
-                                FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .income(subcategory: line.title))
-                            }
-                        } label: {
-                            simpleFinanceRow(line, amount: rubles(line.amountKopecks))
-                        }
-                    }
-                }
-            } label: {
-                blockLabel("Доходы", value: rubles(report.incomeKopecks))
-            }
-        }.glassRows()
-    }
-
-    private func expenseBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
-        Section {
-            DisclosureGroup {
-                if report.expenseLines.isEmpty {
-                    Text("Расходов за месяц нет.").foregroundStyle(.secondary)
-                } else {
-                    ForEach(report.expenseLines) { line in
-                        expenseLine(line, interval: interval)
-                    }
-                    Text("Итог расходов уже уменьшен на возвраты.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            } label: {
-                blockLabel("Расходы", value: rubles(report.netExpenseKopecks))
-            }
-        }.glassRows()
-    }
-
-    private func movementBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
-        Section {
-            DisclosureGroup {
-                ForEach(report.movementLines) { line in
-                    NavigationLink {
-                        FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .movement(subcategory: line.title))
-                    } label: {
-                        simpleFinanceRow(line, amount: rubles(line.amountKopecks))
-                    }
-                }
-                Text("Перемещения не входят ни в доходы, ни в расходы. Показанная сумма — оборот перемещений.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } label: {
-                blockLabel("Перемещения", value: rubles(report.movementKopecks))
-            }
-        }.glassRows()
-    }
-
-    private func incompleteBlock(_ report: FinanceReport) -> some View {
-        Section {
-            DisclosureGroup {
-                ForEach(report.incompleteLines) { line in
-                    if line.children.isEmpty {
-                        incompleteRow(line)
-                    } else {
-                        DisclosureGroup {
-                            ForEach(line.children) { child in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack(alignment: .firstTextBaseline) {
-                                        Text(child.title)
-                                        Spacer()
-                                        Text(signed(child.amountKopecks))
-                                    }
-                                    if let note = child.note {
-                                        Text(note).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.vertical, 2)
-                            }
-                        } label: {
-                            incompleteRow(line)
-                        }
-                    }
-                }
-            } label: {
-                blockLabel("Не завершено", value: "\(incompleteCount(report)) оп.")
-            }
-        }.glassRows()
-    }
-
-    private func incompleteCount(_ report: FinanceReport) -> Int {
-        report.incompleteLines.reduce(0) { $0 + $1.count }
-    }
-
-    private func incompleteRow(_ line: FinanceLine) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(line.title)
-                Spacer()
-                Text(signed(line.amountKopecks))
-            }
-            Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
-            if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
-        }
-    }
-
-    private func expenseAmount(_ line: FinanceLine) -> String {
-        line.title == "Возвраты" ? "−" + rubles(line.amountKopecks) : rubles(line.amountKopecks)
-    }
-
-    @ViewBuilder
-    private func expenseLine(_ line: FinanceLine, interval: DateInterval) -> some View {
-        if line.title == "Возвраты" {
-            NavigationLink {
-                FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .refund)
-            } label: {
-                simpleFinanceRow(line, amount: expenseAmount(line))
-            }
-        } else if line.title == "Сплит" {
-            NavigationLink {
-                FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .split)
-            } label: {
-                simpleFinanceRow(line, amount: expenseAmount(line))
-            }
-        } else if line.children.isEmpty {
-            simpleFinanceRow(line, amount: expenseAmount(line))
-        } else {
-            DisclosureGroup {
-                if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
-                ForEach(line.children) { child in
-                    NavigationLink {
-                        if needsExpenseReview(group: line.title, category: child.title) {
-                            UncategorizedReviewView(browser: browser, presentation: presentation)
-                        } else {
-                            FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .expense(group: line.title, subcategory: child.title))
-                        }
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(child.title)
-                                Text("Операций: \(child.count)").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(rubles(child.amountKopecks))
-                        }
-                        .font(.subheadline)
-                    }
-                }
-            } label: {
-                financeRowLabel(line, amount: expenseAmount(line))
-            }
-        }
-    }
-
-    private func simpleFinanceRow(_ line: FinanceLine, amount: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            financeRowLabel(line, amount: amount)
-            if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
-        }
-    }
-
-    private func financeRowLabel(_ line: FinanceLine, amount: String) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(line.title)
-                Text("Операций: \(line.count)").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text(amount)
-        }
-    }
-
-    private func blockLabel(_ title: String, value: String) -> some View {
-        HStack {
-            Text(title).font(.headline)
-            Spacer()
-            Text(value).font(.headline)
-        }
-    }
-}
-
-/// JSON backup file for the system "Save to Files" panel.
 struct BackupDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.json] }
     let data: Data

@@ -1212,6 +1212,99 @@ struct FinanceEngineTests {
         }
     }
 
+    static func testReportEngine() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func day(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day))! }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2032-%02d-%02dT10:00:00Z", month, day) }
+        let now = day(9, 20)
+
+        // Periods
+        require(ReportPeriod.month(day(9, 17)).interval(now: now, calendar: calendar) == DateInterval(start: day(9, 1), end: day(10, 1)), "a month")
+        require(ReportPeriod.year(day(5, 3)).interval(now: now, calendar: calendar) == DateInterval(start: day(1, 1), end: calendar.date(from: DateComponents(year: 2033, month: 1, day: 1))!), "a year")
+        require(ReportPeriod.lastDays(7).interval(now: now, calendar: calendar) == DateInterval(start: day(9, 14), end: day(9, 21)), "the last 7 days include today")
+        require(ReportPeriod.custom(from: day(9, 10), through: day(9, 3)).interval(now: now, calendar: calendar) == DateInterval(start: day(9, 3), end: day(9, 11)),
+                "own dates in any order, the last day included")
+        require(ReportPeriod.allHistory.interval(now: now, firstDate: day(7, 15), calendar: calendar) == DateInterval(start: day(7, 15), end: day(9, 21)), "all history")
+        require(ReportPeriod.months(from: day(7, 15), now: now, calendar: calendar) == [day(7, 1), day(8, 1), day(9, 1)], "the ribbon of months, oldest first")
+        require(ReportPeriod.months(from: nil, now: now, calendar: calendar) == [day(9, 1)], "without history only the current month")
+
+        // Steps and buckets
+        let september = ReportPeriod.month(day(9, 1)).interval(now: now, calendar: calendar)
+        require(ReportEngine.step(.automatic, for: september, calendar: calendar) == .day, "a month is shown by days")
+        let half = DateInterval(start: day(4, 1), end: day(9, 1))
+        require(ReportEngine.step(.automatic, for: half, calendar: calendar) == .month, "several months are shown by months")
+        let days = ReportEngine.buckets(september, step: .day, calendar: calendar)
+        require(days.count == 30 && days.first?.start == day(9, 1) && days.last?.end == day(10, 1), "30 daily buckets cover September")
+        let weeks = ReportEngine.buckets(september, step: .week, calendar: calendar)
+        require(weeks.count == 5 && weeks.last?.end == day(10, 1) && weeks[1].start == day(9, 8), "weeks run from the start of the period; the last is shorter")
+        let months = ReportEngine.buckets(DateInterval(start: day(7, 15), end: day(9, 21)), step: .month, calendar: calendar)
+        require(months.map(\.start) == [day(7, 15), day(8, 1), day(9, 1)] && months.last?.end == day(9, 21), "calendar months, the first and the last cut to the period")
+        for set in [days, weeks, months] { for (a, b) in zip(set, set.dropFirst()) { require(a.end == b.start, "buckets are contiguous") } }
+        require(ReportEngine.step(.day, for: DateInterval(start: day(1, 1), end: day(12, 31)), calendar: calendar) == .week, "too many days fall back to weeks")
+
+        // Structure
+        let taxonomy = ExpenseTaxonomy.builtin
+        var inputs: [FinancialOperationInput] = []
+        func expense(_ amount: Int64, _ description: String, _ category: String, _ date: String, mcc: String? = nil) -> FinancialOperationInput {
+            op(-amount, kind: "expense", category: category, description: description, mcc: mcc, date: date)
+        }
+        inputs.append(expense(30_000, "Пятёрочка", "Супермаркеты", iso(9, 3)))
+        inputs.append(expense(10_000, "Пятёрочка", "Супермаркеты", iso(9, 4)))
+        inputs.append(expense(20_000, "Кофейня", "Кафе", iso(9, 4)))
+        inputs.append(expense(15_000, "Такси", "Такси", iso(9, 10)))
+        inputs.append(expense(99_000, "Старый месяц", "Супермаркеты", iso(8, 30)))
+        inputs.append(op(5_000, kind: "refund", category: "Возврат", description: "Возврат Пятёрочка", date: iso(9, 5)))
+        inputs.append(op(-70_000, kind: "internal_transfer", description: "Перевод между счетами одного клиента", date: iso(9, 6)))
+        inputs.append(op(200_000, kind: "income", category: "Зарплата", description: "ООО Ромашка", date: iso(9, 5)))
+        let slices = ReportEngine.slices(inputs, in: september, mode: .expenses, grouping: .categories, taxonomy: taxonomy)
+        require(slices.map(\.title) == ["Еда", "Транспорт"], "groups of September, the largest first; other months and transfers are out")
+        require(slices[0].amountKopecks == 60_000 && slices[0].count == 3, "the group sums its operations")
+        require(slices[0].children.map(\.title) == ["Супермаркеты", "Кафе и рестораны"] && slices[0].children.map(\.amountKopecks) == [40_000, 20_000],
+                "subcategories inside, the largest first")
+        let payees = ReportEngine.slices(inputs, in: september, mode: .expenses, grouping: .payees, taxonomy: taxonomy)
+        require(payees.first?.title == "Пятёрочка" && payees.first?.amountKopecks == 40_000 && payees.first?.count == 2, "payees group the same shop")
+        let income = ReportEngine.slices(inputs, in: september, mode: .income, grouping: .categories, taxonomy: taxonomy)
+        require(income.map(\.amountKopecks) == [200_000], "income by its category")
+        let report = FinancialEngine.report(inputs, in: september, taxonomy: taxonomy)
+        require(slices.reduce(0) { $0 + $1.amountKopecks } == report.grossExpenseKopecks, "the groups add up to the report's gross expense")
+        let damaged = [expense(10_000, "28.09.2026 в 16:39 28.09.2026 –232,00 ₽", "Тест", iso(9, 7))]
+        require(ReportEngine.slices(damaged, in: september, mode: .expenses, grouping: .payees, taxonomy: taxonomy).first?.title == "Без названия",
+                "a damaged title is shown as an unnamed payee, never as a payee")
+
+        // Dynamics: every bucket is present, the axis does not depend on what was tapped
+        let bars = ReportEngine.bars(inputs, buckets: days, mode: .expenses, grouping: .categories)
+        require(bars.count == 3 && bars.map(\.label).sorted() == ["Еда", "Еда", "Транспорт"], "stacked bars: a group per day with operations")
+        let totals = ReportEngine.totals(bars, buckets: days)
+        require(totals.count == 30 && totals[3] == 60_000 - 30_000 && totals[2] == 30_000 && totals[9] == 15_000 && totals[0] == 0,
+                "totals per bucket, empty days are zero")
+        let focused = ReportEngine.bars(inputs, buckets: days, mode: .expenses, grouping: .categories, focus: "Еда")
+        require(focused.map(\.label).sorted() == ["Кафе и рестораны", "Супермаркеты", "Супермаркеты"], "a focused group is split by its subcategories")
+        require(ReportEngine.bars(inputs, buckets: [], mode: .expenses, grouping: .categories).isEmpty, "no buckets, no bars")
+
+        // Income and expenses
+        let flow = ReportEngine.flow(inputs, buckets: weeks)
+        require(flow.map(\.incomeKopecks) == [200_000, 0, 0, 0, 0], "income by week")
+        require(flow.map(\.expenseKopecks) == [60_000 - 5_000, 15_000, 0, 0, 0] || flow[0].expenseKopecks == 75_000 - 5_000,
+                "net expense by week: refunds are taken off, transfers are not counted")
+        require(flow.reduce(0) { $0 + $1.expenseKopecks } == report.netExpenseKopecks, "the weeks add up to the report's net expense")
+        require(flow.reduce(0) { $0 + $1.incomeKopecks } == report.incomeKopecks, "the weeks add up to the report's income")
+
+        // Balances
+        let start = day(8, 1)
+        let cash = Account(name: "Наличные", icon: "banknote", color: "green", startBalanceKopecks: 100_000, startDate: start)
+        var history = SavedHistory()
+        history.accounts = [cash]
+        history.manualOperations = [
+            ManualOperation(kind: .expense, amountKopecks: 10_000, date: day(9, 3), accountID: cash.id, group: "Еда", subcategory: "Кафе и рестораны"),
+            ManualOperation(kind: .income, amountKopecks: 5_000, date: day(9, 12), accountID: cash.id, subcategory: "Прочие доходы"),
+        ]
+        let points = ReportEngine.balances(history, accounts: [cash], buckets: weeks)
+        require(points.map(\.totalKopecks) == [90_000, 95_000, 95_000, 95_000, 95_000], "the balance at the end of every week")
+        require(points.last?.totalKopecks == cash.balance(bankOperations: [], manual: history.manualOperations ?? []), "the last point is the current balance")
+        require(ReportEngine.balances(history, accounts: [], buckets: weeks).allSatisfy { $0.totalKopecks == 0 }, "no accounts, no balance")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1604,6 +1697,7 @@ struct FinanceEngineTests {
         testOperationLooks()
         testOtherShrinks()
         testReserveAccounts()
+        testReportEngine()
         testAccountMovements()
         testReportSeries()
         testAccountSeries()
