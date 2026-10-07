@@ -705,6 +705,10 @@ struct FinanceDashboardView: View {
                     }
                     // In a List row every default-style button fires on any tap in the row.
                     .buttonStyle(.borderless)
+                Section("Расходы по категориям") {
+                    CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
+                }.listRowBackground(GlassRowBackground())
+
                 // Income and expenses open straight into subcategories and operations.
                 incomeBlock(report, interval: interval)
                 expenseBlock(report, interval: interval)
@@ -740,10 +744,6 @@ struct FinanceDashboardView: View {
                     } else {
                         LabeledContent("Рост расходов", value: "—")
                     }
-                }.listRowBackground(GlassRowBackground())
-
-                Section("Расходы по категориям") {
-                    CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
                 }.listRowBackground(GlassRowBackground())
 
                 Section("Полнота данных") {
