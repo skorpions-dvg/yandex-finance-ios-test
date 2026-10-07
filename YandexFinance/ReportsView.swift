@@ -69,12 +69,15 @@ struct ReportsView: View {
 
     var body: some View {
         let _ = presentation.prepare(browser.history)
-        let first: Date? = presentation.value("reports-first") {
-            browser.history.allOperations.compactMap { BankDateParser.parse($0.occurredAt) }.min()
-        }
+        // Not cached: the ribbon of months must follow the history the moment it is loaded.
+        let first: Date? = browser.history.allOperations.compactMap { BankDateParser.parse($0.occurredAt) }.min()
         let interval = period.interval(firstDate: first)
         let step = ReportEngine.step(stepChoice, for: interval)
         let buckets = ReportEngine.buckets(interval, step: step)
+        // Balances and income/expenses do not show months before the first operation.
+        let shownBuckets = (tab == .balances || tab == .flow) ? ReportEngine.trimmed(buckets, from: first) : buckets
+        let shownInterval = (shownBuckets.first != nil && shownBuckets.last != nil)
+            ? DateInterval(start: shownBuckets[0].start, end: shownBuckets[shownBuckets.count - 1].end) : interval
         NavigationStack {
             VStack(spacing: 0) {
                 header(first: first)
@@ -87,9 +90,9 @@ struct ReportsView: View {
                         DynamicsContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
                                         grouping: grouping, buckets: buckets, step: step)
                     case .balances:
-                        BalancesContent(browser: browser, interval: interval, buckets: buckets, step: step, perAccount: perAccount)
+                        BalancesContent(browser: browser, interval: shownInterval, buckets: shownBuckets, step: step, perAccount: perAccount)
                     case .flow:
-                        FlowContent(presentation: presentation, browser: browser, interval: interval, buckets: buckets, step: step)
+                        FlowContent(presentation: presentation, browser: browser, interval: shownInterval, buckets: shownBuckets, step: step)
                     }
                 }
                 .appSurface()
@@ -141,6 +144,7 @@ struct ReportsView: View {
                     Image(systemName: "chevron.right").font(.caption2)
                 }
                 .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.white)
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(Color.primary.opacity(0.1), in: Capsule())
             }
@@ -178,9 +182,11 @@ struct ReportsView: View {
                     Menu {
                         Picker("Тип", selection: $mode) { ForEach(ReportMode.allCases) { Text($0.title).tag($0) } }
                     } label: { pill(mode.title) }
+                    .tint(.white)
                     Menu {
                         Picker("Группировка", selection: $grouping) { ForEach(ReportGrouping.allCases) { Text($0.title).tag($0) } }
                     } label: { pill(grouping.title) }
+                    .tint(.white)
                 }
                 if tab == .balances {
                     Menu {
@@ -189,11 +195,13 @@ struct ReportsView: View {
                             Text("По счетам").tag(true)
                         }
                     } label: { pill(perAccount ? "По счетам" : "Одна линия") }
+                    .tint(.white)
                 }
                 if tab != .structure {
                     Menu {
                         Picker("Шаг", selection: $stepChoice) { ForEach(ReportStep.allCases) { Text($0.title).tag($0) } }
                     } label: { pill(stepChoice == .automatic ? "Шаг" : stepChoice.title) }
+                    .tint(.white)
                 }
             }
             .padding(.horizontal, 16)
@@ -206,7 +214,7 @@ struct ReportsView: View {
             Image(systemName: "chevron.up.chevron.down").font(.caption2)
         }
         .font(.subheadline.weight(.medium))
-        .foregroundStyle(.primary)
+        .foregroundStyle(Color.white)
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(Color.primary.opacity(0.1), in: Capsule())
     }
@@ -251,6 +259,7 @@ private struct StructureContent: View {
         let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping)
         let report = presentation.report(browser.history, interval: interval)
         let total = slices.reduce(Int64(0)) { $0 + $1.amountKopecks }
+        let headline = mode == .expenses ? report.netExpenseKopecks : total
         if showsChart {
             Section {
                 if slices.isEmpty {
@@ -260,20 +269,26 @@ private struct StructureContent: View {
                     Chart(slices) { slice in
                         SectorMark(angle: .value("Сумма", Double(slice.amountKopecks) / 100), innerRadius: .ratio(0.62), angularInset: 1.5)
                             .foregroundStyle(ReportPalette.color(slice.title))
+                            .annotation(position: .overlay) {
+                                if total > 0 && Double(slice.amountKopecks) / Double(total) >= 0.05 {
+                                    Text((Double(slice.amountKopecks) / Double(total)).formatted(.percent.precision(.fractionLength(0))))
+                                        .font(.caption.weight(.semibold)).foregroundStyle(Color.white)
+                                }
+                            }
                     }
                     .chartLegend(.hidden)
                     .frame(height: 240)
                     .overlay {
                         VStack(spacing: 2) {
                             Text("Всего").font(.caption).foregroundStyle(.secondary)
-                            Text(reportWholeRubles(mode == .expenses ? report.netExpenseKopecks : report.incomeKopecks))
+                            Text(reportWholeRubles(headline))
                                 .font(.title3.weight(.semibold)).monospacedDigit()
                         }
                     }
                 }
             }.glassRows()
         }
-        ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices, total: total,
+        ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices, total: total, headline: headline,
                         refundsKopecks: mode == .expenses ? report.refundsKopecks : 0)
         separateSection(report)
     }
@@ -336,7 +351,10 @@ private struct ReportSliceList: View {
     let mode: ReportMode
     let grouping: ReportGrouping
     let slices: [ReportSlice]
+    /// The sum of the groups: the base of the percentages and of the bars.
     let total: Int64
+    /// The figure of the «all» row: the same as the centre of the ring (expenses are net of refunds).
+    let headline: Int64
     let refundsKopecks: Int64
 
     static func compute(browser: BankBrowser, presentation: FinancePresentationCache, interval: DateInterval,
@@ -359,7 +377,7 @@ private struct ReportSliceList: View {
                             Image(systemName: "sum").foregroundStyle(.secondary).frame(width: 28)
                             Text(mode == .expenses ? "Все расходы" : "Все доходы").font(.headline)
                             Spacer()
-                            Text(reportRubles(total)).font(.headline).monospacedDigit()
+                            Text(reportRubles(headline)).font(.headline).monospacedDigit()
                         }
                         ShareBar(fraction: 1, color: .accentColor)
                     }
@@ -559,8 +577,10 @@ private struct DynamicsContent: View {
         }.glassRows()
         let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping)
         let report = presentation.report(browser.history, interval: interval)
+        let total = slices.reduce(Int64(0)) { $0 + $1.amountKopecks }
         ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices,
-                        total: slices.reduce(Int64(0)) { $0 + $1.amountKopecks }, refundsKopecks: mode == .expenses ? report.refundsKopecks : 0)
+                        total: total, headline: mode == .expenses ? report.netExpenseKopecks : total,
+                        refundsKopecks: mode == .expenses ? report.refundsKopecks : 0)
     }
 }
 
@@ -741,6 +761,9 @@ private struct ReportPeriodSheet: View {
                     }
                     Button { choosingDates = true } label: { Label("Выбрать даты", systemImage: "calendar.badge.clock").foregroundStyle(.primary) }
                     Button { choose(.allHistory) } label: { Label("Вся история", systemImage: "infinity").foregroundStyle(.primary) }
+                    if let first {
+                        Text("История с " + first.formatted(.dateTime.month(.wide).year())).font(.caption).foregroundStyle(.secondary)
+                    }
                 }.glassRows()
                 ForEach(years, id: \.self) { year in
                     Section {

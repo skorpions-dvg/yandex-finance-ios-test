@@ -46,7 +46,11 @@ enum ReportPeriod: Equatable {
             return DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!)
         case .year(let date):
             let start = calendar.date(from: calendar.dateComponents([.year], from: date))!
-            return DateInterval(start: start, end: calendar.date(byAdding: .year, value: 1, to: start)!)
+            // The current year ends with the current month: months that have not come yet are not shown.
+            let thisMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+            let untilNow = calendar.date(byAdding: .month, value: 1, to: thisMonth)!
+            let yearEnd = calendar.date(byAdding: .year, value: 1, to: start)!
+            return DateInterval(start: start, end: max(start, min(yearEnd, untilNow)))
         case .lastDays(let days):
             return DateInterval(start: calendar.date(byAdding: .day, value: -max(1, days), to: tomorrow)!, end: tomorrow)
         case .custom(let from, let through):
@@ -141,6 +145,14 @@ enum ReportEngine {
             start = end
         }
         return result
+    }
+
+    /// Drops the buckets that end before the first operation, so balances and income/expenses start where the history does.
+    /// Nothing is dropped without a known first date or when it would drop everything.
+    static func trimmed(_ buckets: [DateInterval], from first: Date?) -> [DateInterval] {
+        guard let first else { return buckets }
+        let kept = Array(buckets.drop(while: { $0.end <= first }))
+        return kept.isEmpty ? buckets : kept
     }
 
     // MARK: Structure

@@ -1221,7 +1221,16 @@ struct FinanceEngineTests {
 
         // Periods
         require(ReportPeriod.month(day(9, 17)).interval(now: now, calendar: calendar) == DateInterval(start: day(9, 1), end: day(10, 1)), "a month")
-        require(ReportPeriod.year(day(5, 3)).interval(now: now, calendar: calendar) == DateInterval(start: day(1, 1), end: calendar.date(from: DateComponents(year: 2033, month: 1, day: 1))!), "a year")
+        require(ReportPeriod.year(day(5, 3)).interval(now: now, calendar: calendar) == DateInterval(start: day(1, 1), end: day(10, 1)),
+                "the current year ends with the current month: no months that have not come yet")
+        let lastYear = calendar.date(from: DateComponents(year: 2031, month: 6, day: 1))!
+        require(ReportPeriod.year(lastYear).interval(now: now, calendar: calendar)
+                == DateInterval(start: calendar.date(from: DateComponents(year: 2031, month: 1, day: 1))!, end: day(1, 1)), "a past year is whole")
+        let sampleBuckets = ReportEngine.buckets(DateInterval(start: day(1, 1), end: day(10, 1)), step: .month, calendar: calendar)
+        require(ReportEngine.trimmed(sampleBuckets, from: day(7, 15)).map(\.start) == [day(7, 1), day(8, 1), day(9, 1)],
+                "balances start from the month of the first operation")
+        require(ReportEngine.trimmed(sampleBuckets, from: nil).count == 9, "without a first date nothing is trimmed")
+        require(ReportEngine.trimmed(sampleBuckets, from: day(12, 1)).count == 9, "a first date after the period trims nothing")
         require(ReportPeriod.lastDays(7).interval(now: now, calendar: calendar) == DateInterval(start: day(9, 14), end: day(9, 21)), "the last 7 days include today")
         require(ReportPeriod.custom(from: day(9, 10), through: day(9, 3)).interval(now: now, calendar: calendar) == DateInterval(start: day(9, 3), end: day(9, 11)),
                 "own dates in any order, the last day included")
