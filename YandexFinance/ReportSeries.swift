@@ -14,6 +14,24 @@ enum ReportSeries {
         let activePeriods: Int
     }
 
+    struct CategoryPoint: Identifiable {
+        let date: Date
+        let amountKopecks: Int64
+        var id: Date { date }
+    }
+
+    static func categoryPoints(_ periods: [Period], group: String) -> [CategoryPoint] {
+        periods.map { period in
+            CategoryPoint(date: period.id,
+                          amountKopecks: period.report.expenseLines.first { $0.title == group }?.amountKopecks ?? 0)
+        }
+    }
+
+    static func defaultGroup(_ report: FinanceReport, groups: [ExpenseCategoryGroup]) -> ExpenseCategoryGroup? {
+        let largest = report.expenseLines.max { $0.amountKopecks < $1.amountKopecks }?.title
+        return groups.first { $0.name == largest } ?? groups.first
+    }
+
     static func intervals(selectedStart: Date, unit: ReportUnit,
                           calendar: Calendar = .current) -> [DateInterval] {
         let component: Calendar.Component = unit == .day ? .day : .month

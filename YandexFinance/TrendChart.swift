@@ -58,6 +58,43 @@ struct TrendChart: View {
     }
 }
 
+struct CategoryTrendChart: View {
+    let points: [ReportSeries.CategoryPoint]
+    let group: String
+    let unit: ReportUnit
+    let intervals: [DateInterval]
+    let onSelect: (Date) -> Void
+
+    var body: some View {
+        Chart(points) { point in
+            LineMark(x: .value("Период", point.date, unit: unit == .day ? .day : .month),
+                     y: .value("Расходы", Double(point.amountKopecks) / 100))
+                .foregroundStyle(OperationRow.expenseGroupIcon(group).color)
+            PointMark(x: .value("Период", point.date, unit: unit == .day ? .day : .month),
+                      y: .value("Расходы", Double(point.amountKopecks) / 100))
+                .foregroundStyle(OperationRow.expenseGroupIcon(group).color)
+                .accessibilityLabel(point.date.formatted(date: .abbreviated, time: .omitted) + ", " + group)
+                .accessibilityValue((Decimal(point.amountKopecks) / 100).formatted(.currency(code: "RUB")))
+        }
+        .chartXAxis {
+            AxisMarks(values: .stride(by: unit == .day ? .day : .month, count: unit == .day ? 2 : 1)) { value in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(date.formatted(unit == .day ? .dateTime.day() : .dateTime.month(.abbreviated)))
+                            .font(.caption2)
+                    }
+                }
+            }
+        }
+        .chartOverlay { proxy in
+            PeriodChartTapOverlay(proxy: proxy, intervals: intervals, onSelect: onSelect)
+        }
+        .frame(height: 180)
+    }
+}
+
 /// A tap only: vertical scrolling and the application's existing swipes keep their recognizers.
 struct PeriodChartTapOverlay: View {
     let proxy: ChartProxy

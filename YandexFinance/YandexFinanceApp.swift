@@ -975,6 +975,7 @@ struct FinanceDashboardView: View {
     @State private var showCalendar = false
     @State private var calendarDate = Date()
     @State private var pendingTrendStart: Date?
+    @State private var selectedTrendGroupID: UUID?
 
     private func selectTrendPeriod(_ start: Date) {
         if unit == .year {
@@ -1149,6 +1150,19 @@ struct FinanceDashboardView: View {
 
                 Section("Динамика") {
                     TrendChart(periods: trend, unit: unit, onSelect: selectTrendPeriod)
+                    if let group = browser.history.categoryTree.first(where: { $0.id == selectedTrendGroupID })
+                        ?? ReportSeries.defaultGroup(report, groups: browser.history.categoryTree) {
+                        Picker("Группа расходов", selection: Binding(get: { group.id }, set: { selectedTrendGroupID = $0 })) {
+                            ForEach(browser.history.categoryTree) { item in
+                                Text(item.name).tag(item.id)
+                            }
+                        }
+                        let points = presentation.value("category-series:\(group.id):\(unit.rawValue):\(interval.start):\(interval.end)") {
+                            ReportSeries.categoryPoints(trend, group: group.name)
+                        }
+                        CategoryTrendChart(points: points, group: group.name, unit: unit,
+                                           intervals: trend.map(\.interval), onSelect: selectTrendPeriod)
+                    }
                 }.glassRows()
 
                 // Income and expenses open straight into subcategories and operations.

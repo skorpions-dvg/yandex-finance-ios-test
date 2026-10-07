@@ -1065,6 +1065,19 @@ struct FinanceEngineTests {
         let empty = ReportSeries.periods(inputs: [], intervals: months, taxonomy: .builtin)
         require(ReportSeries.average(empty) == ReportSeries.Average(incomeKopecks: 0, expenseKopecks: 0, activePeriods: 0),
                 "empty trend has a zero average without division by zero")
+        let foodInputs = [op(-10_000, kind: "expense", mcc: "5411", date: "2032-05-02T10:00:00Z"),
+                          op(-30_000, kind: "expense", mcc: "5411", date: "2032-06-02T10:00:00Z")]
+        let foodPeriods = ReportSeries.periods(inputs: foodInputs, intervals: months, taxonomy: .builtin)
+        let points = ReportSeries.categoryPoints(foodPeriods, group: "Еда")
+        require(points.count == 12 && points.map(\.date) == months.map(\.start), "category trend keeps every period")
+        require(points.prefix(10).allSatisfy { $0.amountKopecks == 0 }
+                && points[10].amountKopecks == 10_000 && points[11].amountKopecks == 30_000,
+                "category trend includes zero periods and uses the category's reported amounts")
+        require(ReportSeries.categoryPoints(foodPeriods, group: "Новая группа").allSatisfy { $0.amountKopecks == 0 },
+                "a group without expenses has a zero point in each period")
+        require(ReportSeries.defaultGroup(foodPeriods[11].report, groups: ExpenseCategoryGroup.builtin)?.name == "Еда",
+                "default category trend is the largest expense group of the selected period")
+        require(ReportSeries.defaultGroup(empty[0].report, groups: []) == nil, "no picker selection for an empty category tree")
     }
 
     static func main() {
