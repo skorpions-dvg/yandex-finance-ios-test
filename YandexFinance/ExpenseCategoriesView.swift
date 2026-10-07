@@ -45,7 +45,15 @@ struct ExpenseCategoriesView: View {
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let lines = monthReport.expenseLines
+        let review: [ReviewGroup] = presentation.value("uncategorized") { UncategorizedReview.groups(browser.history) }
         List {
+            Section {
+                NavigationLink {
+                    UncategorizedReviewView(browser: browser, presentation: presentation)
+                } label: {
+                    Label("Разобрать операции (\(review.reduce(0) { $0 + $1.operations.count }))", systemImage: "checklist")
+                }
+            }.listRowBackground(GlassRowBackground())
             Section {
                 Button("Импортировать разметку категорий", systemImage: "square.and.arrow.down") {
                     showCategoryImporter = true
@@ -427,6 +435,7 @@ struct OperationIncomeCategoryView: View {
     @ObservedObject var browser: BankBrowser
     @Environment(\.dismiss) private var dismiss
     let operation: BankOperation
+    var applyToAll: Bool? = nil
     @State private var forSender = true
     @State private var error: String?
 
@@ -437,7 +446,7 @@ struct OperationIncomeCategoryView: View {
                 ForEach(FinancialEngine.incomeSubcategoryOrder, id: \.self) { name in
                     Button {
                         error = saveExpenseCategoryChange(browser) {
-                            $0.setIncomeCategory(name, for: operation, forSender: forSender)
+                            $0.setIncomeCategory(name, for: operation, forSender: applyToAll ?? forSender)
                         }
                         if error == nil { dismiss() }
                     } label: {
@@ -449,7 +458,7 @@ struct OperationIncomeCategoryView: View {
                     }
                 }
             }.listRowBackground(GlassRowBackground())
-            if !operation.isManual {
+            if !operation.isManual && applyToAll == nil {
                 Section {
                     Toggle("Для всех поступлений „\(operation.description)“", isOn: $forSender)
                 } footer: {
@@ -471,6 +480,7 @@ struct OperationExpenseCategoryView: View {
     @ObservedObject var browser: BankBrowser
     @Environment(\.dismiss) private var dismiss
     let operation: BankOperation
+    var applyToAll: Bool? = nil
     @State private var forPayee = true
     @State private var error: String?
 
@@ -482,7 +492,7 @@ struct OperationExpenseCategoryView: View {
                     ForEach(group.categories) { category in
                         Button {
                             error = saveExpenseCategoryChange(browser) {
-                                $0.setExpenseCategory(category.id, for: operation, forPayee: forPayee)
+                                $0.setExpenseCategory(category.id, for: operation, forPayee: applyToAll ?? forPayee)
                             }
                             if error == nil { dismiss() }
                         } label: {
@@ -497,11 +507,11 @@ struct OperationExpenseCategoryView: View {
                     }
                 }.listRowBackground(GlassRowBackground())
             }
-            Section {
+            if applyToAll == nil { Section {
                 Toggle("Для всех операций „\(operation.description)“", isOn: $forPayee)
             } footer: {
                 Text("Прошлые и будущие расходы этого получателя тоже перейдут в эту категорию")
-            }.listRowBackground(GlassRowBackground())
+            }.listRowBackground(GlassRowBackground()) }
         }
         .tint(.orange)
         .appSurface()

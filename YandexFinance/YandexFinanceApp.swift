@@ -785,6 +785,15 @@ struct FinanceDashboardView: View {
         }
     }
 
+    private var reviewGroups: [ReviewGroup] {
+        presentation.value("uncategorized") { UncategorizedReview.groups(browser.history) }
+    }
+
+    private func needsExpenseReview(group: String, category: String) -> Bool {
+        guard let pair = browser.history.expenseCategory(id: UncategorizedReview.otherExpenseID) else { return false }
+        return pair.group.name == group && pair.category.name == category && reviewGroups.contains { $0.kind == .expense }
+    }
+
     private func incomeBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
         Section {
             DisclosureGroup {
@@ -793,7 +802,11 @@ struct FinanceDashboardView: View {
                 } else {
                     ForEach(report.incomeLines) { line in
                         NavigationLink {
-                            FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .income(subcategory: line.title))
+                            if (line.title == "Прочие доходы" || line.title == "Не определено"), reviewGroups.contains(where: { $0.kind == .income }) {
+                                UncategorizedReviewView(browser: browser, presentation: presentation)
+                            } else {
+                                FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .income(subcategory: line.title))
+                            }
                         } label: {
                             simpleFinanceRow(line, amount: rubles(line.amountKopecks))
                         }
@@ -914,7 +927,11 @@ struct FinanceDashboardView: View {
                 if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }
                 ForEach(line.children) { child in
                     NavigationLink {
-                        FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .expense(group: line.title, subcategory: child.title))
+                        if needsExpenseReview(group: line.title, category: child.title) {
+                            UncategorizedReviewView(browser: browser, presentation: presentation)
+                        } else {
+                            FinanceCategoryOperationsView(browser: browser, interval: interval, selection: .expense(group: line.title, subcategory: child.title))
+                        }
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {

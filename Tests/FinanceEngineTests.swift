@@ -733,6 +733,58 @@ struct FinanceEngineTests {
         require(combinedForecast.incomeKopecks == forecast.incomeKopecks + 123, "forecast includes only deposit interest")
     }
 
+    static func testUncategorizedReview() {
+        let a = bankOp("review-a", -10_000, description: "Непонятный магазин")
+        let b = bankOp("review-b", -5_000, description: "Непонятный магазин", date: "2032-06-03T10:00:00Z")
+        let ruled = bankOp("review-rule", -1_000, description: "Магазин с правилом")
+        let unnamed = bankOp("review-no-title", -900, description: "12345")
+        let unnamed2 = bankOp("review-no-title-2", -800, description: "12345")
+        let income = bankOp("review-income", 7_000, description: "Отправитель", kind: "income")
+        let income2 = bankOp("review-income-2", 3_000, description: "Отправитель", kind: "income")
+        let food = bankOp("review-food", -400, description: "Продукты", mcc: "5411")
+        let transfer = bankOp("review-transfer", -20_000, description: "Перевод", kind: "internal_transfer")
+        let refund = bankOp("review-refund", 300, description: "Возврат", kind: "refund")
+        var history = SavedHistory()
+        history.operations = [a, b, ruled, unnamed, unnamed2, income, income2, food, transfer, refund]
+        let other = UncategorizedReview.otherExpenseID
+        require(history.setExpenseCategory(other, for: ruled, forPayee: true), "review fixture has a rule even for Other")
+        let groups = UncategorizedReview.groups(history)
+        require(groups.count == 4, "review combines payees, keeps empty names individual and excludes known/rule/transfer/refund")
+        require(groups[0].amountKopecks == 15_000 && groups[0].operations.count == 2, "review sorts by magnitude and sums expense group")
+        require(groups[0].latestDate == BankDateParser.parse(b.occurredAt), "review shows latest date")
+        require(groups.filter { $0.kind == .income }.first?.amountKopecks == 10_000, "review includes Other income with correct sum")
+        require(groups.filter { $0.key.isEmpty }.count == 2 && groups.filter { $0.key.isEmpty }.allSatisfy { !$0.appliesToAll }, "unnamed transactions never form an all-payee rule")
+        let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, duration: 30 * 86400)
+        let before = FinancialEngine.report(history.financialInputs, in: interval)
+        let category = history.categoryTree[0].categories[0].id
+        require(history.setExpenseCategory(category, for: a, forPayee: true), "review expense assignment creates rule")
+        require(!UncategorizedReview.groups(history).contains { $0.id == groups[0].id }, "assigned expense payee leaves review")
+        require(history.setIncomeCategory("Зарплата и выплаты", for: income, forSender: true), "review income assignment creates rule")
+        require(!UncategorizedReview.groups(history).contains { $0.kind == .income }, "assigned income sender leaves review")
+        let after = FinancialEngine.report(history.financialInputs, in: interval)
+        require(before.netExpenseKopecks == after.netExpenseKopecks && before.incomeKopecks == after.incomeKopecks,
+                "review category changes preserve income and expense totals")
+        history.operations.append(bankOp("review-future-expense", -200, description: a.description))
+        history.operations.append(bankOp("review-future-income", 500, description: income.description, kind: "income"))
+        require(!UncategorizedReview.groups(history).contains { $0.key == FinancialEngine.counterpartyKey(a.description)
+                    || $0.key == FinancialEngine.counterpartyKey(income.description) }, "review rules classify future operations as well")
+        require(history.setExpenseCategory(category, for: unnamed, forPayee: false), "unnamed review assigns only one operation")
+        require(UncategorizedReview.groups(history).filter { $0.key.isEmpty }.count == 1, "other unnamed operation remains")
+        var renamed = SavedHistory()
+        renamed.operations = [a]
+        require(renamed.renameExpenseCategory(other, to: "Разобрать"), "review fixture renames built-in category")
+        require(renamed.moveExpenseCategory(other, toGroup: renamed.categoryTree[0].id, at: 0), "review fixture moves category")
+        require(UncategorizedReview.groups(renamed).count == 1, "review uses stable category id after rename and move")
+        let date = BankDateParser.parse(a.occurredAt)!
+        renamed = SavedHistory()
+        renamed.manualOperations = [
+            ManualOperation(kind: .expense, amountKopecks: 100, date: date, accountID: nil, group: "Другое", subcategory: "Прочее", note: "Одинаковый комментарий"),
+            ManualOperation(kind: .expense, amountKopecks: 200, date: date, accountID: nil, group: "Другое", subcategory: "Прочее", note: "Одинаковый комментарий")
+        ]
+        let manual = UncategorizedReview.groups(renamed)
+        require(manual.count == 2 && manual.allSatisfy { !$0.appliesToAll }, "manual operations stay individual because existing setters do not create rules for them")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1117,6 +1169,7 @@ struct FinanceEngineTests {
         testGroupBalanceVisibility()
         testBackdatedManualOperation()
         testExpenseCategories()
+        testUncategorizedReview()
         testFixedCostGroups()
         testIncomeCategories()
         testSaveStatementSource()
