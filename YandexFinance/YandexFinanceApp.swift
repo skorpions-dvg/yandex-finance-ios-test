@@ -30,8 +30,7 @@ struct ContentView: View {
     @State private var presentation = FinancePresentationCache()
     @State private var pageMotion = NavigationTranslation()
     @State private var drawerOpen = false
-    @State private var drawerTranslation: CGFloat = 0
-    @State private var drawerMounted = false
+    @State private var drawerMotion = NavigationTranslation()
     @State private var panSession = NavigationPanSession()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -48,7 +47,6 @@ struct ContentView: View {
             GeometryReader { geometry in
                 let width = geometry.size.width
                 let drawerWidth = NavigationMotion.drawerWidth(width)
-                let drawerPosition = NavigationMotion.drawerPosition(translation: drawerTranslation, width: drawerWidth, wasOpen: drawerOpen)
                 ZStack(alignment: .leading) {
                     MovingPages(motion: pageMotion, tab: selectedTab, width: width) {
                         HStack(spacing: 0) {
@@ -70,40 +68,12 @@ struct ContentView: View {
                         }
                     }
                     .allowsHitTesting(!drawerOpen)
-                    if drawerMounted {
-                        ZStack(alignment: .topLeading) {
-                            Color.clear
-                                .frame(width: max(0, width - drawerPosition))
-                                .contentShape(Rectangle())
-                                .onTapGesture { closeAccounts() }
-                                .gesture(HorizontalPanCapture(onPan: { translation, velocity, ended in
-                                    if ended {
-                                        animate {
-                                            drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
-                                                                                           width: drawerWidth, wasOpen: true)
-                                            drawerTranslation = 0
-                                        }
-                                    } else { drawerTranslation = min(0, translation) }
-                                }, excludesHorizontalScrollViews: false))
-                                .offset(x: drawerPosition)
-                            AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true,
-                                         onHorizontalPan: { translation, velocity, ended in
-                                        if ended {
-                                            animate {
-                                                drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
-                                                                                               width: drawerWidth, wasOpen: true)
-                                                drawerTranslation = 0
-                                            }
-                                        } else { drawerTranslation = min(0, translation) }
-                                    })
-                                .frame(width: drawerWidth, height: max(0, geometry.size.height - 24), alignment: .top)
-                                .glassEffect(.regular, in: .rect(cornerRadius: 24))
-                                .clipShape(.rect(cornerRadius: 24))
-                                .offset(x: -(drawerWidth + 8) + drawerPosition)
-                        }
-                        .frame(width: width, height: geometry.size.height, alignment: .topLeading)
-                        .allowsHitTesting(drawerOpen)
-                        .accessibilityHidden(!drawerOpen)
+                    MovingDrawer(motion: drawerMotion, isOpen: drawerOpen, width: width,
+                                 height: geometry.size.height, drawerWidth: drawerWidth,
+                                 onClose: closeAccounts,
+                                 onPan: { drawerPan($0, $1, $2, width: drawerWidth) }) {
+                        AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true,
+                                     onHorizontalPan: { drawerPan($0, $1, $2, width: drawerWidth) })
                     }
                 }
                 .frame(width: width, height: geometry.size.height, alignment: .leading)
@@ -155,11 +125,20 @@ struct ContentView: View {
     }
 
     private func openAccounts() {
-        drawerMounted = true
-        animate { drawerOpen = true; drawerTranslation = 0 }
+        animate { drawerOpen = true; drawerMotion.offset = 0 }
     }
 
-    private func closeAccounts() { animate { drawerOpen = false; drawerTranslation = 0 } }
+    private func closeAccounts() { animate { drawerOpen = false; drawerMotion.offset = 0 } }
+
+    private func drawerPan(_ translation: CGFloat, _ velocity: CGFloat, _ ended: Bool, width: CGFloat) {
+        if ended {
+            animate {
+                drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
+                                                              width: width, wasOpen: true)
+                drawerMotion.offset = 0
+            }
+        } else { drawerMotion.offset = min(0, translation) }
+    }
 
     private func pan(_ translation: CGFloat, _ velocity: CGFloat, _ ended: Bool, width: CGFloat) {
         if panSession.route == 0 && translation != 0 { panSession.route = selectedTab == 1 && translation > 0 ? 1 : 2 }
@@ -171,13 +150,12 @@ struct ContentView: View {
                 } else if panSession.route == 2 {
                     selectedTab = NavigationMotion.pageTarget(current: selectedTab, translation: translation, velocity: velocity, width: width)
                 }
-                drawerTranslation = 0
+                drawerMotion.offset = 0
                 pageMotion.offset = 0
             }
             panSession.route = 0
         } else if panSession.route == 1 {
-            drawerMounted = true
-            drawerTranslation = max(0, translation)
+            drawerMotion.offset = max(0, translation)
         } else {
             let beyondLastPage = selectedTab == 3 && translation < 0
             pageMotion.offset = beyondLastPage ? translation * 0.15 : translation
@@ -188,7 +166,7 @@ struct ContentView: View {
         Button {
             if selectedTab == tab && tab == 3 { settingsReset += 1 }
             panSession.route = 0
-            animate { selectedTab = tab; pageMotion.offset = 0; drawerOpen = false; drawerTranslation = 0 }
+            animate { selectedTab = tab; pageMotion.offset = 0; drawerOpen = false; drawerMotion.offset = 0 }
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: symbol).font(.title3)
@@ -234,6 +212,51 @@ private struct MovingPages<Content: View>: View {
         content
             .frame(width: width * 3, alignment: .leading)
             .offset(x: -CGFloat(tab - 1) * width + motion.offset)
+    }
+}
+
+@MainActor
+private struct MovingDrawer<Content: View>: View {
+    @ObservedObject private var motion: NavigationTranslation
+    let isOpen: Bool
+    let width: CGFloat
+    let height: CGFloat
+    let drawerWidth: CGFloat
+    let onClose: () -> Void
+    let onPan: (CGFloat, CGFloat, Bool) -> Void
+    let content: Content
+
+    init(motion: NavigationTranslation, isOpen: Bool, width: CGFloat, height: CGFloat, drawerWidth: CGFloat,
+         onClose: @escaping () -> Void, onPan: @escaping (CGFloat, CGFloat, Bool) -> Void,
+         @ViewBuilder content: () -> Content) {
+        self.motion = motion
+        self.isOpen = isOpen
+        self.width = width
+        self.height = height
+        self.drawerWidth = drawerWidth
+        self.onClose = onClose
+        self.onPan = onPan
+        self.content = content()
+    }
+
+    var body: some View {
+        let position = NavigationMotion.drawerPosition(translation: motion.offset, width: drawerWidth, wasOpen: isOpen)
+        ZStack(alignment: .topLeading) {
+            Color.clear
+                .frame(width: max(0, width - position))
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onClose)
+                .gesture(HorizontalPanCapture(onPan: onPan, excludesHorizontalScrollViews: false))
+                .offset(x: position)
+            content
+                .frame(width: drawerWidth, height: max(0, height - 24), alignment: .top)
+                .glassEffect(.regular, in: .rect(cornerRadius: 24))
+                .clipShape(.rect(cornerRadius: 24))
+                .offset(x: -(drawerWidth + 8) + position)
+        }
+        .frame(width: width, height: height, alignment: .topLeading)
+        .allowsHitTesting(isOpen)
+        .accessibilityHidden(!isOpen)
     }
 }
 
