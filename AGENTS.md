@@ -27,7 +27,7 @@
 - Жесты, анимации и внешний вид на ПК проверить нельзя. Меняй их минимально, по одной проблеме за сборку, и в сообщении пользователю перечисли, что именно проверить пальцем.
 
 ## Что нельзя без ТЗ от Claude
-- `Vault.swift` (хранилище и ключ шифрования), `StatementImporter.swift`, `Collector.js`, классификатор и расчёты в `FinanceEngine.swift` (доходы, расходы, возвраты, прогноз, запас), `.github/`, `scripts/`.
+- `Vault.swift` (хранилище и ключ шифрования), `StatementImporter.swift`, `Collector.js`, классификатор и расчёты в `FinanceEngine.swift` (доходы, расходы, возвраты, прогноз, запас), расчёты отчётов в `ReportEngine.swift` и остатков в `Models.swift` (`accountBalancesReconstructed`), `.github/`, `scripts/`.
 - Любая финансовая логика — только вместе с тестами в `Tests/FinanceEngineTests.swift`.
 - Не удалять и не перезаписывать данные пользователя; новые поля в `SavedHistory` — только необязательные (старые данные должны открываться).
 - Никаких реальных банковских данных, выписок, токенов в репозитории (он публичный).
@@ -36,6 +36,7 @@
 ## Где что
 - `YandexFinance/OperationsHomeView.swift` — главный экран (периоды, доходы/расходы, остаток, запас, история);
 - `ForecastDetailView.swift` — прогноз на месяц; `AccountsView.swift` — счета и группы; `SearchOperationsView.swift` — поиск;
+- `ReportsView.swift` — «Отчёты» (четыре вкладки: Структура, Динамика, Остатки, Доходы и расходы; кнопка «Период»); данные для них — `ReportEngine.swift` (без UI, с тестами), фильтр отчёта — `ReportFilter`;
 - `YandexFinanceApp.swift` — вкладки, «Отчёты», «Настройки», карточка операции;
 - `BankBrowser.swift` — скрытая страница банка, обновление, вход по коду, сохранение (`updateUserData`);
 - `Models.swift` — модели и резервная копия; `FinanceEngine.swift` — расчёты (только с тестами).

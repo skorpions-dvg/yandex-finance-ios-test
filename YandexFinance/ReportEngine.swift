@@ -28,6 +28,27 @@ enum ReportStep: String, CaseIterable, Identifiable {
     }
 }
 
+/// What the user keeps out of the reports: whole categories (groups of expenses, categories of income) and payees.
+/// A payee is named by its rule key (`FinancialEngine.payeeRuleKey`); an operation without one has the key "—".
+/// The filter changes the structure, the dynamics and income/expenses; balances always count every operation.
+struct ReportFilter: Equatable {
+    var excludedGroups: Set<String> = []
+    var excludedPayees: Set<String> = []
+
+    static let none = ReportFilter()
+
+    var isActive: Bool { !excludedGroups.isEmpty || !excludedPayees.isEmpty }
+
+    func allows(group: String, payee: String) -> Bool {
+        !excludedGroups.contains(group) && !excludedPayees.contains(payee.isEmpty ? "—" : payee)
+    }
+
+    /// A stable text for keys of the presentation cache.
+    var cacheKey: String {
+        "g:" + excludedGroups.sorted().joined(separator: "|") + ";p:" + excludedPayees.sorted().joined(separator: "|")
+    }
+}
+
 /// What the reports show: a month, a year, the last days, own dates or everything.
 enum ReportPeriod: Equatable {
     case month(Date)
@@ -185,11 +206,11 @@ enum ReportEngine {
     /// The groups of the shown total, the largest first. Expenses by category have subcategories inside; the order of
     /// equal amounts follows the user's tree so that the list does not shuffle.
     static func slices(_ inputs: [FinancialOperationInput], in interval: DateInterval, mode: ReportMode,
-                       grouping: ReportGrouping, taxonomy: ExpenseTaxonomy) -> [ReportSlice] {
+                       grouping: ReportGrouping, taxonomy: ExpenseTaxonomy, filter: ReportFilter = .none) -> [ReportSlice] {
         var groups: [String: (title: String, amount: Int64, count: Int, subs: [String: (Int64, Int)])] = [:]
         for input in inputs {
             guard let when = date(input), when >= interval.start, when < interval.end,
-                  let item = entry(input, mode: mode) else { continue }
+                  let item = entry(input, mode: mode), filter.allows(group: item.group, payee: item.payee) else { continue }
             let key: String
             let title: String
             switch grouping {
@@ -227,11 +248,12 @@ enum ReportEngine {
     /// Stacked bars: each bucket split by group (or, with `focus`, one group split by its subcategories; for payees
     /// the focused payee as one series). Buckets without operations are present with no bars, so the axis never shifts.
     static func bars(_ inputs: [FinancialOperationInput], buckets: [DateInterval], mode: ReportMode,
-                     grouping: ReportGrouping, focus: String? = nil) -> [ReportBar] {
+                     grouping: ReportGrouping, focus: String? = nil, filter: ReportFilter = .none) -> [ReportBar] {
         guard let first = buckets.first?.start, let last = buckets.last?.end else { return [] }
         var sums: [Int: [String: Int64]] = [:]
         for input in inputs {
-            guard let when = date(input), when >= first, when < last, let item = entry(input, mode: mode) else { continue }
+            guard let when = date(input), when >= first, when < last, let item = entry(input, mode: mode),
+                  filter.allows(group: item.group, payee: item.payee) else { continue }
             let owner = grouping == .categories ? item.group : (item.payee.isEmpty ? "—" : item.payee)
             if let focus, owner != focus { continue }
             let label = focus == nil ? (grouping == .categories ? item.group : (item.payee.isEmpty ? "Без названия" : item.title))
@@ -269,13 +291,19 @@ enum ReportEngine {
 
     // MARK: Income and expenses
 
-    /// Income and net expense (refunds taken off) of every bucket.
-    static func flow(_ inputs: [FinancialOperationInput], buckets: [DateInterval]) -> [ReportFlowPoint] {
+    /// Income and net expense (refunds taken off) of every bucket. With an active filter a refund cannot be assigned to
+    /// a category, so the expense is the plain sum of the allowed expenses and refunds are not taken off.
+    static func flow(_ inputs: [FinancialOperationInput], buckets: [DateInterval], filter: ReportFilter = .none) -> [ReportFlowPoint] {
         guard let first = buckets.first?.start, let last = buckets.last?.end else { return [] }
         var income = [Int64](repeating: 0, count: buckets.count)
         var expense = [Int64](repeating: 0, count: buckets.count)
         for input in inputs {
             guard let when = date(input), when >= first, when < last, let index = bucketIndex(of: when, in: buckets) else { continue }
+            if filter.isActive {
+                if let item = entry(input, mode: .income), filter.allows(group: item.group, payee: item.payee) { income[index] += item.amount }
+                if let item = entry(input, mode: .expenses), filter.allows(group: item.group, payee: item.payee) { expense[index] += item.amount }
+                continue
+            }
             let assessment = FinancialEngine.classify(input)
             income[index] += assessment.incomeContributionKopecks
             expense[index] += assessment.expenseContributionKopecks - assessment.refundContributionKopecks

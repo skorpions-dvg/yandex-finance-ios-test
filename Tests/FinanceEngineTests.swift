@@ -1299,6 +1299,24 @@ struct FinanceEngineTests {
         require(flow.reduce(0) { $0 + $1.expenseKopecks } == report.netExpenseKopecks, "the weeks add up to the report's net expense")
         require(flow.reduce(0) { $0 + $1.incomeKopecks } == report.incomeKopecks, "the weeks add up to the report's income")
 
+        // Filter: whole categories and payees stay out of the structure, the dynamics and the flow
+        let withoutFood = ReportFilter(excludedGroups: ["Еда"])
+        require(withoutFood.isActive && !ReportFilter.none.isActive, "an empty filter is not active")
+        require(ReportEngine.slices(inputs, in: september, mode: .expenses, grouping: .categories, taxonomy: taxonomy, filter: withoutFood).map(\.title) == ["Транспорт"],
+                "an excluded category is out of the structure")
+        require(ReportEngine.slices(inputs, in: september, mode: .expenses, grouping: .categories, taxonomy: taxonomy, filter: .none) == slices, "no filter, same result")
+        let noShop = ReportFilter(excludedPayees: [FinancialEngine.payeeRuleKey("Пятёрочка")])
+        require(ReportEngine.slices(inputs, in: september, mode: .expenses, grouping: .payees, taxonomy: taxonomy, filter: noShop).map(\.title).contains("Пятёрочка") == false,
+                "an excluded payee is out of the structure")
+        let filteredBars = ReportEngine.bars(inputs, buckets: days, mode: .expenses, grouping: .categories, filter: withoutFood)
+        require(filteredBars.map(\.label) == ["Транспорт"], "an excluded category is out of the bars")
+        let filteredFlow = ReportEngine.flow(inputs, buckets: weeks, filter: withoutFood)
+        require(filteredFlow.reduce(0) { $0 + $1.expenseKopecks } == 15_000 && filteredFlow.reduce(0) { $0 + $1.incomeKopecks } == 200_000,
+                "with a filter the flow is the plain sum of allowed expenses and income")
+        require(ReportEngine.flow(inputs, buckets: weeks, filter: ReportFilter(excludedGroups: [income[0].title])).reduce(0) { $0 + $1.incomeKopecks } == 0,
+                "an excluded income category is out of the flow")
+        require(withoutFood.cacheKey != ReportFilter.none.cacheKey && ReportFilter(excludedGroups: ["Еда"]).cacheKey == withoutFood.cacheKey, "the cache key follows the filter")
+
         // Balances
         let start = day(8, 1)
         let cash = Account(name: "Наличные", icon: "banknote", color: "green", startBalanceKopecks: 100_000, startDate: start)
