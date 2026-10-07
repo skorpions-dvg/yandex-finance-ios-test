@@ -178,9 +178,10 @@ struct ManualOperationFormView: View {
                     Text("В разделе «Все счета» добавьте отдельный счёт, например «Наличные», без отметки «Карта Яндекс Банка».")
                         .font(.footnote).foregroundStyle(.secondary)
                 } else {
-                    accountPicker(kind == .transfer ? "Откуда" : "Счёт", selection: $accountID, choices: eligibleAccounts)
+                    let balances = accountBalances
+                    accountPicker(kind == .transfer ? "Откуда" : "Счёт", selection: $accountID, choices: eligibleAccounts, balances: balances)
                     if kind == .transfer {
-                        accountPicker("Куда", selection: $toAccountID, choices: accounts.filter { $0.id != accountID })
+                        accountPicker("Куда", selection: $toAccountID, choices: accounts.filter { $0.id != accountID }, balances: balances)
                     }
                 }
             } footer: {
@@ -212,11 +213,24 @@ struct ManualOperationFormView: View {
         showDateTime = true
     }
 
-    private func accountPicker(_ title: String, selection: Binding<UUID?>, choices: [Account]) -> some View {
+    /// Current balance of every account, the same way the accounts screen counts it.
+    private var accountBalances: [UUID: Int64] {
+        let bank = browser.history.operations.map(\.financialInput)
+        let manual = browser.history.manualOperations ?? []
+        return Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0.balance(bankOperations: bank, manual: manual)) })
+    }
+
+    private func balanceText(_ kopecks: Int64?) -> String {
+        guard let kopecks else { return "" }
+        return (Decimal(kopecks) / 100).formatted(.currency(code: "RUB"))
+    }
+
+    private func accountPicker(_ title: String, selection: Binding<UUID?>, choices: [Account], balances: [UUID: Int64]) -> some View {
+        // The balance is part of each choice, so it shows both in the list and next to «Откуда»/«Куда».
         Picker(title, selection: selection) {
             Text("Выберите счёт").tag(nil as UUID?)
             ForEach(choices) { account in
-                Label(account.name, systemImage: account.icon)
+                Label("\(account.name) — \(balanceText(balances[account.id]))", systemImage: account.icon)
                     .foregroundStyle(accountColor(account.color)).tag(Optional(account.id))
             }
         }

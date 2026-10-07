@@ -1,22 +1,47 @@
 import SwiftUI
 
+/// SF Symbols offered for accounts and for the user's own look of an operation, grouped by theme.
+enum AppSymbols {
+    static let all: [(symbol: String, name: String)] = [
+        // Money, cards and banks
+        ("creditcard", "Карта"), ("creditcard.fill", "Карта"), ("building.columns", "Банк"), ("wallet.pass", "Кошелёк"),
+        ("banknote", "Наличные"), ("dollarsign.circle", "Доллары"), ("eurosign.circle", "Евро"), ("rublesign.circle", "Рубли"),
+        ("bitcoinsign.circle", "Криптовалюта"), ("lock.shield", "Сейф"), ("envelope", "Конверт"), ("chart.line.uptrend.xyaxis", "Инвестиции"),
+        ("percent", "Проценты"), ("arrow.left.arrow.right", "Перевод"),
+        // Goals
+        ("house", "Дом"), ("car", "Автомобиль"), ("airplane", "Путешествие"), ("gift", "Подарок"), ("heart", "Сердце"),
+        ("star", "Звезда"), ("flag", "Цель"), ("graduationcap", "Учёба"), ("figure.and.child.holdinghands", "Семья"),
+        ("pawprint", "Питомец"), ("leaf", "Природа"), ("sun.max", "Отпуск"), ("bicycle", "Велосипед"), ("sailboat", "Лодка"),
+        // Work and income
+        ("briefcase", "Работа"), ("laptopcomputer", "Ноутбук"), ("hammer", "Инструменты"), ("wrench.and.screwdriver", "Ремонт"),
+        // Everyday spending
+        ("cart", "Покупки"), ("bag", "Сумка"), ("fork.knife", "Еда"), ("cup.and.saucer", "Кофе"), ("takeoutbag.and.cup.and.straw", "Доставка"),
+        ("fuelpump", "Топливо"), ("bus", "Транспорт"), ("tram", "Метро"), ("phone", "Связь"), ("wifi", "Интернет"),
+        ("tv", "Подписки"), ("gamecontroller", "Игры"), ("figure.run", "Спорт"), ("cross.case", "Здоровье"), ("pills", "Аптека"),
+        ("tshirt", "Одежда"), ("scissors", "Красота"), ("book", "Книги"), ("music.note", "Музыка"), ("film", "Кино"),
+        ("ticket", "Билеты"), ("bolt", "Электричество"), ("drop", "Вода"), ("shippingbox", "Посылки"), ("questionmark.circle", "Прочее"),
+    ]
+}
+
 /// One operation in a list: category icon, title, category and status, signed amount.
 struct OperationRow: View {
     let operation: BankOperation
     var input: FinancialOperationInput? = nil
     /// Adds the operation date to the subtitle, for lists that are not grouped by day.
     var showsDate = false
+    /// The user's own title and icon, if any.
+    var look: OperationLook? = nil
 
     var body: some View {
         let style = Self.icon(for: operation, input: input)
         HStack(spacing: 12) {
-            Image(systemName: style.name)
+            Image(systemName: look?.icon ?? style.name)
                 .font(.body)
                 .foregroundStyle(.white)
                 .frame(width: 32, height: 32)
                 .background(style.color, in: Circle())
             VStack(alignment: .leading, spacing: 2) {
-                Text(operation.description)
+                Text(look?.title ?? operation.description)
                     .lineLimit(1)
                 Text(subtitle)
                     .font(.caption)

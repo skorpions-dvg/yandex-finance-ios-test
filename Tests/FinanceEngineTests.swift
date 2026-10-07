@@ -849,6 +849,44 @@ struct FinanceEngineTests {
                 "the Save account receives the transfer once")
     }
 
+    static func testOperationLooks() {
+        let first = bankOp("l1", -30_000, description: "IP OZHEGOV A.L. 0412", mcc: "5814")
+        let second = bankOp("l2", -45_000, description: "IP OZHEGOV A.L. 0977", mcc: "5814")
+        let other = bankOp("l3", -10_000, description: "Магазин", mcc: "5411")
+        var history = SavedHistory()
+        history.operations = [first, second, other]
+        let before = FinancialEngine.report(history.financialInputs, in: DateInterval(start: .distantPast, end: .distantFuture))
+        require(history.look(for: first).isEmpty, "no look until the user sets one")
+
+        history.setLook(title: " Кофейня у дома ", icon: "cup.and.saucer", for: first, forPayee: true)
+        require(history.look(for: second).title == "Кофейня у дома" && history.look(for: second).icon == "cup.and.saucer",
+                "a payee rule covers the payee's other operations despite different numbers")
+        require(history.look(for: other).isEmpty, "another payee keeps the bank title")
+
+        history.setLook(title: "Обед с коллегами", icon: nil, for: second, forPayee: false)
+        require(history.look(for: second).title == "Обед с коллегами" && history.look(for: second).icon == "cup.and.saucer",
+                "a single choice wins over the rule for what it sets, the rule fills the rest")
+        history.setNote("  оплатил за двоих ", for: second)
+        require(history.look(for: second).note == "оплатил за двоих" && history.look(for: first).note == nil, "a comment belongs to one operation")
+
+        history.setLook(title: "", icon: nil, for: first, forPayee: true)
+        require(history.payeeLookRules?.isEmpty == true && history.look(for: first).title == nil, "clearing the rule returns the bank title")
+        history.setLook(title: "IP OZHEGOV A.L. 0412", icon: nil, for: first, forPayee: false)
+        require(history.operationLooks?[first.identity] == nil, "the bank's own title is not stored as a custom one")
+        history.setNote("", for: second)
+        require(history.operationLooks?[second.identity]?.note == nil && history.look(for: second).title == "Обед с коллегами",
+                "removing the comment keeps the title")
+
+        let after = FinancialEngine.report(history.financialInputs, in: DateInterval(start: .distantPast, end: .distantFuture))
+        require(after.netExpenseKopecks == before.netExpenseKopecks && after.expenseLines.map(\.amountKopecks) == before.expenseLines.map(\.amountKopecks),
+                "titles, icons and comments never change categories or totals")
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.operationLooks == history.operationLooks && restored.payeeLookRules == history.payeeLookRules,
+                    "looks survive a backup")
+        } catch { require(false, "look backup failed: \(error)") }
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1238,6 +1276,7 @@ struct FinanceEngineTests {
         testIncomeCategories()
         testSaveStatementSource()
         testCardToSaveTransfer()
+        testOperationLooks()
 
         print("Finance engine tests passed")
     }

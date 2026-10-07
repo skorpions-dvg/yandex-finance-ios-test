@@ -112,6 +112,10 @@ struct SavedHistory: Codable {
     var incomeCategoryRules: [IncomeCategoryRule]?
     /// Income category chosen for one bank operation: operation identity -> category name. Wins over rules.
     var incomeCategoryOverrides: [String: String]?
+    /// Own title, icon and comment of bank operations: operation identity -> look.
+    var operationLooks: [String: OperationLook]?
+    /// Own title and icon for every operation of a payee.
+    var payeeLookRules: [PayeeLookRule]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -681,6 +685,72 @@ extension SavedHistory {
         }
         categoryOverrides = categoryOverrides?.mapValues { $0 == categoryID ? targetID : $0 }
         renameManualPaths(from: path, to: targetPath)
+    }
+}
+
+// MARK: - The user's look of bank operations
+
+/// Own title, icon and comment of a bank operation. Bank data is never changed; this is kept beside it.
+struct OperationLook: Codable, Equatable {
+    var title: String?
+    var icon: String?
+    var note: String?
+
+    var isEmpty: Bool { title == nil && icon == nil && note == nil }
+}
+
+/// "Show every operation of this payee with this title and icon".
+struct PayeeLookRule: Codable, Equatable, Identifiable {
+    var id = UUID()
+    /// `FinancialEngine.counterpartyKey` of the bank title.
+    var payeeKey: String
+    /// The bank title the rule was made from.
+    var bankTitle: String
+    var title: String?
+    var icon: String?
+}
+
+extension SavedHistory {
+    /// Title and icon: the choice on this operation, then the payee rule. The comment belongs to the operation only.
+    func look(for operation: BankOperation) -> OperationLook {
+        let own = operationLooks?[operation.identity]
+        let key = FinancialEngine.counterpartyKey(operation.description)
+        let rule = key.isEmpty ? nil : payeeLookRules?.first { $0.payeeKey == key }
+        return OperationLook(title: own?.title ?? rule?.title, icon: own?.icon ?? rule?.icon, note: own?.note)
+    }
+
+    /// Sets the title and icon (nil or an empty title returns to the bank's). `forPayee` makes a rule for every
+    /// operation of the same payee, past and future; otherwise only this operation changes and wins over the rule.
+    mutating func setLook(title: String?, icon: String?, for operation: BankOperation, forPayee: Bool) {
+        let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newTitle = (cleanTitle?.isEmpty ?? true) || cleanTitle == operation.description ? nil : cleanTitle
+        let key = FinancialEngine.counterpartyKey(operation.description)
+        var looks = operationLooks ?? [:]
+        var own = looks[operation.identity] ?? OperationLook()
+        if forPayee && !key.isEmpty {
+            var rules = payeeLookRules ?? []
+            rules.removeAll { $0.payeeKey == key }
+            if newTitle != nil || icon != nil {
+                rules.append(PayeeLookRule(payeeKey: key, bankTitle: operation.description, title: newTitle, icon: icon))
+            }
+            payeeLookRules = rules
+            own.title = nil
+            own.icon = nil
+        } else {
+            own.title = newTitle
+            own.icon = icon
+        }
+        looks[operation.identity] = own.isEmpty ? nil : own
+        operationLooks = looks
+    }
+
+    mutating func setNote(_ note: String, for operation: BankOperation) {
+        let clean = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        var looks = operationLooks ?? [:]
+        var own = looks[operation.identity] ?? OperationLook()
+        own.note = clean.isEmpty ? nil : clean
+        looks[operation.identity] = own.isEmpty ? nil : own
+        operationLooks = looks
     }
 }
 

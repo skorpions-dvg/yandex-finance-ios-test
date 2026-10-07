@@ -98,7 +98,8 @@ struct ContentView: View {
 
                 LensTabBar(progress: tabProgress, reduceMotion: reduceMotion, select: selectTab)
                     .padding(6)
-                    .glassEffect(.regular, in: .capsule)
+                    .background(.ultraThinMaterial, in: .capsule)
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6))
                     .padding(.horizontal, 40)
                     .padding(.bottom, 8)
             }
@@ -176,11 +177,11 @@ private struct LensTabBar: View {
             let between = abs(position - position.rounded()) * 2
             let swell: CGFloat = held ? 1.2 : 1 + 0.2 * between
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.ultraThinMaterial)
-                    .overlay(Capsule().fill(Color.accentColor.opacity(0.12)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.8))
-                    .shadow(color: .black.opacity(held ? 0.25 : 0.12), radius: held ? 10 : 4, y: 2)
+                // Real Liquid Glass: it bends and magnifies the icons under it. The bar itself is a plain material,
+                // because glass cannot refract other glass.
+                Color.clear
+                    .glassEffect(.regular.tint(Color.accentColor.opacity(0.18)).interactive(), in: .capsule)
+                    .shadow(color: .black.opacity(held ? 0.22 : 0.08), radius: held ? 10 : 3, y: 2)
                     .frame(width: segment, height: bar.size.height)
                     .scaleEffect(x: swell, y: 1 + (swell - 1) * 1.2)
                     .offset(x: (position - 1) * segment)
@@ -237,8 +238,33 @@ struct OperationDetailView: View {
     @ObservedObject var browser: BankBrowser
     let operation: BankOperation
     var body: some View {
+        let look = browser.history.look(for: operation)
         Form {
             LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
+            Section {
+                NavigationLink {
+                    OperationLookView(browser: browser, operation: operation)
+                } label: {
+                    HStack(spacing: 12) {
+                        let style = OperationRow.icon(for: operation, input: browser.history.financialInput(for: operation))
+                        Image(systemName: look.icon ?? style.name)
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(style.color, in: Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(look.title ?? operation.description).lineLimit(2)
+                            if look.title != nil {
+                                Text("В банке: \(operation.description)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            if let note = look.note {
+                                Text(note).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            } footer: {
+                Text("Название, иконка и комментарий").font(.caption2)
+            }
             if let components = operation.components {
                 Section("Составляющие") {
                     ForEach(Array(components.enumerated()), id: \.offset) { _, component in
@@ -281,7 +307,88 @@ struct OperationDetailView: View {
             if let mcc = operation.mcc { LabeledContent("MCC", value: mcc) }
             if let purpose = operation.purpose { LabeledContent("Назначение", value: purpose) }
             if let method = operation.paymentMethod { LabeledContent("Способ оплаты", value: method) }
-        }.appSurface().navigationTitle(operation.description)
+        }.appSurface().navigationTitle(look.title ?? operation.description)
+    }
+}
+
+/// The user's own title, icon and comment of a bank operation; the bank's data stays as it is.
+struct OperationLookView: View {
+    @ObservedObject var browser: BankBrowser
+    let operation: BankOperation
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var icon: String?
+    @State private var note: String
+    @State private var forPayee = true
+    @State private var error: String?
+
+    init(browser: BankBrowser, operation: BankOperation) {
+        self.browser = browser
+        self.operation = operation
+        let look = browser.history.look(for: operation)
+        _title = State(initialValue: look.title ?? "")
+        _icon = State(initialValue: look.icon)
+        _note = State(initialValue: look.note ?? "")
+    }
+
+    var body: some View {
+        let style = OperationRow.icon(for: operation, input: browser.history.financialInput(for: operation))
+        Form {
+            Section {
+                TextField(operation.description, text: $title)
+            } header: { Text("Название") } footer: { Text("Пусто — название банка: «\(operation.description)».") }
+                .glassRows()
+            Section("Иконка") {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
+                    Button { icon = nil } label: {
+                        Image(systemName: style.name)
+                            .frame(maxWidth: .infinity).frame(height: 40)
+                            .foregroundStyle(icon == nil ? Color.accentColor : .secondary)
+                            .background(icon == nil ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain).accessibilityLabel("Как у категории")
+                    ForEach(AppSymbols.all, id: \.symbol) { item in
+                        Button { icon = item.symbol } label: {
+                            Image(systemName: item.symbol)
+                                .frame(maxWidth: .infinity).frame(height: 40)
+                                .foregroundStyle(icon == item.symbol ? Color.accentColor : .secondary)
+                                .background(icon == item.symbol ? Color.accentColor.opacity(0.15) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain).accessibilityLabel(item.name)
+                    }
+                }
+                .padding(.vertical, 4)
+            }.glassRows()
+            Section {
+                Toggle("Для всех операций „\(operation.description)“", isOn: $forPayee)
+            } footer: {
+                Text("Название и иконка применятся к прошлым и будущим операциям этого получателя. Комментарий — только к этой операции.")
+            }.glassRows()
+            Section("Комментарий") {
+                TextField("Комментарий", text: $note, axis: .vertical).lineLimit(1...5)
+            }.glassRows()
+        }
+        .tint(.accentColor)
+        .appSurface()
+        .navigationTitle("Оформление")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Сохранить", systemImage: "checkmark") { save() }
+            }
+        }
+        .alert("Не удалось сохранить", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            Button("OK", role: .cancel) { error = nil }
+        } message: { Text(error ?? "") }
+    }
+
+    private func save() {
+        let ok = browser.updateUserData { history in
+            history.setLook(title: title, icon: icon, for: operation, forPayee: forPayee)
+            history.setNote(note, for: operation)
+        }
+        if ok { dismiss() } else { error = browser.message }
     }
 }
 
@@ -469,6 +576,8 @@ struct SettingsView: View {
             .contentMargins(.bottom, 16, for: .scrollContent)
             .appSurface()
             .navigationTitle("Настройки")
+            // Large titles lose their leading margin inside the horizontal pages; inline matches «Операции».
+            .navigationBarTitleDisplayMode(.inline)
         }
         // View-destination links (Обои, Категории) are not part of the path, so a new identity is what
         // reliably returns to the root when the Settings tab is tapped again.
@@ -886,6 +995,8 @@ struct FinanceDashboardView: View {
             }
             .appSurface()
             .navigationTitle("Отчёты")
+            // Large titles lose their leading margin inside the horizontal pages; inline matches «Операции».
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 

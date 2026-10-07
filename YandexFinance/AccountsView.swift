@@ -379,12 +379,8 @@ struct AccountFormView: View {
     @State private var confirmDeletion = false
     @State private var saveError = false
 
-    private let icons = ["banknote", "creditcard", "building.columns", "wallet.pass", "rublesign.circle",
-                         "dollarsign.circle", "eurosign.circle", "gift", "airplane", "house", "car", "cart",
-                         "bag", "heart", "star", "graduationcap", "cross.case", "gamecontroller", "pawprint", "leaf"]
-    private let iconNames = ["Наличные", "Карта", "Банк", "Кошелёк", "Рубли", "Доллары", "Евро", "Подарок",
-                             "Самолёт", "Дом", "Автомобиль", "Покупки", "Сумка", "Сердце", "Звезда", "Образование",
-                             "Здоровье", "Игры", "Животные", "Лист"]
+    private let icons = AppSymbols.all.map(\.symbol)
+    private let iconNames = AppSymbols.all.map(\.name)
 
     init(browser: BankBrowser, account: Account?, showsInfo: Binding<Bool>? = nil) {
         self.browser = browser

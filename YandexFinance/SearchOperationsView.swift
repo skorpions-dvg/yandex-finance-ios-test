@@ -12,11 +12,17 @@ struct SearchOperationsView: View {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }
         return zip(browser.history.allOperations, browser.history.financialInputs)
-            .filter { FinancialEngine.operationMatches($0.1, query: text) }
+            .filter { FinancialEngine.operationMatches($0.1, query: text) || matchesLook($0.0, text) }
             .map { $0.0 }
             .map { ($0, BankDateParser.parse($0.occurredAt) ?? .distantPast) }
             .sorted { $0.1 > $1.1 }
             .map(\.0)
+    }
+
+    /// The user's own title or comment contains the query.
+    private func matchesLook(_ operation: BankOperation, _ text: String) -> Bool {
+        let look = browser.history.look(for: operation)
+        return [look.title, look.note].compactMap { $0 }.contains { $0.localizedCaseInsensitiveContains(text) }
     }
 
     var body: some View {
@@ -35,14 +41,14 @@ struct SearchOperationsView: View {
                                 Button {
                                     editedOperation = browser.history.manualOperations?.first { $0.id == operation.manualID }
                                 } label: {
-                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true).foregroundStyle(.primary)
+                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true, look: browser.history.look(for: operation)).foregroundStyle(.primary)
                                 }
                                 .buttonStyle(.plain)
                             } else {
                                 NavigationLink {
                                     OperationDetailView(browser: browser, operation: operation)
                                 } label: {
-                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true)
+                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true, look: browser.history.look(for: operation))
                                 }
                             }
                         }
