@@ -1080,6 +1080,70 @@ struct FinanceEngineTests {
         require(ReportSeries.defaultGroup(empty[0].report, groups: []) == nil, "no picker selection for an empty category tree")
     }
 
+    static func testAccountSeries() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = BankDateParser.parse("2032-06-01T00:00:00Z")!
+        let now = BankDateParser.parse("2032-06-05T12:00:00Z")!
+        let cash = Account(name: "Тестовый счёт", icon: "banknote", color: "green", startBalanceKopecks: 50_000, startDate: start)
+        let other = Account(name: "Второй счёт", icon: "wallet.pass", color: "blue", startBalanceKopecks: 10_000, startDate: start)
+        let expense = ManualOperation(kind: .expense, amountKopecks: 3_000,
+                                      date: BankDateParser.parse("2032-06-02T10:00:00Z")!, accountID: cash.id,
+                                      group: "Еда", subcategory: "Супермаркеты")
+        let transfer = ManualOperation(kind: .transfer, amountKopecks: 5_000,
+                                       date: BankDateParser.parse("2032-06-03T12:00:00Z")!,
+                                       accountID: other.id, toAccountID: cash.id)
+        var history = SavedHistory()
+        history.accounts = [cash, other]
+        history.manualOperations = [expense, transfer]
+        let interval = ReportSeries.accountInterval(range: .days30, now: now, calendar: calendar)
+        let points = ReportSeries.balancePoints(history, account: cash, interval: interval, range: .days30, calendar: calendar)
+        require(points.count == 30 && points.last?.date == calendar.startOfDay(for: now)
+                && points.last?.moment == interval.end, "thirty closing balances, ending with today's closing balance")
+        require(points.map(\.amountKopecks) == history.accountBalances(cash, at: points.map(\.moment)),
+                "account chart amounts match the existing accountBalances API")
+        require(points.first?.amountKopecks == 50_000 && points.last?.amountKopecks == 52_000,
+                "balance chart has the entered balance before activity and the actual balance after activity")
+        let june2 = points.first { $0.date == BankDateParser.parse("2032-06-02T00:00:00Z")! }
+        require(june2?.amountKopecks == 47_000, "a chart date labels that day's closing balance, not the next day")
+        require(points.last?.amountKopecks == history.accountBalances(cash, at: [.distantFuture])[0],
+                "the latest closing balance equals the current balance when all operations are in the past")
+        let movements = history.accountMovements(cash)
+        let period = ReportSeries.accountPeriod(movements, interval: interval)
+        require(period.incomingKopecks == 5_000 && period.outgoingKopecks == 3_000,
+                "account turnover sums this account's positive and negative deltas")
+        require(period.movements.first?.delta == 5_000 && history.accountMovements(other).first?.delta == -5_000,
+                "the same transfer is positive on its destination and negative on its source")
+        let days = ReportSeries.accountDays(period.movements, calendar: calendar)
+        require(days.count == 2 && days[0].date > days[1].date && days[0].movements[0].id == transfer.bankOperation.id,
+                "account operations are grouped by day, newest first")
+        let lower = AccountMovement(operation: expense.bankOperation, date: interval.start, delta: -3_000)
+        let upper = AccountMovement(operation: transfer.bankOperation, date: interval.end, delta: 5_000)
+        let bounded = ReportSeries.accountPeriod([lower, upper], interval: interval)
+        require(bounded.movements.count == 1 && bounded.outgoingKopecks == 3_000 && bounded.incomingKopecks == 0,
+                "account intervals include their start and exclude their end")
+        let quarter = ReportSeries.accountInterval(range: .days90, now: now, calendar: calendar)
+        require(ReportSeries.balanceMoments(interval: quarter, range: .days90, calendar: calendar).count == 90,
+                "ninety daily balance samples")
+        let year = ReportSeries.accountInterval(range: .year, now: now, calendar: calendar)
+        let weekly = ReportSeries.balanceMoments(interval: year, range: .year, calendar: calendar)
+        require(weekly.count == 53 && weekly.last == year.end, "a year uses weekly samples and includes the final partial week")
+        for index in 1..<(weekly.count - 1) {
+            require(calendar.date(byAdding: .day, value: 7, to: weekly[index - 1]) == weekly[index], "weekly samples use calendar weeks")
+        }
+        require(ReportSeries.accountDays([], calendar: calendar).isEmpty,
+                "an account without operations has no operation sections")
+        calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let dstNow = calendar.date(from: DateComponents(year: 2032, month: 3, day: 20))!
+        let dst = ReportSeries.accountInterval(range: .days30, now: dstNow, calendar: calendar)
+        let dstPoints = ReportSeries.balanceMoments(interval: dst, range: .days30, calendar: calendar)
+        require(dstPoints.count == 30 && dstPoints.last == dst.end, "daylight saving does not add or remove chart days")
+        for index in 1..<dstPoints.count {
+            require(calendar.date(byAdding: .day, value: 1, to: dstPoints[index - 1]) == dstPoints[index],
+                    "daily balances advance by calendar days across daylight saving")
+        }
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1473,6 +1537,7 @@ struct FinanceEngineTests {
         testOtherShrinks()
         testAccountMovements()
         testReportSeries()
+        testAccountSeries()
 
         print("Finance engine tests passed")
     }

@@ -34,6 +34,7 @@ struct AccountsView: View {
     @State private var editMode: EditMode = .inactive
     @State private var collapsed: Set<UUID> = []
     @State private var editedAccount: Account?
+    @State private var detailedAccount: Account?
     @State private var editedGroup: AccountGroup?
     @State private var newAccount = false
     @State private var newGroup = false
@@ -61,6 +62,9 @@ struct AccountsView: View {
         }
         .sheet(item: $editedAccount) { account in
             AccountFormView(browser: browser, account: account, showsInfo: $showsInfo)
+        }
+        .sheet(item: $detailedAccount) { account in
+            AccountDetailView(browser: browser, account: account, showsInfo: $showsInfo)
         }
         .sheet(isPresented: $newGroup) { AccountGroupFormView(browser: browser, group: nil) }
         .sheet(item: $editedGroup) { group in AccountGroupFormView(browser: browser, group: group) }
@@ -301,7 +305,10 @@ struct AccountsView: View {
 
     private func accountRow(_ account: Account) -> some View {
         HStack {
-            Button { editedAccount = account } label: {
+            Button {
+                if editMode.isEditing { editedAccount = account }
+                else { detailedAccount = account }
+            } label: {
                 HStack {
                     Image(systemName: account.icon)
                         .foregroundStyle(accountColor(account.color))

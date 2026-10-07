@@ -31,6 +31,8 @@ struct OperationRow: View {
     var showsDate = false
     /// The user's own title and icon, if any.
     var look: OperationLook? = nil
+    /// Presentation override for an account report; other lists keep the original bank amount.
+    var displayedAmountKopecks: Int64? = nil
 
     var body: some View {
         let style = Self.icon(for: operation, input: input)
@@ -49,9 +51,16 @@ struct OperationRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            Text(operation.formattedAmount)
-                .foregroundStyle(Self.amountColor(for: operation))
+            Text(displayedAmount)
+                .foregroundStyle(displayedAmountKopecks.map { $0 > 0 ? Color.green : ($0 < 0 ? Color.primary : Color.secondary) }
+                                 ?? Self.amountColor(for: operation))
         }
+    }
+
+    private var displayedAmount: String {
+        guard let amount = displayedAmountKopecks else { return operation.formattedAmount }
+        let prefix = amount > 0 ? "+" : ""
+        return prefix + (Decimal(amount) / 100).formatted(.currency(code: operation.currency))
     }
 
     private var subtitle: String {
