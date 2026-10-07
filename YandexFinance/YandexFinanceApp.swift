@@ -746,15 +746,23 @@ struct FinanceDashboardView: View {
     }
 
     private func changeRow(_ title: String, _ change: FinancialEngine.MonthlyChange) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-            VStack(alignment: .trailing, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
                 Text(rubles(change.current))
-                Text("было \(rubles(change.previous)) · \(signed(change.delta)) · \(relativeText(change))")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .font(.subheadline)
+            Text("было \(rubles(change.previous)) · \(signed(change.delta)) · \(relativeText(change))")
+                .font(.caption2).foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
+        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
     }
 
 
@@ -811,7 +819,8 @@ struct FinanceDashboardView: View {
                 Section("К предыдущему месяцу") {
                     if periods.isPartial {
                         Text("Месяц неполный: \(periodText(periods.current)) против \(periodText(periods.previous))")
-                            .font(.caption).foregroundStyle(.orange)
+                            .font(.caption2).foregroundStyle(.orange)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                     }
                     changeRow("Доходы", comparison.income)
                     changeRow("Расходы", comparison.netExpense)
