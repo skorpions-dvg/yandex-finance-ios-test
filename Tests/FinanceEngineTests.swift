@@ -1308,10 +1308,48 @@ struct FinanceEngineTests {
             ManualOperation(kind: .expense, amountKopecks: 10_000, date: day(9, 3), accountID: cash.id, group: "Еда", subcategory: "Кафе и рестораны"),
             ManualOperation(kind: .income, amountKopecks: 5_000, date: day(9, 12), accountID: cash.id, subcategory: "Прочие доходы"),
         ]
-        let points = ReportEngine.balances(history, accounts: [cash], buckets: weeks)
+        let later = day(12, 1)
+        let points = ReportEngine.balances(history, accounts: [cash], buckets: weeks, now: later, calendar: calendar)
         require(points.map(\.totalKopecks) == [90_000, 95_000, 95_000, 95_000, 95_000], "the balance at the end of every week")
+        require(points.allSatisfy { $0.hasData && !$0.isForecast }, "past weeks are facts")
         require(points.last?.totalKopecks == cash.balance(bankOperations: [], manual: history.manualOperations ?? []), "the last point is the current balance")
-        require(ReportEngine.balances(history, accounts: [], buckets: weeks).allSatisfy { $0.totalKopecks == 0 }, "no accounts, no balance")
+        require(ReportEngine.balances(history, accounts: [], buckets: weeks, now: later, calendar: calendar).allSatisfy { $0.totalKopecks == 0 && !$0.hasData },
+                "no accounts, no balance")
+
+        // The past is worked back through the card; days to come are a forecast
+        let cardStart = day(9, 10)
+        let card = Account(name: "Карта", icon: "creditcard", color: "yellow", startBalanceKopecks: 100_000, startDate: cardStart, tracksBankCard: true)
+        var cardHistory = SavedHistory()
+        cardHistory.accounts = [card]
+        cardHistory.operations = [
+            bankOp("b1", -10_000, description: "Магазин", mcc: "5411", date: iso(9, 2)),
+            bankOp("b2", -5_000, description: "Магазин", mcc: "5411", date: iso(9, 5)),
+            bankOp("b3", 20_000, description: "Магазин", mcc: "5411", date: iso(9, 12)),
+        ]
+        let pastMoments = [day(9, 1), day(9, 2), day(9, 3), day(9, 5), day(9, 10), day(9, 13)]
+        require(cardHistory.accountBalancesReconstructed(card, at: pastMoments) == [nil, nil, 105_000, 105_000, 100_000, 120_000],
+                "before the first operation nothing is known; before the start date the balance is worked back")
+        let byHand = Account(name: "Наличные", icon: "banknote", color: "green", startBalanceKopecks: 7_000, startDate: day(9, 15))
+        require(SavedHistory().accountBalancesReconstructed(byHand, at: [day(9, 14), day(9, 16)]) == [nil, 7_000], "an account kept by hand has no past before its start")
+        let nowForecast = day(9, 20)
+        let forecastBuckets = [day(9, 20), day(9, 25), day(9, 30)].map { DateInterval(start: $0, end: calendar.date(byAdding: .day, value: 1, to: $0)!) }
+        var cashHistory = SavedHistory()
+        cashHistory.accounts = [cash]
+        cashHistory.manualOperations = history.manualOperations
+        let withForecast = ReportEngine.balances(cashHistory, accounts: [cash], buckets: forecastBuckets, now: nowForecast,
+                                                 forecastChangeKopecks: -40_000, calendar: calendar)
+        require(withForecast.map(\.totalKopecks) == [95_000, 75_000, 55_000], "today is a fact, then a straight line to the expected end of the month")
+        require(withForecast.map(\.isForecast) == [false, true, true], "days after today are marked as a forecast")
+        let noForecast = ReportEngine.balances(cashHistory, accounts: [cash], buckets: forecastBuckets, now: nowForecast, calendar: calendar)
+        require(noForecast.map(\.hasData) == [true, false, false], "without a forecast the days to come have no data")
+        let young = Account(name: "Новый", icon: "banknote", color: "blue", startBalanceKopecks: 3_000, startDate: day(9, 15))
+        cashHistory.accounts = [cash, young]
+        let mixed = ReportEngine.balances(cashHistory, accounts: [cash, young], buckets: [DateInterval(start: day(9, 10), end: day(9, 11))],
+                                          now: nowForecast, calendar: calendar)
+        require(mixed[0].hasData == false && mixed[0].byAccount[cash.id] == 90_000 && mixed[0].byAccount[young.id] == nil,
+                "the total is known only where every account is known; each account keeps its own known balance")
+        let tail = (19...23).map { DateInterval(start: day(9, $0), end: day(9, $0 + 1)) }
+        require(ReportEngine.untilToday(tail, now: nowForecast, calendar: calendar).count == 2, "days to come are not shown in income and expenses")
     }
 
     static func main() {

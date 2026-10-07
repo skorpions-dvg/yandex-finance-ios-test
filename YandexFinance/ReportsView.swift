@@ -75,12 +75,14 @@ struct ReportsView: View {
         let step = ReportEngine.step(stepChoice, for: interval)
         let buckets = ReportEngine.buckets(interval, step: step)
         // Balances and income/expenses do not show months before the first operation.
-        let shownBuckets = (tab == .balances || tab == .flow) ? ReportEngine.trimmed(buckets, from: first) : buckets
+        // Income and expenses stop at today; the balances go on to the end of the month as a forecast.
+        let trimmedBuckets = ReportEngine.trimmed(buckets, from: first)
+        let shownBuckets = tab == .balances ? trimmedBuckets : (tab == .flow ? ReportEngine.untilToday(trimmedBuckets) : buckets)
         let shownInterval = (shownBuckets.first != nil && shownBuckets.last != nil)
             ? DateInterval(start: shownBuckets[0].start, end: shownBuckets[shownBuckets.count - 1].end) : interval
         NavigationStack {
             VStack(spacing: 0) {
-                header(first: first)
+                header
                 List {
                     switch tab {
                     case .structure:
@@ -90,7 +92,7 @@ struct ReportsView: View {
                         DynamicsContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
                                         grouping: grouping, buckets: buckets, step: step)
                     case .balances:
-                        BalancesContent(browser: browser, interval: shownInterval, buckets: shownBuckets, step: step, perAccount: perAccount)
+                        BalancesContent(browser: browser, presentation: presentation, interval: shownInterval, buckets: shownBuckets, step: step, perAccount: perAccount)
                     case .flow:
                         FlowContent(presentation: presentation, browser: browser, interval: shownInterval, buckets: shownBuckets, step: step)
                     }
@@ -107,10 +109,10 @@ struct ReportsView: View {
 
     // MARK: Header
 
-    private func header(first: Date?) -> some View {
+    private var header: some View {
         VStack(spacing: 10) {
             tabBar
-            periodRibbon(first: first)
+            periodButton
             filters
         }
         .padding(.vertical, 8)
@@ -134,13 +136,12 @@ struct ReportsView: View {
         }
     }
 
-    private func periodRibbon(first: Date?) -> some View {
-        let months = ReportPeriod.months(from: first)
-        let selectedMonth: Date? = { if case .month(let date) = period { return monthStartDate(date) } else { return nil } }()
-        return HStack(spacing: 8) {
+    /// The chosen period; the sheet behind it lists every month of the history.
+    private var periodButton: some View {
+        HStack {
             Button { showPeriodSheet = true } label: {
                 HStack(spacing: 4) {
-                    Text(selectedMonth == nil ? periodTitle : "Период").lineLimit(1)
+                    Text(periodTitle).lineLimit(1)
                     Image(systemName: "chevron.right").font(.caption2)
                 }
                 .font(.subheadline.weight(.medium))
@@ -149,30 +150,9 @@ struct ReportsView: View {
                 .background(Color.primary.opacity(0.1), in: Capsule())
             }
             .buttonStyle(.plain)
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 18) {
-                        ForEach(months, id: \.self) { month in
-                            Button { period = .month(month) } label: {
-                                VStack(spacing: 3) {
-                                    Text(ribbonTitle(month)).font(.subheadline.weight(selectedMonth == month ? .semibold : .regular))
-                                        .foregroundStyle(selectedMonth == month ? Color.primary : Color.secondary)
-                                    Capsule().fill(selectedMonth == month ? Color.accentColor : Color.clear).frame(height: 2)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .id(month)
-                        }
-                    }
-                    .padding(.trailing, 16)
-                }
-                .onAppear { if let selectedMonth { proxy.scrollTo(selectedMonth, anchor: .trailing) } else if let last = months.last { proxy.scrollTo(last, anchor: .trailing) } }
-                .onChange(of: period) { _, _ in
-                    if let selectedMonth { withAnimation { proxy.scrollTo(selectedMonth, anchor: .center) } }
-                }
-            }
+            Spacer()
         }
-        .padding(.leading, 16)
+        .padding(.horizontal, 16)
     }
 
     private var filters: some View {
@@ -221,19 +201,9 @@ struct ReportsView: View {
 
     // MARK: Text
 
-    private func monthStartDate(_ date: Date) -> Date {
-        calendar.date(from: calendar.dateComponents([.year, .month], from: date))!
-    }
-
-    private func ribbonTitle(_ month: Date) -> String {
-        let name = month.formatted(.dateTime.month(.wide)).capitalized
-        let sameYear = calendar.component(.year, from: month) == calendar.component(.year, from: Date())
-        return sameYear ? name : name + " " + month.formatted(.dateTime.year(.twoDigits))
-    }
-
     private var periodTitle: String {
         switch period {
-        case .month(let date): return date.formatted(.dateTime.month(.wide).year())
+        case .month(let date): return date.formatted(.dateTime.month(.wide).year()).capitalized
         case .year(let date): return date.formatted(.dateTime.year())
         case .lastDays(let days): return "Последние \(days) дн."
         case .custom(let from, let through):
@@ -269,15 +239,23 @@ private struct StructureContent: View {
                     Chart(slices) { slice in
                         SectorMark(angle: .value("Сумма", Double(slice.amountKopecks) / 100), innerRadius: .ratio(0.62), angularInset: 1.5)
                             .foregroundStyle(ReportPalette.color(slice.title))
-                            .annotation(position: .overlay) {
-                                if total > 0 && Double(slice.amountKopecks) / Double(total) >= 0.05 {
-                                    Text((Double(slice.amountKopecks) / Double(total)).formatted(.percent.precision(.fractionLength(0))))
-                                        .font(.caption.weight(.semibold)).foregroundStyle(Color.white)
-                                }
-                            }
                     }
                     .chartLegend(.hidden)
                     .frame(height: 240)
+                    .chartOverlay { proxy in
+                        GeometryReader { geometry in
+                            if let frame = proxy.plotFrame, total > 0 {
+                                let rect = geometry[frame]
+                                // The middle of the ring's band: halfway between the inner (0.62) and the outer radius.
+                                let radius = min(rect.width, rect.height) / 2 * 0.81
+                                ForEach(Self.percentLabels(slices, total: total)) { label in
+                                    Text(label.text)
+                                        .font(.caption.weight(.semibold)).foregroundStyle(Color.white)
+                                        .position(x: rect.midX + radius * sin(label.angle), y: rect.midY - radius * cos(label.angle))
+                                }
+                            }
+                        }
+                    }
                     .overlay {
                         VStack(spacing: 2) {
                             Text("Всего").font(.caption).foregroundStyle(.secondary)
@@ -291,6 +269,27 @@ private struct StructureContent: View {
         ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices, total: total, headline: headline,
                         refundsKopecks: mode == .expenses ? report.refundsKopecks : 0)
         separateSection(report)
+    }
+
+    /// A percentage on a sector: the angle of its middle, clockwise from the top. Small sectors have no label.
+    private struct PercentLabel: Identifiable {
+        let id: String
+        let text: String
+        let angle: Double
+    }
+
+    private static func percentLabels(_ slices: [ReportSlice], total: Int64) -> [PercentLabel] {
+        var labels: [PercentLabel] = []
+        var passed: Int64 = 0
+        for slice in slices {
+            let share = Double(slice.amountKopecks) / Double(total)
+            if share >= 0.05 {
+                let middle = (Double(passed) + Double(slice.amountKopecks) / 2) / Double(total)
+                labels.append(PercentLabel(id: slice.id, text: share.formatted(.percent.precision(.fractionLength(0))), angle: middle * 2 * Double.pi))
+            }
+            passed += slice.amountKopecks
+        }
+        return labels
     }
 
     /// What the report keeps out of the total: transfers between own accounts, Split and operations not finished yet.
@@ -588,6 +587,7 @@ private struct DynamicsContent: View {
 
 private struct BalancesContent: View {
     @ObservedObject var browser: BankBrowser
+    let presentation: FinancePresentationCache
     let interval: DateInterval
     let buckets: [DateInterval]
     let step: ReportStep
@@ -600,7 +600,11 @@ private struct BalancesContent: View {
 
     var body: some View {
         let accounts = self.accounts
-        let points = ReportEngine.balances(browser.history, accounts: accounts, buckets: buckets)
+        // The days to come: today's balance moves to the balance expected at the end of the month.
+        let change = FinancialEngine.monthReserve(balanceKopecks: 0, forecast: presentation.forecast(browser.history))
+        let points = ReportEngine.balances(browser.history, accounts: accounts, buckets: buckets, forecastChangeKopecks: change)
+        let facts = points.filter { $0.hasData && !$0.isForecast }
+        let forecast = points.filter { $0.hasData && $0.isForecast }
         if accounts.isEmpty {
             Section {
                 ContentUnavailableView("Нет счетов", systemImage: "wallet.pass", description: Text("Добавьте счета в панели «Счета»."))
@@ -610,7 +614,7 @@ private struct BalancesContent: View {
                 Chart {
                     if perAccount {
                         ForEach(accounts) { account in
-                            ForEach(points) { point in
+                            ForEach(points.filter { $0.byAccount[account.id] != nil }) { point in
                                 LineMark(x: .value("Дата", point.bucket.end.addingTimeInterval(-1)),
                                          y: .value("Остаток", Double(point.byAccount[account.id] ?? 0) / 100),
                                          series: .value("Счёт", account.name))
@@ -619,13 +623,22 @@ private struct BalancesContent: View {
                             }
                         }
                     } else {
-                        ForEach(points) { point in
-                            AreaMark(x: .value("Дата", point.bucket.end.addingTimeInterval(-1)), y: .value("Остаток", Double(point.totalKopecks) / 100))
+                        ForEach(facts) { point in
+                            AreaMark(x: .value("Дата", point.bucket.end.addingTimeInterval(-1)), y: .value("Остаток", Double(point.totalKopecks) / 100),
+                                     series: .value("Вид", "Факт"))
                                 .foregroundStyle(LinearGradient(colors: [Color.accentColor.opacity(0.35), .clear], startPoint: .top, endPoint: .bottom))
                                 .interpolationMethod(.monotone)
-                            LineMark(x: .value("Дата", point.bucket.end.addingTimeInterval(-1)), y: .value("Остаток", Double(point.totalKopecks) / 100))
+                            LineMark(x: .value("Дата", point.bucket.end.addingTimeInterval(-1)), y: .value("Остаток", Double(point.totalKopecks) / 100),
+                                     series: .value("Вид", "Факт"))
                                 .foregroundStyle(Color.accentColor)
                                 .interpolationMethod(.monotone)
+                        }
+                        // The forecast starts from the last fact so that the line does not break.
+                        ForEach(Array(facts.suffix(1)) + forecast) { point in
+                            LineMark(x: .value("Дата", point.bucket.end.addingTimeInterval(-1)), y: .value("Остаток", Double(point.totalKopecks) / 100),
+                                     series: .value("Вид", "Прогноз"))
+                                .foregroundStyle(Color.accentColor)
+                                .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
                         }
                     }
                 }
@@ -638,6 +651,11 @@ private struct BalancesContent: View {
                     }
                 }
                 .frame(height: 240)
+                .overlay {
+                    if !points.contains(where: { $0.hasData || !$0.byAccount.isEmpty }) {
+                        Text("Нет данных об остатке").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
                 if perAccount {
                     HStack(spacing: 12) {
                         ForEach(accounts) { account in
@@ -650,14 +668,20 @@ private struct BalancesContent: View {
                 }
             }.glassRows()
             Section("Остаток на конец периода") {
-                ForEach(points.reversed()) { point in
+                ForEach(points.filter(\.hasData)) { point in
                     HStack {
-                        Text(rowTitle(point.bucket))
+                        Text(rowTitle(point.bucket) + (point.isForecast ? " · прогноз" : ""))
                         Spacer()
                         Text(reportRubles(point.totalKopecks)).monospacedDigit()
+                            .foregroundStyle(point.isForecast ? Color.secondary : Color.primary)
                     }
                 }
-                Text("Остаток по счетам, которые учитываются в текущем остатке.").font(.caption).foregroundStyle(.secondary)
+                if points.contains(where: { !$0.hasData && !$0.isForecast }) {
+                    Text("Общий остаток показан там, где известны все счета. По счетам, которые заведены позже, прошлых остатков нет: режим «По счетам» показывает каждый счёт с даты, с которой он известен.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Остаток по счетам, которые учитываются в текущем остатке. Дни после сегодняшнего — прогноз: ожидаемые расходы и доходы месяца.")
+                    .font(.caption).foregroundStyle(.secondary)
             }.glassRows()
         }
     }
@@ -707,7 +731,7 @@ private struct FlowContent: View {
         }.glassRows()
         Section {
             flowRow("Всего", income: income, expense: expense, bold: true)
-            ForEach(points.reversed()) { point in
+            ForEach(points) { point in
                 flowRow(title(point.bucket), income: point.incomeKopecks, expense: point.expenseKopecks, bold: false)
             }
             Text(income >= expense ? "За период получается откладывать: доходы больше расходов." : "За период расходы обгоняют доходы.")
@@ -756,11 +780,11 @@ private struct ReportPeriodSheet: View {
                 Section {
                     ForEach([7, 14, 30, 90, 365], id: \.self) { days in
                         Button { choose(.lastDays(days)) } label: {
-                            Label("Последние \(days) дн.", systemImage: "calendar").foregroundStyle(.primary)
+                            Label("Последние \(days) дн.", systemImage: "calendar").foregroundStyle(Color.white)
                         }
                     }
-                    Button { choosingDates = true } label: { Label("Выбрать даты", systemImage: "calendar.badge.clock").foregroundStyle(.primary) }
-                    Button { choose(.allHistory) } label: { Label("Вся история", systemImage: "infinity").foregroundStyle(.primary) }
+                    Button { choosingDates = true } label: { Label("Выбрать даты", systemImage: "calendar.badge.clock").foregroundStyle(Color.white) }
+                    Button { choose(.allHistory) } label: { Label("Вся история", systemImage: "infinity").foregroundStyle(Color.white) }
                     if let first {
                         Text("История с " + first.formatted(.dateTime.month(.wide).year())).font(.caption).foregroundStyle(.secondary)
                     }
@@ -770,7 +794,7 @@ private struct ReportPeriodSheet: View {
                         ForEach(months(of: year), id: \.self) { month in
                             Button { choose(.month(month)) } label: {
                                 HStack {
-                                    Text(month.formatted(.dateTime.month(.wide)).capitalized).foregroundStyle(.primary)
+                                    Text(month.formatted(.dateTime.month(.wide)).capitalized).foregroundStyle(Color.white)
                                     Spacer()
                                     if period == .month(month) { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
                                 }
@@ -781,7 +805,7 @@ private struct ReportPeriodSheet: View {
                             Text(String(year))
                             Spacer()
                             Button("Весь год") { choose(.year(Calendar.current.date(from: DateComponents(year: year))!)) }
-                                .font(.caption).textCase(nil)
+                                .font(.caption).textCase(nil).foregroundStyle(Color.white)
                         }
                     }.glassRows()
                 }
@@ -815,7 +839,7 @@ private struct ReportPeriodSheet: View {
     }
 
     private func months(of year: Int) -> [Date] {
-        ReportPeriod.months(from: first).filter { Calendar.current.component(.year, from: $0) == year }.reversed()
+        ReportPeriod.months(from: first).filter { Calendar.current.component(.year, from: $0) == year }
     }
 
     private func choose(_ new: ReportPeriod) {

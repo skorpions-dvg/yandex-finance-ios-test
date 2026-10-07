@@ -825,7 +825,7 @@ extension SavedHistory {
     /// Every operation that moves `account`, counted exactly as `Account.balance` counts it, newest first:
     /// for the scanned card — bank rows from its start date (without cancelled rows and without the Save side of
     /// card ↔ Save transfers); for other accounts — manual entries from its start date.
-    func accountMovements(_ account: Account) -> [AccountMovement] {
+    func accountMovements(_ account: Account, includingBeforeStart: Bool = false) -> [AccountMovement] {
         var result: [AccountMovement] = []
         if account.tracksBankCard {
             let inputs = operations.map(\.financialInput)
@@ -833,12 +833,12 @@ extension SavedHistory {
             for (index, operation) in operations.enumerated() {
                 let input = inputs[index]
                 guard !FinancialEngine.isSaveSide(input), !otherAccountRows.contains(index),
-                      let date = BankDateParser.parse(operation.occurredAt), date >= account.startDate,
+                      let date = BankDateParser.parse(operation.occurredAt), includingBeforeStart || date >= account.startDate,
                       FinancialEngine.classify(input).type != .cancelled else { continue }
                 result.append(AccountMovement(operation: operation, date: date, delta: operation.amountKopecks))
             }
         } else {
-            for manual in manualOperations ?? [] where manual.date >= account.startDate {
+            for manual in manualOperations ?? [] where includingBeforeStart || manual.date >= account.startDate {
                 let delta: Int64
                 switch manual.kind {
                 case .expense: delta = manual.accountID == account.id ? -manual.amountKopecks : 0
@@ -861,6 +861,22 @@ extension SavedHistory {
         let movements = accountMovements(account).sorted { $0.date < $1.date }
         return moments.map { moment in
             movements.lazy.filter { $0.date < moment }.reduce(account.startBalanceKopecks) { $0 + $1.delta }
+        }
+    }
+
+    /// Balance of `account` at each moment, or nil where nothing is known. From the start date on it is the entered
+    /// balance moved by the operations since (as `accountBalances`). Before it the balance is worked back from the
+    /// entered one through the operations of the scanned card, and only from its first operation on; an account kept
+    /// by hand has no known balance before its start date.
+    func accountBalancesReconstructed(_ account: Account, at moments: [Date]) -> [Int64?] {
+        let movements = accountMovements(account, includingBeforeStart: true).sorted { $0.date < $1.date }
+        let firstDate = movements.first?.date
+        return moments.map { moment in
+            if moment >= account.startDate {
+                return movements.lazy.filter { $0.date >= account.startDate && $0.date < moment }.reduce(account.startBalanceKopecks) { $0 + $1.delta }
+            }
+            guard account.tracksBankCard, let firstDate, moment > firstDate else { return nil }
+            return movements.lazy.filter { $0.date >= moment && $0.date < account.startDate }.reduce(account.startBalanceKopecks) { $0 - $1.delta }
         }
     }
 }

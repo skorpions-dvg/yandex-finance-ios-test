@@ -633,7 +633,7 @@ assert.match(projectV25, /FinanceEngine\.swift/);
 assert.match(appSwift, /\("Отчёты", "chart\.pie"\)/);
 const reportsSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/ReportsView.swift'), 'utf8');
 assert.match(reportsSwift, /case structure, dynamics, balances, flow/, 'the reports have four tabs');
-assert.match(reportsSwift, /header\(first: first\)\s*List \{/,
+assert.match(reportsSwift, /\n\s*header\s*List \{/,
   'the tabs, the ribbon of months and the filters stay above the list, so the chart never moves when a period is chosen');
 assert.match(reportsSwift, /\.chartXScale\(domain: keys\)/, 'every bucket stays on the axis, with or without operations');
 assert.match(financeEngine, /case internalTransfer = "internal_transfer"/);

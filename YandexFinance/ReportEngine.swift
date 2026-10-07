@@ -106,7 +106,12 @@ struct ReportBalancePoint: Identifiable, Equatable {
     /// The last day of the bucket: the balance is shown at its end.
     let bucket: DateInterval
     let totalKopecks: Int64
+    /// Only the accounts whose balance is known at this moment.
     let byAccount: [UUID: Int64]
+    /// False where the total is not known (an account had no balance yet, or no forecast).
+    let hasData: Bool
+    /// The bucket ends after today: the total is an expected balance.
+    let isForecast: Bool
     var id: Date { bucket.start }
 }
 
@@ -281,19 +286,48 @@ enum ReportEngine {
     // MARK: Balances
 
     /// The balance of the accounts at the end of every bucket, in total and per account.
-    static func balances(_ history: SavedHistory, accounts: [Account], buckets: [DateInterval]) -> [ReportBalancePoint] {
-        let moments = buckets.map(\.end)
-        var perAccount: [[Int64]] = []
-        for account in accounts { perAccount.append(history.accountBalances(account, at: moments)) }
+    /// - Up to today the balances are factual: from an account's start date on, the entered balance moved by its
+    ///   operations; earlier, worked back through the scanned card's operations (see `accountBalancesReconstructed`).
+    ///   The total is known only where every account is known, so a new account does not make the past look poorer.
+    /// - A bucket that ends after today is a forecast: the balance of today moves in a straight line to the expected
+    ///   balance at the end of the month (`forecastChangeKopecks`, from the month forecast). Without a forecast such
+    ///   buckets have no data. Forecasts are made for the total only.
+    static func balances(_ history: SavedHistory, accounts: [Account], buckets: [DateInterval], now: Date = Date(),
+                         forecastChangeKopecks: Int64? = nil, calendar: Calendar = .current) -> [ReportBalancePoint] {
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
+        let thisMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        let monthEnd = calendar.date(byAdding: .month, value: 1, to: thisMonth)!
+        let moments = buckets.map { min($0.end, tomorrow) }
+        let perAccount = accounts.map { history.accountBalancesReconstructed($0, at: moments) }
         return buckets.enumerated().map { index, bucket in
             var byAccount: [UUID: Int64] = [:]
             var total: Int64 = 0
+            var complete = !accounts.isEmpty
             for (accountIndex, account) in accounts.enumerated() {
-                let value = perAccount[accountIndex][index]
-                byAccount[account.id] = value
-                total += value
+                if let value = perAccount[accountIndex][index] {
+                    byAccount[account.id] = value
+                    total += value
+                } else {
+                    complete = false
+                }
             }
-            return ReportBalancePoint(bucket: bucket, totalKopecks: total, byAccount: byAccount)
+            guard bucket.end > tomorrow else {
+                return ReportBalancePoint(bucket: bucket, totalKopecks: complete ? total : 0, byAccount: byAccount, hasData: complete, isForecast: false)
+            }
+            guard complete, let change = forecastChangeKopecks else {
+                return ReportBalancePoint(bucket: bucket, totalKopecks: 0, byAccount: [:], hasData: false, isForecast: true)
+            }
+            let span = monthEnd.timeIntervalSince(tomorrow)
+            let fraction = span > 0 ? min(1, max(0, bucket.end.timeIntervalSince(tomorrow) / span)) : 1
+            let value = total + Int64((Double(change) * fraction).rounded())
+            return ReportBalancePoint(bucket: bucket, totalKopecks: value, byAccount: [:], hasData: true, isForecast: true)
         }
+    }
+
+    /// Buckets that have already begun: income and expenses of days to come are not shown.
+    static func untilToday(_ buckets: [DateInterval], now: Date = Date(), calendar: Calendar = .current) -> [DateInterval] {
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
+        let begun = buckets.filter { $0.start < tomorrow }
+        return begun.isEmpty ? buckets : begun
     }
 }
