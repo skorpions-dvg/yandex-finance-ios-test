@@ -299,8 +299,8 @@ enum StatementImporter {
             for position in line {
                 // Select through the whole physical line height. A dot's tiny ink
                 // bounds do not intersect PDFKit's text selection baseline by themselves.
-                let area = CGRect(x: position.x + position.width * 0.45, y: bounds.maxY - bottom - 0.5,
-                                  width: position.width * 0.1, height: bottom - top + 1)
+                let area = CGRect(x: position.x - 0.1, y: bounds.maxY - bottom - 0.5,
+                                  width: position.width + 0.2, height: bottom - top + 1)
                 guard let character = page.selection(for: area)?.string, !character.isEmpty else { continue }
                 glyphs.append(StatementCell(text: character, x: position.x, y: top, width: position.width, height: bottom - top))
             }
