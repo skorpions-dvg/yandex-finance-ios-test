@@ -59,7 +59,8 @@ struct ContentView: View {
                             // Clear Liquid Glass: the wallpaper and the edge of the page show through, nothing is dimmed.
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
                                 .frame(width: drawerWidth, height: max(0, height - Self.barSpace - 16), alignment: .top)
-                                .glassEffect(.clear, in: .rect(cornerRadius: 28))
+                                // Clear glass with a grey haze: the wallpaper shows through, the rows stay readable.
+                                .glassEffect(.clear.tint(Color(white: 0.45).opacity(0.3)), in: .rect(cornerRadius: 28))
                                 .clipShape(.rect(cornerRadius: 28))
                                 .padding(.horizontal, 8)
                                 .padding(.top, 4)
@@ -176,61 +177,38 @@ private struct LensTabBar: View {
     private let tabs: [(title: String, symbol: String)] = [
         ("Операции", "list.bullet.rectangle"), ("Отчёты", "chart.pie"), ("Настройки", "gearshape")
     ]
+    /// Same size as before 41.40: 50 pt of tabs inside a 6 pt glass rim.
     private let inset: CGFloat = 6
 
     var body: some View {
         GeometryReader { bar in
-            let segment = (bar.size.width - inset * 2) / 3
+            let segment = bar.size.width / 3
             let position = dragged ?? progress.value
-            let lensX = inset + (position - 1) * segment
             ZStack(alignment: .leading) {
-                // The bar: frosted Liquid Glass, so the content under it is blurred, as in Telegram.
-                ZStack(alignment: .leading) {
-                    // At rest the chosen tab is a soft light capsule.
-                    Capsule()
-                        .fill(Color.primary.opacity(0.1))
-                        .frame(width: segment, height: bar.size.height - inset * 2)
-                        .offset(x: (position - 1) * segment)
-                        .opacity(held ? 0 : 1)
-                    HStack(spacing: 0) {
-                        ForEach(0..<3, id: \.self) { index in
-                            let active = Int(position.rounded()) == index + 1
-                            let distance = CGFloat(index + 1) - position
-                            let aside: CGFloat = held ? (distance >= 0 ? 1 : -1) * 8 * max(0, 1 - abs(distance)) : 0
-                            VStack(spacing: 4) {
-                                Image(systemName: tabs[index].symbol).font(.title3)
-                                Text(tabs[index].title).font(.caption2.weight(.medium))
-                            }
-                            .foregroundStyle(active ? Color.accentColor : Color.primary)
-                            .offset(x: abs(distance) < 0.15 ? 0 : aside)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .accessibilityElement(children: .combine)
-                            .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
-                            .accessibilityAction { select(index + 1) }
+                // At rest the chosen tab is a soft light capsule.
+                Capsule()
+                    .fill(Color.primary.opacity(0.1))
+                    .frame(width: segment, height: bar.size.height)
+                    .offset(x: (position - 1) * segment)
+                    .opacity(held ? 0 : 1)
+                HStack(spacing: 0) {
+                    ForEach(0..<3, id: \.self) { index in
+                        let active = Int(position.rounded()) == index + 1
+                        let distance = CGFloat(index + 1) - position
+                        let aside: CGFloat = held ? (distance >= 0 ? 1 : -1) * 8 * max(0, 1 - abs(distance)) : 0
+                        VStack(spacing: 4) {
+                            Image(systemName: tabs[index].symbol).font(.title3)
+                            Text(tabs[index].title).font(.caption2.weight(.medium))
                         }
+                        .foregroundStyle(active ? Color.accentColor : Color.primary)
+                        .offset(x: abs(distance) < 0.15 ? 0 : aside)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
+                        .accessibilityAction { select(index + 1) }
                     }
                 }
-                .padding(inset)
-                .glassEffect(.regular, in: .capsule)
-
-                // Held: a clear glass bubble, taller than the bar, travels with the finger.
-                Capsule()
-                    .fill(Color.white.opacity(0.04))
-                    .glassEffect(.clear.interactive(), in: .capsule)
-                    .overlay(
-                        Capsule().strokeBorder(
-                            LinearGradient(colors: [.white.opacity(0.7), .white.opacity(0.08), .cyan.opacity(0.35)],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing),
-                            lineWidth: 1.2)
-                    )
-                    .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
-                    .frame(width: segment * 1.08, height: bar.size.height * 1.38)
-                    .offset(x: lensX - segment * 0.04)
-                    .scaleEffect(held ? 1 : 0.7, anchor: .center)
-                    .opacity(held ? 1 : 0)
-                    .allowsHitTesting(false)
             }
-            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.66), value: held)
             .contentShape(Rectangle())
             // One gesture for the whole bar: a tap selects the tab under the finger, a drag carries the lens.
             .highPriorityGesture(
@@ -238,11 +216,11 @@ private struct LensTabBar: View {
                     .onChanged { drag in
                         if held || abs(drag.translation.width) > 6 {
                             held = true
-                            dragged = min(3, max(1, (drag.location.x - inset) / max(1, segment) + 0.5))
+                            dragged = min(3, max(1, drag.location.x / max(1, segment) + 0.5))
                         }
                     }
                     .onEnded { drag in
-                        let tab = Int(min(3, max(1, (drag.location.x - inset) / max(1, segment) + 0.5)).rounded())
+                        let tab = Int(min(3, max(1, drag.location.x / max(1, segment) + 0.5)).rounded())
                         withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
                             held = false
                             dragged = abs(progress.value - CGFloat(tab)) < 0.02 ? nil : CGFloat(tab)
@@ -256,10 +234,52 @@ private struct LensTabBar: View {
                     }
             )
         }
-        .frame(height: 62)
+        .frame(height: 50)
+        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.66), value: held)
+        .padding(inset)
+        // Frosted glass with a grey haze, so what passes under the bar is blurred and the labels stay readable.
+        .glassEffect(.regular.tint(Color(white: 0.45).opacity(0.28)), in: .capsule)
+        // The bubble lives outside the bar's layout: it never resizes the bar and is placed, not laid out.
+        .overlay {
+            GeometryReader { outer in
+                let segment = (outer.size.width - inset * 2) / 3
+                let position = dragged ?? progress.value
+                LensBubble()
+                    .frame(width: segment * 1.12, height: outer.size.height * 1.3)
+                    .scaleEffect(held ? 1 : 0.6)
+                    .opacity(held ? 1 : 0)
+                    .position(x: inset + (position - 0.5) * segment, y: outer.size.height / 2)
+                    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.62), value: held)
+                    .allowsHitTesting(false)
+            }
+        }
         .onChange(of: progress.value) { _, value in
             if !held, let target = dragged, abs(value - target) < 0.02 { dragged = nil }
         }
+    }
+}
+
+/// A clear glass drop: refracting glass with a light top, a darker lower rim and a thin rainbow edge, so it reads
+/// as round rather than flat. No shadows: they would be re-rendered on every frame of the drag.
+private struct LensBubble: View {
+    var body: some View {
+        Capsule()
+            .fill(Color.white.opacity(0.04))
+            .glassEffect(.clear, in: .capsule)
+            .overlay(
+                Capsule().fill(LinearGradient(colors: [.white.opacity(0.32), .white.opacity(0.04), .clear, .black.opacity(0.16)],
+                                              startPoint: .top, endPoint: .bottom))
+            )
+            .overlay(
+                Capsule().strokeBorder(
+                    AngularGradient(colors: [.white.opacity(0.95), .cyan.opacity(0.6), .purple.opacity(0.45), .white.opacity(0.25),
+                                             .orange.opacity(0.45), .yellow.opacity(0.35), .white.opacity(0.95)],
+                                    center: .center),
+                    lineWidth: 1.5)
+            )
+            .overlay(
+                Capsule().inset(by: 3).strokeBorder(Color.white.opacity(0.3), lineWidth: 0.8)
+            )
     }
 }
 
