@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Камера нужна, чтобы сфотографировать чек и приложить его к операции.</string>
 	<!-- The launch screen takes the app's dark background instead of black while the first frame is prepared. -->
 	<key>UILaunchScreen</key>
 	<dict>

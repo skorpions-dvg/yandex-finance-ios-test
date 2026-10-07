@@ -77,7 +77,8 @@ struct ManualOperationFormView: View {
                 } else {
                     fields
                 }
-                if operation != nil {
+                if let operation {
+                    ReceiptSection(browser: browser, identity: ManualOperation.identityPrefix + operation.id.uuidString)
                     Section {
                         Button("Удалить операцию", role: .destructive) { confirmDeletion = true }
                     }.glassRows()
@@ -282,7 +283,13 @@ struct ManualOperationFormView: View {
 
     private func delete() {
         guard let operation else { return }
-        if browser.updateUserData({ history in history.manualOperations?.removeAll { $0.id == operation.id } }) {
+        var photos: [String] = []
+        let identity = ManualOperation.identityPrefix + operation.id.uuidString
+        if browser.updateUserData({ history in
+            history.manualOperations?.removeAll { $0.id == operation.id }
+            photos = history.removeReceipts(forIdentity: identity)
+        }) {
+            ReceiptStore.delete(photos)
             dismiss()
         } else {
             saveErrorMessage = browser.message

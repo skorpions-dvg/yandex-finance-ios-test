@@ -440,6 +440,7 @@ struct OperationDetailView: View {
             } footer: {
                 Text("Своё название и иконка").font(.caption2)
             }
+            ReceiptSection(browser: browser, identity: operation.identity)
             if let components = operation.components {
                 Section("Составляющие") {
                     ForEach(Array(components.enumerated()), id: \.offset) { _, component in

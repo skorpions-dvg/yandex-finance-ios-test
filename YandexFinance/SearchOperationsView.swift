@@ -41,14 +41,14 @@ struct SearchOperationsView: View {
                                 Button {
                                     editedOperation = browser.history.manualOperations?.first { $0.id == operation.manualID }
                                 } label: {
-                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true, look: browser.history.look(for: operation)).foregroundStyle(.primary)
+                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true, look: browser.history.look(for: operation), hasReceipt: browser.history.hasReceipt(operation)).foregroundStyle(.primary)
                                 }
                                 .buttonStyle(.plain)
                             } else {
                                 NavigationLink {
                                     OperationDetailView(browser: browser, operation: operation)
                                 } label: {
-                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true, look: browser.history.look(for: operation))
+                                    OperationRow(operation: operation, input: browser.history.financialInput(for: operation), showsDate: true, look: browser.history.look(for: operation), hasReceipt: browser.history.hasReceipt(operation))
                                 }
                             }
                         }

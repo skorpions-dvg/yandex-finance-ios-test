@@ -33,6 +33,8 @@ struct OperationRow: View {
     var look: OperationLook? = nil
     /// Presentation override for an account report; other lists keep the original bank amount.
     var displayedAmountKopecks: Int64? = nil
+    /// A paperclip after the title when the operation has a photo of its receipt.
+    var hasReceipt = false
 
     var body: some View {
         let style = Self.icon(for: operation, input: input)
@@ -43,8 +45,13 @@ struct OperationRow: View {
                 .frame(width: 32, height: 32)
                 .background(style.color, in: Circle())
             VStack(alignment: .leading, spacing: 2) {
-                Text(look?.title ?? operation.description)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(look?.title ?? operation.description)
+                        .lineLimit(1)
+                    if hasReceipt {
+                        Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -444,7 +444,8 @@ struct OperationsHomeView: View {
 
     private func historyOperationRow(_ operation: BankOperation) -> some View {
         HStack(spacing: 8) {
-            OperationRow(operation: operation, input: resolvedInput(for: operation), look: browser.history.look(for: operation))
+            OperationRow(operation: operation, input: resolvedInput(for: operation), look: browser.history.look(for: operation),
+                         hasReceipt: browser.history.hasReceipt(operation))
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }
         .foregroundStyle(.primary)

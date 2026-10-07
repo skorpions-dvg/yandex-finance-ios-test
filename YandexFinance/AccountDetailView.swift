@@ -120,7 +120,8 @@ struct AccountDetailView: View {
 
     private func movementRow(_ movement: AccountMovement, input: FinancialOperationInput?) -> some View {
         OperationRow(operation: movement.operation, input: input,
-                     look: browser.history.look(for: movement.operation), displayedAmountKopecks: movement.delta)
+                     look: browser.history.look(for: movement.operation), displayedAmountKopecks: movement.delta,
+                     hasReceipt: browser.history.hasReceipt(movement.operation))
     }
 
     private func money(_ amount: Int64) -> String {

@@ -17,6 +17,45 @@ struct FinanceEngineTests {
                                 providers: providers, kind: kind, componentAmountsKopecks: components)
     }
 
+    static func testReceipts() {
+        let first = ReceiptLogic.fileName(id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!)
+        let second = ReceiptLogic.fileName()
+        require(first == "receipt-11111111-2222-3333-4444-555555555555.jpg", "the file name is made of the id")
+        require(ReceiptLogic.isValid(fileName: first) && ReceiptLogic.isValid(fileName: second), "names made by the app are valid")
+        for bad in ["", "../receipt-11111111-2222-3333-4444-555555555555.jpg", "receipt-11111111-2222-3333-4444-555555555555.png",
+                    "receipt-.jpg", "RECEIPT-11111111-2222-3333-4444-555555555555.jpg", "a/receipt-11111111-2222-3333-4444-555555555555.jpg",
+                    "receipt-11111111-2222-3333-4444-555555555555.jpg/../x"] {
+            require(!ReceiptLogic.isValid(fileName: bad), "a foreign file name is never used: \(bad)")
+        }
+        let wide = ReceiptLogic.scaledSize(width: 4000, height: 2000)
+        require(wide.width == 1600 && wide.height == 800, "a wide photo is fitted by its longer side")
+        let tall = ReceiptLogic.scaledSize(width: 1500, height: 3000)
+        require(tall.width == 800 && tall.height == 1600, "a tall photo is fitted by its longer side")
+        let small = ReceiptLogic.scaledSize(width: 800, height: 600)
+        require(small.width == 800 && small.height == 600, "a small photo is not enlarged")
+        require(ReceiptLogic.scaledSize(width: 0, height: 0) == (0, 0), "an empty photo stays empty")
+
+        var history = SavedHistory()
+        let operation = bankOp("receipt-op", -10_000, description: "Магазин", mcc: "5411", date: "2032-06-02T10:00:00Z")
+        require(!history.hasReceipt(operation) && history.receiptFiles(forIdentity: operation.identity).isEmpty, "no photos at first")
+        history.addReceipt(first, toIdentity: operation.identity)
+        history.addReceipt(first, toIdentity: operation.identity)
+        history.addReceipt(second, toIdentity: operation.identity)
+        history.addReceipt("../evil.jpg", toIdentity: operation.identity)
+        require(history.receiptFiles(forIdentity: operation.identity) == [first, second], "photos are added once, a foreign name is refused")
+        require(history.hasReceipt(operation), "the operation has a photo")
+        let decoded = try! HistoryBackup.decode(HistoryBackup.encode(history))
+        require(decoded.receipts == history.receipts, "the references survive the backup")
+        history.removeReceipt(first, fromIdentity: operation.identity)
+        require(history.receiptFiles(forIdentity: operation.identity) == [second], "one photo is removed")
+        history.removeReceipt(second, fromIdentity: operation.identity)
+        require(history.receipts == nil, "without photos the field is empty again")
+        history.addReceipt(first, toIdentity: operation.identity)
+        require(history.removeReceipts(forIdentity: operation.identity) == [first] && history.receipts == nil, "a deleted operation gives back its files")
+        require(history.removeReceipts(forIdentity: "unknown").isEmpty, "nothing to remove for an unknown operation")
+        require((try! HistoryBackup.decode(HistoryBackup.encode(SavedHistory()))).receipts == nil, "an old backup without photos opens")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -1831,6 +1870,7 @@ struct FinanceEngineTests {
         testReserveAccounts()
         testReportEngine()
         testRegularPayments()
+        testReceipts()
         testAccountMovements()
         testReportSeries()
         testAccountSeries()

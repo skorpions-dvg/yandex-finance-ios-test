@@ -118,6 +118,9 @@ struct SavedHistory: Codable {
     var operationLooks: [String: OperationLook]?
     /// Own title and icon for every operation of a payee.
     var payeeLookRules: [PayeeLookRule]?
+    /// Photos of receipts: operation identity -> names of the files in the receipts folder. The photos themselves stay
+    /// on the device (they are not part of the JSON backup); a name whose file is missing is shown as unavailable.
+    var receipts: [String: [String]]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -878,6 +881,62 @@ extension SavedHistory {
             guard account.tracksBankCard, let firstDate, moment > firstDate else { return nil }
             return movements.lazy.filter { $0.date >= moment && $0.date < account.startDate }.reduce(account.startBalanceKopecks) { $0 - $1.delta }
         }
+    }
+}
+
+// MARK: - Receipt photos
+
+extension SavedHistory {
+    func receiptFiles(forIdentity identity: String) -> [String] { receipts?[identity] ?? [] }
+
+    func hasReceipt(_ operation: BankOperation) -> Bool { !(receipts?[operation.identity] ?? []).isEmpty }
+
+    /// Adds a photo to an operation; a name that is already there, or not made by the app, is ignored.
+    mutating func addReceipt(_ file: String, toIdentity identity: String) {
+        guard ReceiptLogic.isValid(fileName: file) else { return }
+        var all = receipts ?? [:]
+        var files = all[identity] ?? []
+        guard !files.contains(file) else { return }
+        files.append(file)
+        all[identity] = files
+        receipts = all
+    }
+
+    mutating func removeReceipt(_ file: String, fromIdentity identity: String) {
+        guard var all = receipts, var files = all[identity] else { return }
+        files.removeAll { $0 == file }
+        all[identity] = files.isEmpty ? nil : files
+        receipts = all.isEmpty ? nil : all
+    }
+
+    /// Forgets all photos of an operation (it was deleted) and returns their file names so the files can be removed.
+    @discardableResult
+    mutating func removeReceipts(forIdentity identity: String) -> [String] {
+        guard var all = receipts, let files = all[identity] else { return [] }
+        all[identity] = nil
+        receipts = all.isEmpty ? nil : all
+        return files
+    }
+}
+
+/// Receipt photos are files in the app's own folder; these rules are the only place that decides how they look.
+enum ReceiptLogic {
+    /// The longest side of a stored photo: enough to read a receipt, small enough (about 300 KB) to keep many.
+    static let maxSide = 1600.0
+
+    static func fileName(id: UUID = UUID()) -> String { "receipt-\(id.uuidString.lowercased()).jpg" }
+
+    /// Only names made by `fileName` are used for files: a name from a restored backup can never point elsewhere.
+    static func isValid(fileName: String) -> Bool {
+        fileName.range(of: "^receipt-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jpg$", options: .regularExpression) != nil
+    }
+
+    /// The size of a photo fitted into `maxSide`, never enlarged.
+    static func scaledSize(width: Double, height: Double) -> (width: Double, height: Double) {
+        let longest = max(width, height)
+        guard longest > maxSide, longest > 0 else { return (width, height) }
+        let factor = maxSide / longest
+        return ((width * factor).rounded(), (height * factor).rounded())
     }
 }
 
