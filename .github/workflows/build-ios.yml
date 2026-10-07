@@ -27,6 +27,7 @@ jobs:
         run: |
           node Tests/parser.test.js
           node Tests/reliability.test.js
+          node Tests/privacy.test.js
 
       - name: Проверка финансового движка Swift
         run: |
