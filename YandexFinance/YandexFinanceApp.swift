@@ -98,8 +98,7 @@ struct ContentView: View {
 
                 LensTabBar(progress: tabProgress, reduceMotion: reduceMotion, select: selectTab)
                     .padding(6)
-                    .background(.ultraThinMaterial, in: .capsule)
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.7))
                     .padding(.horizontal, 40)
                     .padding(.bottom, 8)
             }
@@ -175,25 +174,31 @@ private struct LensTabBar: View {
             let position = dragged ?? progress.value
             // Between two tabs the lens swells like a drop of glass and settles back on a tab.
             let between = abs(position - position.rounded()) * 2
-            let swell: CGFloat = held ? 1.2 : 1 + 0.2 * between
+            let swell: CGFloat = held ? 1.22 : 1 + 0.18 * between
             ZStack(alignment: .leading) {
-                // Real Liquid Glass: it bends and magnifies the icons under it. The bar itself is a plain material,
-                // because glass cannot refract other glass.
-                Color.clear
-                    .glassEffect(.regular.tint(Color.accentColor.opacity(0.18)).interactive(), in: .capsule)
-                    .shadow(color: .black.opacity(held ? 0.22 : 0.08), radius: held ? 10 : 3, y: 2)
-                    .frame(width: segment, height: bar.size.height)
-                    .scaleEffect(x: swell, y: 1 + (swell - 1) * 1.2)
-                    .offset(x: (position - 1) * segment)
-                    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.7), value: held)
+                // The only glass in the bar: untinted, interactive Liquid Glass that bends what is behind it.
+                // The bar has no fill of its own, so the wallpaper really passes under the lens.
+                GlassEffectContainer {
+                    Color.clear
+                        .frame(width: segment, height: bar.size.height)
+                        .glassEffect(.regular.interactive(), in: .capsule)
+                }
+                .scaleEffect(x: swell, y: 1 + (swell - 1) * 0.6 - between * 0.08)
+                .offset(x: (position - 1) * segment)
+                .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.62), value: held)
                 HStack(spacing: 0) {
                     ForEach(0..<3, id: \.self) { index in
                         let active = Int(position.rounded()) == index + 1
+                        let distance = CGFloat(index + 1) - position
+                        let aside: CGFloat = held ? (distance >= 0 ? 1 : -1) * 8 * max(0, 1 - abs(distance)) : 0
                         VStack(spacing: 4) {
                             Image(systemName: tabs[index].symbol).font(.title3)
                             Text(tabs[index].title).font(.caption2.weight(.medium))
                         }
                         .foregroundStyle(active ? Color.accentColor : Color.primary)
+                        .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
+                        .offset(x: abs(distance) < 0.15 ? 0 : aside)
+                        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.7), value: held)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .accessibilityElement(children: .combine)
                         .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
@@ -237,10 +242,27 @@ private struct LensTabBar: View {
 struct OperationDetailView: View {
     @ObservedObject var browser: BankBrowser
     let operation: BankOperation
+    @State private var noteDraft = ""
+    @State private var noteLoaded = false
+    @FocusState private var noteFocused: Bool
     var body: some View {
         let look = browser.history.look(for: operation)
         Form {
             LabeledContent(operation.components == nil ? "Сумма" : "Итог группы", value: operation.formattedAmount)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Комментарий")
+                TextField("Добавить", text: $noteDraft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .multilineTextAlignment(.trailing)
+                    .foregroundStyle(.secondary)
+                    .focused($noteFocused)
+                    .submitLabel(.done)
+                    .onChange(of: noteDraft) { _, value in
+                        // Return finishes the comment instead of starting a new line.
+                        if value.contains("\n") { noteDraft = value.replacingOccurrences(of: "\n", with: ""); noteFocused = false }
+                    }
+            }
+            .onChange(of: noteFocused) { _, focused in if !focused { saveNote() } }
             Section {
                 NavigationLink {
                     OperationLookView(browser: browser, operation: operation)
@@ -256,14 +278,11 @@ struct OperationDetailView: View {
                             if look.title != nil {
                                 Text("В банке: \(operation.description)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
-                            if let note = look.note {
-                                Text(note).font(.caption).foregroundStyle(.secondary)
-                            }
                         }
                     }
                 }
             } footer: {
-                Text("Название, иконка и комментарий").font(.caption2)
+                Text("Своё название и иконка").font(.caption2)
             }
             if let components = operation.components {
                 Section("Составляющие") {
@@ -307,7 +326,21 @@ struct OperationDetailView: View {
             if let mcc = operation.mcc { LabeledContent("MCC", value: mcc) }
             if let purpose = operation.purpose { LabeledContent("Назначение", value: purpose) }
             if let method = operation.paymentMethod { LabeledContent("Способ оплаты", value: method) }
-        }.appSurface().navigationTitle(look.title ?? operation.description)
+        }
+        .appSurface()
+        .navigationTitle(look.title ?? operation.description)
+        .onAppear {
+            guard !noteLoaded else { return }
+            noteLoaded = true
+            noteDraft = look.note ?? ""
+        }
+        .onDisappear { saveNote() }
+    }
+
+    private func saveNote() {
+        let current = browser.history.look(for: operation).note ?? ""
+        guard noteDraft.trimmingCharacters(in: .whitespacesAndNewlines) != current else { return }
+        _ = browser.updateUserData { $0.setNote(noteDraft, for: operation) }
     }
 }
 
@@ -318,7 +351,6 @@ struct OperationLookView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var title: String
     @State private var icon: String?
-    @State private var note: String
     @State private var forPayee = true
     @State private var error: String?
 
@@ -328,7 +360,6 @@ struct OperationLookView: View {
         let look = browser.history.look(for: operation)
         _title = State(initialValue: look.title ?? "")
         _icon = State(initialValue: look.icon)
-        _note = State(initialValue: look.note ?? "")
     }
 
     var body: some View {
@@ -363,10 +394,7 @@ struct OperationLookView: View {
             Section {
                 Toggle("Для всех операций „\(operation.description)“", isOn: $forPayee)
             } footer: {
-                Text("Название и иконка применятся к прошлым и будущим операциям этого получателя. Комментарий — только к этой операции.")
-            }.glassRows()
-            Section("Комментарий") {
-                TextField("Комментарий", text: $note, axis: .vertical).lineLimit(1...5)
+                Text("Название и иконка применятся к прошлым и будущим операциям этого получателя. Комментарий пишется прямо в карточке операции.")
             }.glassRows()
         }
         .tint(.accentColor)
@@ -386,7 +414,6 @@ struct OperationLookView: View {
     private func save() {
         let ok = browser.updateUserData { history in
             history.setLook(title: title, icon: icon, for: operation, forPayee: forPayee)
-            history.setNote(note, for: operation)
         }
         if ok { dismiss() } else { error = browser.message }
     }
