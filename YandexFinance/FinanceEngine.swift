@@ -260,7 +260,7 @@ enum FinancialEngine {
         let split = kind == "installment_payment" || operation.providers.contains(where: { normalized($0) == "bnpl" }) || category.contains("сплит")
         // A move between the card and the Save account, as the bank's shared history lists it: one row per account,
         // both titled after the Save account. It is never a purchase, a refund or income.
-        if amount != 0 && !split && kind != "interest_income" && (isSaveSide(operation) || description == "счет в сейвах" ||
+        if amount != 0 && !split && kind != "interest_income" && (description == "счет в сейвах" ||
             (description.contains("→") && description.contains("сейв"))) {
             return FinancialAssessment(type: .internalTransfer, reason: "Перевод между картой и Сейвом — перемещение между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }

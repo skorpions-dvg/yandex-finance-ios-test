@@ -820,6 +820,9 @@ struct FinanceEngineTests {
         require(FinancialEngine.classify(interest).type == .interestIncome, "Save interest is still income")
         require(FinancialEngine.classify(op(-50_000, kind: "transfer", description: "Карта Пэй → Счёт в Сейвах")).type == .internalTransfer,
                 "an arrow title card → Save is an own transfer")
+        var paidFromSave = op(-2_500, kind: "transfer", description: "Исходящий перевод СБП, Тестовый получатель")
+        paidFromSave.paymentMethod = "Сейв (выписка)"
+        require(FinancialEngine.classify(paidFromSave).type == .expense, "a payment to someone else from the Save stays an expense")
 
         // The manual entry of the same transfer moves the hand-kept Save account, never the scanned card.
         let cardAccount = Account(name: "Яндекс банк", icon: "creditcard", color: "yellow", startBalanceKopecks: 8_046_052,
