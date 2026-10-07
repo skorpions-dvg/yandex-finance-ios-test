@@ -761,14 +761,17 @@ struct FinanceCategoryOperationsView: View {
         let assessment = FinancialEngine.classify(input)
         let category = assessment.type == .expense || assessment.type == .commission
             ? FinancialEngine.expenseCategory(for: input, assessment: assessment).subcategory : operation.category
+        let look = browser.history.look(for: operation)
+        let title = look.title ?? (operation.description.isEmpty ? "Операция без названия" : operation.description)
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
-                Text(operation.description.isEmpty ? "Операция без названия" : operation.description).foregroundStyle(.primary)
+                Text(title).foregroundStyle(.primary)
                 Spacer()
                 Text(operation.formattedAmount).foregroundStyle(.primary)
             }
             HStack {
                 Text(BankDateParser.parse(operation.occurredAt)?.formatted(date: .abbreviated, time: .omitted) ?? operation.occurredAt)
+                if let note = look.note { Text("· \(note)").lineLimit(1) }
                 Spacer()
                 Text(category.isEmpty ? "Без категории" : category)
             }

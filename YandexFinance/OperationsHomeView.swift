@@ -101,6 +101,18 @@ struct OperationsHomeView: View {
                         }
                     }
                     ToolbarItemGroup(placement: .topBarTrailing) {
+                        // The same check as «Обновить новые операции» in Settings, including the sign-in page.
+                        Button {
+                            browser.refreshNewOperations()
+                        } label: {
+                            if browser.busy {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .disabled(browser.busy)
+                        .accessibilityLabel("Обновить новые операции")
                         Button {
                             showSearch = true
                         } label: {

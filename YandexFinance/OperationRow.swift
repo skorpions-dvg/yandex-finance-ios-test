@@ -56,6 +56,8 @@ struct OperationRow: View {
 
     private var subtitle: String {
         var parts: [String] = []
+        // The user's comment comes first, then the usual date and category.
+        if let note = look?.note { parts.append(note) }
         if showsDate, let date = BankDateParser.parse(operation.occurredAt) {
             parts.append(date.formatted(.dateTime.day().month().year()))
         }
