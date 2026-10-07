@@ -623,11 +623,26 @@ enum FinancialEngine {
         case short
     }
 
-    /// What stays from the current balance at the end of the month if spending continues as forecast:
-    /// balance minus the spending still expected this month (recurring payments and the variable tail).
-    /// Income that has not arrived yet is deliberately left out.
+    /// What stays from the balance at the end of the month if spending continues as forecast: the balance minus the
+    /// spending still expected this month (recurring payments and the variable tail) plus the regular income still
+    /// expected (a salary that has its usual day ahead). Irregular income is never guessed here; see
+    /// `monthReserveWithTypicalIncome`.
     static func monthReserve(balanceKopecks: Int64, forecast: MonthForecast) -> Int64 {
-        balanceKopecks - max(0, forecast.projectedExpenseKopecks - forecast.spentKopecks)
+        balanceKopecks - max(0, forecast.projectedExpenseKopecks - forecast.spentKopecks) + forecast.expectedIncomeLeftKopecks
+    }
+
+    /// The reserve at the usual low and high spending of the months the forecast is built from.
+    static func monthReserveRange(balanceKopecks: Int64, forecast: MonthForecast) -> (low: Int64, high: Int64) {
+        let left = forecast.expectedIncomeLeftKopecks
+        let atHighSpending = balanceKopecks - max(0, forecast.projectedExpenseHighKopecks - forecast.spentKopecks) + left
+        let atLowSpending = balanceKopecks - max(0, forecast.projectedExpenseLowKopecks - forecast.spentKopecks) + left
+        return (min(atHighSpending, atLowSpending), max(atHighSpending, atLowSpending))
+    }
+
+    /// The same reserve if the usual irregular income (transfers from people and the like) still comes this month.
+    static func monthReserveWithTypicalIncome(balanceKopecks: Int64, forecast: MonthForecast) -> Int64 {
+        monthReserve(balanceKopecks: balanceKopecks, forecast: forecast)
+            + max(0, forecast.typicalIrregularIncomeKopecks - forecast.irregularIncomeSoFarKopecks)
     }
 
     static func reserveStatus(_ reserveKopecks: Int64, bufferKopecks: Int64) -> ReserveStatus {
@@ -704,7 +719,7 @@ enum FinancialEngine {
         let oneOffKopecks: Int64
         /// What goes into the median: net expense without recurring payments and one-off purchases.
         let variableKopecks: Int64
-        /// The largest one-off purchases of the month, for checking the rule.
+        /// What the one-off purchases of the month were, by category group («Переводы 66 000 ₽»), never by operation.
         let largestOneOffs: [String]
         var id: Date { month }
     }
@@ -736,6 +751,10 @@ enum FinancialEngine {
 
         /// Expected income minus projected spending; negative means the money is not expected to last.
         var projectedBalanceKopecks: Int64 { projectedIncomeKopecks - projectedExpenseKopecks }
+        /// Regular income still expected this month; one whose usual day has passed without it arriving is not counted.
+        var expectedIncomeLeftKopecks: Int64 {
+            upcoming.filter { $0.isIncome && !$0.overdue }.reduce(0) { $0 + $1.amountKopecks }
+        }
         /// The same balance if the usual irregular income still comes this month (the second, optimistic scenario).
         var balanceWithTypicalIncomeKopecks: Int64 {
             projectedBalanceKopecks + max(0, typicalIrregularIncomeKopecks - irregularIncomeSoFarKopecks)
@@ -916,8 +935,11 @@ enum FinancialEngine {
                                  recurringKopecks: sum(recurringItems, income: false, in: month.interval),
                                  oneOffKopecks: oneOffs.reduce(0) { $0 + $1.amount },
                                  variableKopecks: variableExpense(in: month.interval, report: month.report),
-                                 largestOneOffs: oneOffs.sorted { $0.amount > $1.amount }.prefix(3)
-                                    .map { "\($0.title) \((Decimal($0.amount) / 100).formatted(.currency(code: "RUB")))" })
+                                 largestOneOffs: Dictionary(grouping: oneOffs) { item in
+                                        String(item.category.split(separator: "/", maxSplits: 1).first ?? "Прочее")
+                                    }.map { group, items in (group, items.reduce(0) { $0 + $1.amount }) }
+                                    .sorted { $0.1 > $1.1 }
+                                    .map { "\($0.0) \((Decimal($0.1) / 100).formatted(.currency(code: "RUB")))" })
         }
         let variableIncomes = months.map { $0.report.incomeKopecks - sum(recurringItems, income: true, in: $0.interval) }
 
@@ -926,19 +948,20 @@ enum FinancialEngine {
         let variableSoFar = variableExpense(in: soFarInterval, report: soFar)
         let baseline = median(variableExpenses)
 
-        // Pace of this month against the usual one, kept within reason so a single big purchase does not dominate.
-        var pace = 1.0
-        if baseline > 0 {
-            pace = Double(variableSoFar) / (Double(baseline) * Double(elapsed) / Double(daysInMonth))
-            pace = min(max(pace, 0.6), 1.6)
-            if elapsed < 7 { pace = 1 + (pace - 1) * Double(elapsed) / 7 }
-        }
+        // The daily rate of the rest of the month is the usual one blended with this month's own, and this month's
+        // weight grows with the days elapsed (`priorDays` days of history count as much as the month so far). One
+        // purchase in the first days therefore barely moves the forecast, and a month that really runs differently
+        // is followed gradually, never in jumps.
+        let priorDays = 30.0
         func tail(_ base: Int64) -> Int64 {
             if base <= 0 {
                 // No usable history: fall back to the plain daily pace of this month.
                 return max(0, variableSoFar) * Int64(remaining) / Int64(elapsed)
             }
-            return Int64((Double(base) / Double(daysInMonth) * pace * Double(remaining)).rounded())
+            let usual = Double(base) / Double(daysInMonth)
+            let current = Double(max(0, variableSoFar)) / Double(elapsed)
+            let rate = (usual * priorDays + current * Double(elapsed)) / (priorDays + Double(elapsed))
+            return Int64((rate * Double(remaining)).rounded())
         }
 
         var upcoming: [UpcomingPayment] = []

@@ -214,6 +214,32 @@ extension Account {
     func contributesToBalance(groups: [AccountGroup]) -> Bool {
         showsBalance && (groups.first { $0.id == groupID }?.includesInBalance ?? true)
     }
+
+    /// The reserve counts the accounts of the balance that are not put aside.
+    func contributesToReserve(groups: [AccountGroup]) -> Bool {
+        contributesToBalance(groups: groups) && (countsInReserve ?? true)
+    }
+}
+
+extension SavedHistory {
+    var reserveAccounts: [Account] {
+        let groups = accountGroups ?? []
+        return (accounts ?? []).filter { $0.contributesToReserve(groups: groups) }
+    }
+
+    /// The money the reserve starts from: the balance of the accounts it counts.
+    var reserveBalanceKopecks: Int64 {
+        let bank = operations.map(\.financialInput)
+        let manual = manualOperations ?? []
+        return reserveAccounts.reduce(0) { $0 + $1.balance(bankOperations: bank, manual: manual) }
+    }
+
+    /// Sets whether the accounts are counted in the reserve; ids that are not accounts are ignored.
+    mutating func setReserveCounting(_ counts: Bool, accountIDs: Set<UUID>) {
+        guard var all = accounts else { return }
+        for index in all.indices where accountIDs.contains(all[index].id) { all[index].countsInReserve = counts }
+        accounts = all
+    }
 }
 
 struct Account: Codable, Equatable, Identifiable {
@@ -230,6 +256,9 @@ struct Account: Codable, Equatable, Identifiable {
     var showsBalance: Bool = true
     /// The bank card scanned from Yandex Bank: its operations after `startDate` move the balance.
     var tracksBankCard: Bool = false
+    /// Set to false for money that is put aside (a savings goal, a deposit): it stays in the balance but is not
+    /// counted in the reserve until the end of the month. Missing (old data): counted.
+    var countsInReserve: Bool?
 
     static let palette = ["orange", "red", "yellow", "green", "teal", "blue", "indigo", "purple", "pink", "gray"]
 }

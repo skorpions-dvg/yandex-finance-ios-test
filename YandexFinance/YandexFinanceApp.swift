@@ -629,6 +629,7 @@ struct SettingsView: View {
                 } header: { Text("Отображение") }.glassRows()
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
+                    NavigationLink("Запас до конца месяца") { ReserveAccountsView(browser: browser) }
                 }.glassRows()
                 Section {
                     Button("Страница банка") { browser.bankPageVisible = true }

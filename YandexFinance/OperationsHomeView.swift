@@ -129,9 +129,10 @@ struct OperationsHomeView: View {
                     }
                 }
                 .sheet(isPresented: $showForecast) {
-                    let accounts = browser.history.accounts ?? []
+                    let reserveAccounts = browser.history.reserveAccounts
                     ForecastDetailView(forecast: presentation.forecast(browser.history),
-                                       balanceKopecks: accounts.isEmpty ? nil : currentBalance(accounts),
+                                       balanceKopecks: reserveAccounts.isEmpty ? nil : reserveBalance(),
+                                       accountNames: reserveAccounts.map(\.name),
                                        bufferKopecks: Int64(reserveBufferRubles) * 100)
                 }
                 .sheet(isPresented: $showSearch) {
@@ -289,11 +290,11 @@ struct OperationsHomeView: View {
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        if accounts.isEmpty {
+                        if accounts.isEmpty || browser.history.reserveAccounts.isEmpty {
                             Text("—").font(.title3.weight(.semibold))
-                            Text("добавьте счета").font(.caption).foregroundStyle(.secondary)
+                            Text(accounts.isEmpty ? "добавьте счета" : "выберите счета в настройках").font(.caption).foregroundStyle(.secondary)
                         } else {
-                            let reserve = FinancialEngine.monthReserve(balanceKopecks: currentBalance(accounts), forecast: f)
+                            let reserve = FinancialEngine.monthReserve(balanceKopecks: reserveBalance(), forecast: f)
                             Text(signedRubles(reserve))
                                 .font(.title3.weight(.semibold))
                                 .foregroundStyle(reserveColor(reserve))
@@ -323,7 +324,7 @@ struct OperationsHomeView: View {
 
     private func reserveCaption(_ reserve: Int64) -> String {
         switch FinancialEngine.reserveStatus(reserve, bufferKopecks: Int64(reserveBufferRubles) * 100) {
-        case .fine: return "хватит"
+        case .fine: return "с запасом"
         case .tight: return "впритык"
         case .short: return "не хватает"
         }
@@ -449,6 +450,11 @@ struct OperationsHomeView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .contentShape(Rectangle())
+    }
+
+    /// The balance of the accounts the reserve counts (money put aside is not in it).
+    private func reserveBalance() -> Int64 {
+        presentation.value("reserveBalance") { browser.history.reserveBalanceKopecks }
     }
 
     /// Accounts and groups selected for the main screen's current balance.

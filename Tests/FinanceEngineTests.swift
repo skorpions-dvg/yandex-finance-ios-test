@@ -260,11 +260,18 @@ struct FinanceEngineTests {
             FinancialEngine.UpcomingPayment(title: "УК Жилищник", amountKopecks: 20_000, date: at(7, 15), isIncome: false, overdue: false),
             FinancialEngine.UpcomingPayment(title: "Rush", amountKopecks: 249, date: at(7, 20), isIncome: false, overdue: false),
         ], "rent and phone are still expected this month; this month's salary already came")
-        // Variable baseline: median 30 000, quartiles 29 250 and 30 750. 12 000 in 10 days is a pace of 1.24,
-        // so the rest of the month adds 12 000 × 21 / 10 = 25 200 to the 12 000 spent and 20 249 still expected.
-        require(forecast.projectedExpenseKopecks == 57_449, "spent + recurring still expected + variable tail")
-        require(forecast.projectedExpenseLowKopecks == 56_819 && forecast.projectedExpenseHighKopecks == 58_079, "range from the interpolated quartiles")
-        require(forecast.projectedIncomeKopecks == 100_000 && forecast.projectedBalanceKopecks == 42_551,
+        // Variable baseline: median 30 000, quartiles 29 250 and 30 750. The usual daily rate (base / 31) is blended
+        // with this month's own (12 000 in 10 days) with the weight 30 : 10, and carries over the 21 days left.
+        func blendedTail(_ base: Double, spent: Double, elapsed: Double, daysLeft: Double) -> Int64 {
+            let rate = (base / 31 * 30 + spent / elapsed * elapsed) / (30 + elapsed)
+            return Int64((rate * daysLeft).rounded())
+        }
+        let expectedTail10 = blendedTail(30_000, spent: 12_000, elapsed: 10, daysLeft: 21)
+        require(forecast.projectedExpenseKopecks == 12_000 + 20_249 + expectedTail10, "spent + recurring still expected + variable tail")
+        require(forecast.projectedExpenseLowKopecks == 12_000 + 20_249 + blendedTail(29_250, spent: 12_000, elapsed: 10, daysLeft: 21)
+                && forecast.projectedExpenseHighKopecks == 12_000 + 20_249 + blendedTail(30_750, spent: 12_000, elapsed: 10, daysLeft: 21),
+                "range from the interpolated quartiles")
+        require(forecast.projectedIncomeKopecks == 100_000 && forecast.projectedBalanceKopecks == 100_000 - forecast.projectedExpenseKopecks,
                 "salary already received, no other income usual")
         require(forecast.previousMonthIncomeKopecks == 100_000, "previous month income")
 
@@ -281,10 +288,29 @@ struct FinanceEngineTests {
         let bigStart = history + [op(-60_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(7, 1))]
         let early = FinancialEngine.monthForecast(bigStart, now: at(7, 2), calendar: calendar)
         require(early.oneOffKopecks == 60_000, "a purchase far above the usual spending is one-off")
-        let pace = 1 + (0.6 - 1) * 2.0 / 7
-        let expectedTail = Int64((30_000.0 / 31 * pace * 29).rounded())
+        let expectedTail = blendedTail(30_000, spent: 0, elapsed: 2, daysLeft: 29)
         require(early.projectedExpenseKopecks == 60_000 + 20_249 + expectedTail,
-                "the one-off counts as spent but does not drive the pace; the empty pace is floored at 0.6 and softened")
+                "the one-off counts as spent but does not drive the rate; the usual rate is only slightly pulled by the empty first days")
+
+        // The forecast must not jump from day to day. Real purchases (day 1, 4 and 8) move the month by their own amount;
+        // what is left of a day's change after taking that amount out is the forecast's own reaction, and it stays small.
+        let purchases: [Int: Int64] = [1: 3_000, 4: 2_500, 8: 4_000]
+        let withShop = history + purchases.map { day, amount in
+            op(-amount, kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(7, day))
+        }
+        var maxReaction = 0.0
+        var previousValue: Int64?
+        var trace: [Int64] = []
+        for day in 2...12 {
+            let value = FinancialEngine.monthForecast(withShop, now: at(7, day), calendar: calendar).projectedExpenseKopecks
+            trace.append(value)
+            if let previousValue {
+                let reaction = value - previousValue - (purchases[day] ?? 0)
+                maxReaction = max(maxReaction, Double(abs(reaction)) / Double(previousValue))
+            }
+            previousValue = value
+        }
+        require(maxReaction < 0.04, "apart from the purchases themselves the forecast moves by less than 4 % a day (it moved by \(maxReaction): \(trace))")
 
         // Last month brought 200 000 and 100 000 was spent; this month 100 000 came and 100 000 is gone in 6 days.
         let lowerIncome = [
@@ -425,14 +451,56 @@ struct FinanceEngineTests {
                                                      projectedExpenseLowKopecks: 117_098, projectedExpenseHighKopecks: 144_877,
                                                      projectedIncomeKopecks: 11_000, previousMonthIncomeKopecks: 252_693,
                                                      typicalIrregularIncomeKopecks: 224_000, irregularIncomeSoFarKopecks: 11_000,
-                                                     oneOffKopecks: 0, upcoming: [], historyMonths: 3, baselineMonths: [],
+                                                     oneOffKopecks: 0,
+                                                     upcoming: [
+                                                        FinancialEngine.UpcomingPayment(title: "Зарплата", amountKopecks: 50_000, date: Date(timeIntervalSince1970: 2_000_000_000),
+                                                                                        isIncome: true, overdue: false),
+                                                        FinancialEngine.UpcomingPayment(title: "Аванс", amountKopecks: 30_000, date: Date(timeIntervalSince1970: 1_900_000_000),
+                                                                                        isIncome: true, overdue: true),
+                                                        FinancialEngine.UpcomingPayment(title: "Аренда", amountKopecks: 20_000, date: Date(timeIntervalSince1970: 2_000_000_100),
+                                                                                        isIncome: false, overdue: false),
+                                                     ], historyMonths: 3, baselineMonths: [],
                                                      elapsedDays: 6, daysInMonth: 31)
         let reserve = FinancialEngine.monthReserve(balanceKopecks: 80_460, forecast: forecast)
-        require(reserve == 80_460 - (129_940 - 24_913), "reserve = balance minus the spending still expected this month")
-        require(FinancialEngine.reserveStatus(reserve, bufferKopecks: 25_000) == .short, "negative reserve is short")
+        require(forecast.expectedIncomeLeftKopecks == 50_000, "a regular income whose day passed without it arriving is not counted")
+        require(reserve == 80_460 - (129_940 - 24_913) + 50_000, "reserve = balance minus the spending still expected plus the regular income still expected")
+        let range = FinancialEngine.monthReserveRange(balanceKopecks: 80_460, forecast: forecast)
+        require(range.low == 80_460 - (144_877 - 24_913) + 50_000 && range.high == 80_460 - (117_098 - 24_913) + 50_000
+                && range.low <= reserve && reserve <= range.high, "the range follows the low and high spending")
+        require(FinancialEngine.monthReserveWithTypicalIncome(balanceKopecks: 80_460, forecast: forecast) == reserve + (224_000 - 11_000),
+                "with the usual irregular income only the part that has not come yet is added")
+        require(FinancialEngine.reserveStatus(FinancialEngine.monthReserve(balanceKopecks: 10_000, forecast: forecast), bufferKopecks: 25_000) == .short,
+                "a negative reserve is short")
+        require(FinancialEngine.reserveStatus(reserve, bufferKopecks: 30_000) == .tight, "a reserve below the buffer is tight")
         require(FinancialEngine.reserveStatus(8_400, bufferKopecks: 25_000) == .tight, "below the buffer is tight")
         require(FinancialEngine.reserveStatus(25_000, bufferKopecks: 25_000) == .fine, "at least the buffer is fine")
         require(FinancialEngine.reserveStatus(0, bufferKopecks: 25_000) == .tight, "zero is tight, not short")
+    }
+
+    static func testReserveAccounts() {
+        let day = Date(timeIntervalSince1970: 1_760_000_000)
+        let group = AccountGroup(name: "Копилки")
+        let card = Account(name: "Карта", icon: "creditcard", color: "yellow", startBalanceKopecks: 10_000, startDate: day)
+        let savings = Account(name: "Копилка", icon: "banknote", color: "green", groupID: group.id, startBalanceKopecks: 80_000, startDate: day)
+        let hidden = Account(name: "Скрытый", icon: "banknote", color: "gray", startBalanceKopecks: 5_000, startDate: day, showsBalance: false)
+        var history = SavedHistory()
+        history.accountGroups = [group]
+        history.accounts = [card, savings, hidden]
+        require(history.reserveBalanceKopecks == 90_000, "by default the reserve counts every account of the balance")
+        history.setReserveCounting(false, accountIDs: [savings.id])
+        require(history.reserveBalanceKopecks == 10_000, "money put aside is out of the reserve")
+        require(history.accounts?.first { $0.id == savings.id }?.contributesToBalance(groups: [group]) == true,
+                "but it stays in the current balance")
+        history.setReserveCounting(true, accountIDs: [savings.id, hidden.id])
+        require(history.reserveBalanceKopecks == 90_000, "an account that is not in the balance never enters the reserve")
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history))
+            require(restored.accounts == history.accounts, "the choice survives a backup")
+            let old = try JSONDecoder().decode(Account.self, from: Data("""
+                {"id":"00000000-0000-0000-0000-000000000001","name":"Старый","icon":"banknote","color":"green","startBalanceKopecks":0,"startDate":0,"showsBalance":true,"tracksBankCard":false}
+                """.utf8))
+            require(old.countsInReserve == nil && old.contributesToReserve(groups: []), "old accounts are counted")
+        } catch { require(false, "reserve accounts backup failed: \(error)") }
     }
 
     static func testManualOperations() {
@@ -1535,6 +1603,7 @@ struct FinanceEngineTests {
         testCardToSaveTransfer()
         testOperationLooks()
         testOtherShrinks()
+        testReserveAccounts()
         testAccountMovements()
         testReportSeries()
         testAccountSeries()
