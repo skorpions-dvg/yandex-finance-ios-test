@@ -133,7 +133,6 @@ struct OperationsHomeView: View {
                     ForecastDetailView(forecast: presentation.forecast(browser.history),
                                        balanceKopecks: reserveAccounts.isEmpty ? nil : reserveBalance(),
                                        accountNames: reserveAccounts.map(\.name),
-                                       bufferKopecks: Int64(reserveBufferRubles) * 100,
                                        browser: browser, presentation: presentation)
                 }
                 .sheet(isPresented: $showSearch) {

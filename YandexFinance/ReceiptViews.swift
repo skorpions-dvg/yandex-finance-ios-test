@@ -108,22 +108,25 @@ struct ReceiptSection: View {
         let files = self.files
         Section {
             VStack(alignment: .leading, spacing: 12) {
-                Menu {
-                    if VNDocumentCameraViewController.isSupported {
-                        Button { screen = .scanner } label: { Label("Сканировать", systemImage: "doc.viewfinder") }
-                    }
-                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                        Button { screen = .camera } label: { Label("Камера", systemImage: "camera") }
-                    }
-                    Button { showGallery = true } label: { Label("Из галереи", systemImage: "photo.on.rectangle") }
-                    Button { showFiles = true } label: { Label("Документ", systemImage: "doc") }
-                } label: {
-                    HStack {
-                        Label("Добавить чек", systemImage: "doc.badge.plus")
-                        Spacer()
+                // Only the dots are the menu: it opens from them at the right edge, and the title is not part of the
+                // animation (when the whole row was the menu, its label was cut off while the menu closed).
+                HStack {
+                    Label("Добавить чек", systemImage: "doc.badge.plus")
+                    Spacer()
+                    Menu {
+                        if VNDocumentCameraViewController.isSupported {
+                            Button { screen = .scanner } label: { Label("Сканировать", systemImage: "doc.viewfinder") }
+                        }
+                        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                            Button { screen = .camera } label: { Label("Камера", systemImage: "camera") }
+                        }
+                        Button { showGallery = true } label: { Label("Из галереи", systemImage: "photo.on.rectangle") }
+                        Button { showFiles = true } label: { Label("Документ", systemImage: "doc") }
+                    } label: {
                         Image(systemName: "ellipsis")
+                            .frame(width: 44, height: 32)
+                            .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
                 }
                 if !files.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {

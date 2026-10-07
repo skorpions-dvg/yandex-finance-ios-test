@@ -5,10 +5,14 @@ struct ForecastDetailView: View {
     /// Balance of the accounts the reserve counts; nil when there are none.
     let balanceKopecks: Int64?
     let accountNames: [String]
-    let bufferKopecks: Int64
     let browser: BankBrowser
     let presentation: FinancePresentationCache
+    /// The same setting the main screen reads: below this balance the end-of-month reserve turns yellow.
+    @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
+    @FocusState private var bufferFocused: Bool
     @Environment(\.dismiss) private var dismiss
+
+    private var bufferKopecks: Int64 { Int64(reserveBufferRubles) * 100 }
 
     var body: some View {
         NavigationStack {
@@ -22,6 +26,10 @@ struct ForecastDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Закрыть", systemImage: "xmark") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Готово") { bufferFocused = false }
                 }
             }
         }
@@ -53,7 +61,30 @@ struct ForecastDetailView: View {
                 Text("Выберите счета, из которых считать запас: Настройки → «Запас до конца месяца»")
                     .foregroundStyle(.secondary)
             }
+            bufferRow
         }.glassRows()
+    }
+
+    /// The threshold of the yellow colour: a number to type or to step with «−» and «+».
+    private var bufferRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Остаток ниже")
+                TextField("0", value: $reserveBufferRubles, format: .number.grouping(.automatic))
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .focused($bufferFocused)
+                    .frame(maxWidth: 110)
+                Text("₽").foregroundStyle(.secondary)
+                Spacer()
+                Stepper("", value: $reserveBufferRubles, in: 0...500_000, step: 5_000).labelsHidden()
+            }
+            .onChange(of: reserveBufferRubles) { _, value in
+                if value < 0 { reserveBufferRubles = 0 } else if value > 500_000 { reserveBufferRubles = 500_000 }
+            }
+            Text("Красный — если до конца месяца не хватает, жёлтый — если остаток ниже этой суммы.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private var forecastSection: some View {
