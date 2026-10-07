@@ -391,7 +391,7 @@ struct OperationsHomeView: View {
                     Spacer()
                     Text(signedRubles(dayTotal(group.operations)))
                 }
-            }.listRowBackground(GlassRowBackground())
+            }.listRowBackground(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.82))
         }
     }
 
