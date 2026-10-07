@@ -17,6 +17,18 @@ struct FinanceEngineTests {
                                 providers: providers, kind: kind, componentAmountsKopecks: components)
     }
 
+    static func testAppLockLogic() {
+        for good in ["0000", "1234", "9876"] { require(AppLockLogic.isValid(pin: good), "a code of four digits: \(good)") }
+        for bad in ["", "123", "12345", "12a4", "١٢٣٤", " 123", "12 4", "-123"] { require(!AppLockLogic.isValid(pin: bad), "not a code: \(bad)") }
+        let pauses = (0...9).map { AppLockLogic.lockoutSeconds(afterFailures: $0) }
+        require(pauses == [0, 0, 0, 0, 0, 30, 60, 300, 900, 900], "no pause for the first four wrong codes, then a growing one")
+        let left = Date(timeIntervalSince1970: 1_000_000)
+        require(AppLockLogic.shouldLock(backgroundedAt: left, now: left, afterSeconds: 0), "at once locks immediately")
+        require(!AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(59), afterSeconds: 60), "a minute is not over yet")
+        require(AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(60), afterSeconds: 60), "a minute is over")
+        require(AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(-5), afterSeconds: 900), "a clock set back locks")
+    }
+
     static func testReceipts() {
         let first = ReceiptLogic.fileName(id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!)
         let second = ReceiptLogic.fileName()
@@ -1871,6 +1883,7 @@ struct FinanceEngineTests {
         testReportEngine()
         testRegularPayments()
         testReceipts()
+        testAppLockLogic()
         testAccountMovements()
         testReportSeries()
         testAccountSeries()

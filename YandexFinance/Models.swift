@@ -942,6 +942,34 @@ enum ReceiptLogic {
     }
 }
 
+// MARK: - App lock
+
+/// The rules of the app lock that do not need the system: what a code is, how long the pauses after wrong codes are
+/// and when the app asks for the code again.
+enum AppLockLogic {
+    /// Wrong codes in a row before the first pause.
+    static let attemptsBeforePause = 5
+
+    static func isValid(pin: String) -> Bool {
+        pin.count == 4 && pin.allSatisfy { $0 >= "0" && $0 <= "9" }
+    }
+
+    /// The pause after this many wrong codes in a row: none before the fifth, then 30 s, 1 min, 5 min, 15 min.
+    static func lockoutSeconds(afterFailures failures: Int) -> Int {
+        if failures < attemptsBeforePause { return 0 }
+        if failures == attemptsBeforePause { return 30 }
+        if failures == attemptsBeforePause + 1 { return 60 }
+        if failures == attemptsBeforePause + 2 { return 300 }
+        return 900
+    }
+
+    /// The app locks when it was away for `afterSeconds` or longer; a clock set back counts as being away too.
+    static func shouldLock(backgroundedAt: Date, now: Date, afterSeconds: Int) -> Bool {
+        let away = now.timeIntervalSince(backgroundedAt)
+        return away < 0 || away >= Double(afterSeconds)
+    }
+}
+
 /// Plain JSON copy of everything the app keeps, for the user's own backup.
 enum HistoryBackup {
     static let formatVersion = 1

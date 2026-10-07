@@ -6,18 +6,32 @@ import UniformTypeIdentifiers
 struct YandexFinanceApp: App {
     @StateObject private var browser = BankBrowser()
     @StateObject private var wallpaper = WallpaperStore()
+    @StateObject private var lock = AppLock()
     @AppStorage("appearanceTheme") private var appearanceTheme = AppTheme.system.rawValue
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
-            ContentView(browser: browser)
-                .environmentObject(wallpaper)
-                .preferredColorScheme(AppTheme(rawValue: appearanceTheme)?.colorScheme)
-                .onAppear { if scenePhase == .active { browser.becameActive() } }
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { browser.becameActive() }
-                    else { browser.becameInactive() }
+            ZStack {
+                ContentView(browser: browser)
+                    .environmentObject(wallpaper)
+                    .environmentObject(lock)
+                if lock.isLocked {
+                    LockScreenView(lock: lock)
+                } else if lock.hasPIN && scenePhase != .active {
+                    PrivacyCover()
                 }
+            }
+            .preferredColorScheme(AppTheme(rawValue: appearanceTheme)?.colorScheme)
+            .onAppear { if scenePhase == .active { browser.becameActive() } }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    lock.becameActive()
+                    browser.becameActive()
+                } else {
+                    if phase == .background { lock.enteredBackground() }
+                    browser.becameInactive()
+                }
+            }
         }
     }
 }
@@ -585,6 +599,7 @@ struct SettingsView: View {
     @AppStorage("appearanceTheme") private var appearanceTheme = AppTheme.system.rawValue
     @State private var navigationPath = NavigationPath()
     var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
+    @EnvironmentObject private var lock: AppLock
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
     @State private var exportedBackup: BackupDocument?
@@ -624,6 +639,7 @@ struct SettingsView: View {
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
                     NavigationLink("Запас до конца месяца") { ReserveAccountsView(browser: browser) }
+                    NavigationLink("Безопасность") { SecuritySettingsView(lock: lock) }
                 }.glassRows()
                 Section {
                     Button("Страница банка") { browser.bankPageVisible = true }
