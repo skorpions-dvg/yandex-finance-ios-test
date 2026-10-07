@@ -114,7 +114,7 @@ struct WallpaperBackground: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
-            .overlay((colorScheme == .dark ? Color.black : Color.white).opacity(colorScheme == .dark ? 0.28 : 0.58))
+            .overlay(Color.black.opacity(colorScheme == .dark ? 0.28 : 0))
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
