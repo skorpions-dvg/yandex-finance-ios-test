@@ -202,7 +202,7 @@ private struct LensTabBar: View {
             ZStack(alignment: .leading) {
                 IdleCapsule(progress: progress, segment: segment, height: bar.size.height)
                     .opacity(held ? 0 : 1)
-                TabLabels(selection: selection, select: select)
+                TabLabels(selection: selection, held: held, select: select)
                     // Under the drop only its magnified copy shows: the real labels are cut out there, no doubling.
                     .mask { LabelCutout(drag: drag, held: held, segment: segment, outerHeight: bar.size.height + inset * 2) }
             }
@@ -257,13 +257,15 @@ private struct IdleCapsule: View {
 /// Icons and titles. They redraw only when the chosen tab changes, and then the new icon plays its animation.
 private struct TabLabels: View {
     @ObservedObject var selection: TabBarSelection
+    /// While the drop is held only its copy is blue; the real labels light up again where it lands.
+    let held: Bool
     let select: (Int) -> Void
     @State private var plays = [0, 0, 0]
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(0..<3, id: \.self) { index in
-                let active = selection.active == index + 1
+                let active = !held && selection.active == index + 1
                 VStack(spacing: 4) {
                     icon(index)
                         .font(.title3)
