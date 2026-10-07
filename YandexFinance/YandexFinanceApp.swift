@@ -362,30 +362,41 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("Журнал проверок") }.listRowBackground(GlassRowBackground())
                 Section {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Button("Экспортировать резервную копию (JSON)") {
                             do { exportedBackup = BackupDocument(data: try browser.backupData()) }
                             catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
                         }
                         .disabled(!browser.storageAvailable || browser.busy)
-                        Text("Сохранить операции, счета и правила в файл JSON.").font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Text("Операции, счета и правила в JSON.").font(.caption2).foregroundStyle(.secondary)
                     }
-                    VStack(alignment: .leading, spacing: 3) {
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    VStack(alignment: .leading, spacing: 2) {
                         Button("Восстановить из копии (JSON)") { showBackupImporter = true }
                             .disabled(browser.busy)
-                        Text("Заменить данные приложения сохранённой копией JSON.").font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Text("Восстановить данные из JSON.").font(.caption2).foregroundStyle(.secondary)
                     }
-                    VStack(alignment: .leading, spacing: 3) {
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    VStack(alignment: .leading, spacing: 2) {
                         Button("Импортировать PDF-выписки") { browser.syncSixMonthsHistory() }
                             .disabled(!browser.storageAvailable || browser.busy)
-                        Text("Выбрать одну или несколько выписок счёта и Сейва.").font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Text("Одна или несколько выписок.").font(.caption2).foregroundStyle(.secondary)
                     }
-                    VStack(alignment: .leading, spacing: 3) {
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    VStack(alignment: .leading, spacing: 2) {
                         Button("Импортировать разметку категорий") { showCategoryImporter = true }
                             .disabled(!browser.storageAvailable || browser.busy)
-                        Text("Применить категории из JSON после просмотра изменений.").font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Text("Категории из JSON с просмотром.").font(.caption2).foregroundStyle(.secondary)
                     }
-                } header: { Text("Файлы и данные") }.listRowBackground(GlassRowBackground())
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                } header: { Text("Файлы и данные") }
+                .font(.subheadline)
+                .environment(\.defaultMinListRowHeight, 40)
+                .listRowBackground(GlassRowBackground())
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
                             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
