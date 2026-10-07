@@ -16,9 +16,9 @@ struct YandexFinanceApp: App {
                     .environmentObject(wallpaper)
                     .environmentObject(lock)
                 if lock.isLocked {
-                    LockScreenView(lock: lock)
-                } else if lock.hasPIN && scenePhase != .active {
-                    PrivacyCover()
+                    LockScreenView(lock: lock).environmentObject(wallpaper)
+                } else if lock.hasPIN && scenePhase != .active && !lock.coverSuppressed {
+                    PrivacyCover().environmentObject(wallpaper)
                 }
             }
             .preferredColorScheme(AppTheme(rawValue: appearanceTheme)?.colorScheme)

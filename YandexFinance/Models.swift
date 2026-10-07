@@ -964,7 +964,9 @@ enum AppLockLogic {
     }
 
     /// The app locks when it was away for `afterSeconds` or longer; a clock set back counts as being away too.
+    /// A negative `afterSeconds` means «only at launch»: coming back from the background never asks for the code.
     static func shouldLock(backgroundedAt: Date, now: Date, afterSeconds: Int) -> Bool {
+        if afterSeconds < 0 { return false }
         let away = now.timeIntervalSince(backgroundedAt)
         return away < 0 || away >= Double(afterSeconds)
     }
@@ -991,7 +993,7 @@ enum HistoryBackup {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let envelope = try? decoder.decode(Envelope.self, from: data) else {
-            throw AppFailure(message: "Это не резервная копия Finance Test или файл повреждён.")
+            throw AppFailure(message: "Это не резервная копия Horizon или файл повреждён.")
         }
         guard envelope.format <= formatVersion else {
             throw AppFailure(message: "Копия сделана более новой версией приложения. Обновите приложение и повторите.")

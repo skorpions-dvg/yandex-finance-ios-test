@@ -57,10 +57,13 @@ final class AppLock: ObservableObject {
     @Published var biometricsEnabled: Bool {
         didSet { UserDefaults.standard.set(biometricsEnabled, forKey: "lockBiometrics") }
     }
-    /// Seconds in the background after which the app asks for the code again; 0 — at once.
+    /// Seconds in the background after which the app asks for the code again; 0 — at once, -1 — only at launch.
     @Published var lockAfterSeconds: Int {
         didSet { UserDefaults.standard.set(lockAfterSeconds, forKey: "lockAfterSeconds") }
     }
+    /// True while the system asks for Face ID and shortly after: the cover for the switcher of apps must not appear then.
+    @Published private(set) var coverSuppressed = false
+    private var suppressTask: Task<Void, Never>?
     private var backgroundedAt: Date?
 
     init() {
@@ -68,7 +71,12 @@ final class AppLock: ObservableObject {
         hasPIN = stored
         isLocked = stored
         biometricsEnabled = stored && UserDefaults.standard.bool(forKey: "lockBiometrics")
-        lockAfterSeconds = UserDefaults.standard.object(forKey: "lockAfterSeconds") as? Int ?? 60
+        // The first version asked at once after every minimize; since this one the default is «only at launch».
+        if UserDefaults.standard.integer(forKey: "lockSettingsVersion") < 2 {
+            UserDefaults.standard.set(-1, forKey: "lockAfterSeconds")
+            UserDefaults.standard.set(2, forKey: "lockSettingsVersion")
+        }
+        lockAfterSeconds = UserDefaults.standard.object(forKey: "lockAfterSeconds") as? Int ?? -1
     }
 
     var biometricsAvailable: Bool {
@@ -119,7 +127,17 @@ final class AppLock: ObservableObject {
         return delay > 0 ? .lockedOut(seconds: delay) : .wrong(left: max(0, AppLockLogic.attemptsBeforePause - record.failures))
     }
 
+    private func restoreCoverSoon() {
+        suppressTask?.cancel()
+        suppressTask = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if !Task.isCancelled { coverSuppressed = false }
+        }
+    }
+
     func authenticate(reason: String, deviceOwner: Bool) async -> Bool {
+        coverSuppressed = true
+        defer { restoreCoverSoon() }
         let context = LAContext()
         let policy: LAPolicy = deviceOwner ? .deviceOwnerAuthentication : .deviceOwnerAuthenticationWithBiometrics
         var error: NSError?
@@ -129,7 +147,7 @@ final class AppLock: ObservableObject {
 
     func unlockWithBiometrics() async {
         guard isLocked, biometricsEnabled else { return }
-        if await authenticate(reason: "Открыть Finance Test", deviceOwner: false) { isLocked = false }
+        if await authenticate(reason: "Открыть Horizon", deviceOwner: false) { isLocked = false }
     }
 
     /// «Forgot the code»: the passcode or Face ID of the phone itself switches the code off, so access is never lost.

@@ -237,6 +237,8 @@ struct WallpaperSettingsView: View {
                                         BuiltinWallpaperImage(preset: preset)
                                     }
                                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                                    // The photo is larger than its tile: it must not take the taps of the tiles around it.
+                                    .allowsHitTesting(false)
                                 }
                                     .frame(height: 125)
                                     .overlay(alignment: .topTrailing) {
@@ -248,6 +250,7 @@ struct WallpaperSettingsView: View {
                                     .clipShape(.rect(cornerRadius: 18))
                                 Text(preset.name).font(.subheadline).foregroundStyle(.primary)
                             }
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(wallpaper.selection == preset.id ? [.isSelected] : [])
@@ -267,6 +270,7 @@ struct WallpaperSettingsView: View {
                             GeometryReader { geometry in
                                 Image(uiImage: image).resizable().scaledToFill()
                                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                                    .allowsHitTesting(false)
                             }
                                 .frame(height: 150)
                                 .overlay(alignment: .topTrailing) {
@@ -275,6 +279,7 @@ struct WallpaperSettingsView: View {
                                     }
                                 }
                                 .clipShape(.rect(cornerRadius: 18))
+                                .contentShape(Rectangle())
                         }.buttonStyle(.plain).disabled(loading).accessibilityLabel("Использовать своё изображение")
                     }
                     if loading { ProgressView("Подготовка изображения…") }

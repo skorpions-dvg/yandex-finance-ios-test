@@ -27,6 +27,7 @@ struct FinanceEngineTests {
         require(!AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(59), afterSeconds: 60), "a minute is not over yet")
         require(AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(60), afterSeconds: 60), "a minute is over")
         require(AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(-5), afterSeconds: 900), "a clock set back locks")
+        require(!AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(86_400), afterSeconds: -1), "only at launch: a day away does not lock")
     }
 
     static func testReceipts() {

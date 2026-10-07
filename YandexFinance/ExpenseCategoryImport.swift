@@ -44,7 +44,7 @@ struct ExpenseCategoryImport: Codable {
             throw AppFailure(message: "Выбран список для ручного разбора. Для импорта нужен файл разметки категорий, в названии которого есть «category-plan» или «Разметка».")
         }
         guard object["format"] as? String == "finance-test-category-plan-v1" else {
-            throw AppFailure(message: "Это не разметка категорий Finance Test. Выберите файл «category-plan» или «Разметка».")
+            throw AppFailure(message: "Это не разметка категорий Horizon. Выберите файл «category-plan» или «Разметка».")
         }
         guard let plan = try? JSONDecoder().decode(Self.self, from: data) else {
             throw AppFailure(message: "В разметке отсутствуют нужные поля или неверно записаны данные. Нужен исходный JSON без изменений.")

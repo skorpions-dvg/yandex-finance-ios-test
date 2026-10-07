@@ -75,7 +75,7 @@ struct LockScreenView: View {
 
     var body: some View {
         ZStack {
-            Color(uiColor: .systemBackground).ignoresSafeArea()
+            LockBackground()
             VStack(spacing: 28) {
                 Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
                 PinPad(title: "Введите код", message: message,
@@ -95,8 +95,19 @@ struct LockScreenView: View {
             }
             .padding(24)
         }
+        .environment(\.colorScheme, .dark)
         // Face ID is asked at once, and again every time the app locks.
         .task(id: lock.isLocked) { if lock.isLocked { await lock.unlockWithBiometrics() } }
+    }
+}
+
+/// The wallpaper of the app, dimmed, behind the code and in the switcher of apps.
+struct LockBackground: View {
+    var body: some View {
+        ZStack {
+            WallpaperBackground()
+            Color.black.opacity(0.35).ignoresSafeArea()
+        }
     }
 }
 
@@ -104,9 +115,10 @@ struct LockScreenView: View {
 struct PrivacyCover: View {
     var body: some View {
         ZStack {
-            Color(uiColor: .systemBackground).ignoresSafeArea()
+            LockBackground()
             Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
         }
+        .environment(\.colorScheme, .dark)
     }
 }
 
@@ -194,7 +206,7 @@ struct SecuritySettingsView: View {
     private var faceID: Binding<Bool> {
         Binding(get: { lock.biometricsEnabled }, set: { enabled in
             if enabled {
-                Task { if await lock.authenticate(reason: "Включить Face ID для Finance Test", deviceOwner: false) { lock.biometricsEnabled = true } }
+                Task { if await lock.authenticate(reason: "Включить Face ID для Horizon", deviceOwner: false) { lock.biometricsEnabled = true } }
             } else {
                 lock.biometricsEnabled = false
             }
@@ -220,6 +232,7 @@ struct SecuritySettingsView: View {
                 Section {
                     Toggle("Face ID", isOn: faceID).disabled(!lock.biometricsAvailable)
                     Picker("Блокировать", selection: $lock.lockAfterSeconds) {
+                        Text("Только при запуске").tag(-1)
                         Text("Сразу").tag(0)
                         Text("Через 1 минуту").tag(60)
                         Text("Через 5 минут").tag(300)
