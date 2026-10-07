@@ -711,7 +711,7 @@ private struct FlowContent: View {
                 ForEach(points) { point in
                     LineMark(x: .value("Дата", point.bucket.start), y: .value("Сумма", Double(point.incomeKopecks) / 100), series: .value("Вид", "Доходы"))
                         .foregroundStyle(.green).interpolationMethod(.monotone)
-                    LineMark(x: .value("Дата", point.bucket.start), y: .value("Сумма", Double(point.expenseKopecks) / 100), series: .value("Вид", "Расходы"))
+                    LineMark(x: .value("Дата", point.bucket.start), y: .value("Сумма", Double(max(0, point.expenseKopecks)) / 100), series: .value("Вид", "Расходы"))
                         .foregroundStyle(Color.primary.opacity(0.7)).interpolationMethod(.monotone)
                 }
             }
