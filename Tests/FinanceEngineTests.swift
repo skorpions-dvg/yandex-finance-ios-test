@@ -17,6 +17,60 @@ struct FinanceEngineTests {
                                 providers: providers, kind: kind, componentAmountsKopecks: components)
     }
 
+    static func testRegularPayments() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ year: Int, _ month: Int, _ day: Int, _ hour: Int = 10) -> Date {
+            calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
+        }
+        func pattern(_ days: Int, _ last: Date, _ amount: Int64 = 210_000) -> FinancialEngine.RecurringPattern {
+            FinancialEngine.RecurringPattern(title: "Тестовая подписка", isIncome: false,
+                                             intervalDays: days, typicalAmountKopecks: amount, lastDate: last)
+        }
+        let weekly = pattern(7, date(2032, 1, 1))
+        require(RegularPayments.nextDate(of: weekly, now: date(2032, 1, 8, 18), calendar: calendar) == date(2032, 1, 8),
+                "weekly next date includes today even after payment time")
+        require(RegularPayments.nextDate(of: weekly, now: date(2032, 1, 9), calendar: calendar) == date(2032, 1, 15),
+                "weekly next date skips past occurrences")
+        require(RegularPayments.nextDate(of: pattern(14, date(2032, 1, 1)), now: date(2032, 1, 16), calendar: calendar) == date(2032, 1, 29),
+                "fortnightly date advances in 14-day steps")
+        require(RegularPayments.nextDate(of: pattern(30, date(2031, 1, 31)), now: date(2031, 2, 1), calendar: calendar) == date(2031, 2, 28),
+                "monthly payment on the 31st clamps to the end of February")
+        require(RegularPayments.nextDate(of: pattern(30, date(2032, 1, 31)), now: date(2032, 2, 1), calendar: calendar) == date(2032, 2, 29),
+                "monthly payment respects leap February")
+        require(RegularPayments.nextDate(of: pattern(30, date(2031, 1, 31)), now: date(2031, 3, 1), calendar: calendar) == date(2031, 3, 28),
+                "monthly date uses the same consecutive calendar steps as the forecast")
+        require(RegularPayments.nextDate(of: pattern(365, date(2031, 3, 1)), now: date(2031, 3, 2), calendar: calendar) == date(2032, 3, 1),
+                "annual date advances a calendar year across leap February")
+        require(RegularPayments.nextDate(of: pattern(365, date(2032, 2, 29)), now: date(2034, 1, 1), calendar: calendar) == date(2034, 2, 28),
+                "annual date advances until it is not before today")
+        require(RegularPayments.nextDate(of: weekly, now: date(2032, 1, 1), calendar: calendar) == date(2032, 1, 8),
+                "the last recorded payment is not repeated as the next payment")
+
+        require(RegularPayments.monthlyKopecks(of: pattern(7, weekly.lastDate, 100)) == 429,
+                "weekly monthly estimate rounds to kopecks")
+        require(RegularPayments.monthlyKopecks(of: pattern(14, weekly.lastDate, 100)) == 214,
+                "fortnightly monthly estimate uses 30 over 14")
+        require(RegularPayments.monthlyKopecks(of: pattern(30, weekly.lastDate)) == 210_000,
+                "monthly amount stays exact")
+        require(RegularPayments.monthlyKopecks(of: pattern(365, weekly.lastDate, 102)) == 9,
+                "annual monthly estimate divides by 12 and rounds half up")
+        require(RegularPayments.monthlyKopecks(of: pattern(7, weekly.lastDate, 0)) == 0,
+                "zero monthly estimate remains zero")
+        require(RegularPayments.monthlyKopecks(of: pattern(7, weekly.lastDate, 700_000_000_007)) == 3_000_000_000_030,
+                "monthly estimate retains whole-kopeck precision for large amounts")
+        for (days, title) in [(7, "Каждую неделю"), (14, "Раз в две недели"), (30, "Каждый месяц"), (365, "Раз в год"), (5, "Раз в 5 дн.")] {
+            require(RegularPayments.periodTitle(intervalDays: days) == title, "regular payment title for \(days) days")
+        }
+
+        var daylightCalendar = calendar
+        daylightCalendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let beforeDST = daylightCalendar.date(from: DateComponents(year: 2032, month: 3, day: 7, hour: 10))!
+        let expected = daylightCalendar.date(from: DateComponents(year: 2032, month: 3, day: 14, hour: 10))!
+        require(RegularPayments.nextDate(of: pattern(7, beforeDST), now: beforeDST, calendar: daylightCalendar) == expected,
+                "weekly payment keeps local time across daylight saving")
+    }
+
     static func testPeriodSelection() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -1763,6 +1817,7 @@ struct FinanceEngineTests {
         testOtherShrinks()
         testReserveAccounts()
         testReportEngine()
+        testRegularPayments()
         testAccountMovements()
         testReportSeries()
         testAccountSeries()

@@ -6,6 +6,8 @@ struct ForecastDetailView: View {
     let balanceKopecks: Int64?
     let accountNames: [String]
     let bufferKopecks: Int64
+    let browser: BankBrowser
+    let presentation: FinancePresentationCache
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -98,6 +100,11 @@ struct ForecastDetailView: View {
                         .font(.subheadline)
                     }
                 }
+            }
+            NavigationLink {
+                RegularPaymentsView(browser: browser, presentation: presentation)
+            } label: {
+                Label("Все регулярные платежи", systemImage: "arrow.triangle.2.circlepath")
             }
             if !f.baselineMonths.isEmpty {
                 DisclosureGroup("Как посчитано") {
