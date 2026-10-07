@@ -70,25 +70,26 @@ struct OperationsHomeView: View {
                         busyRow
                     }
                     Section {
-                        DisclosureGroup(isExpanded: Binding(
-                            get: { isHistoryExpanded },
-                            set: { expanded in
-                                withAnimation(reduceMotion ? nil : .smooth(duration: 0.32)) {
-                                    historyExpanded = expanded
-                                }
-                            }
-                        )) {
-                            if historyCount == 0 {
-                                Text("За этот период операций нет")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                daySections
-                            }
-                        } label: {
+                        VStack(spacing: 0) {
                             historyHeader
+                            RollingHistory(expanded: isHistoryExpanded) {
+                                VStack(alignment: .leading, spacing: 18) {
+                                    if historyCount == 0 {
+                                        Text("За этот период операций нет")
+                                            .foregroundStyle(.secondary)
+                                            .padding(18)
+                                    } else {
+                                        daySections
+                                    }
+                                }
+                                .padding(.top, 18)
+                                .padding(.bottom, 4)
+                            }
                         }
-                        .tint(.primary)
-                    }.listRowBackground(GlassRowBackground())
+                    }
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                 }
                 .appSurface()
                 .listStyle(.insetGrouped)
@@ -330,13 +331,26 @@ struct OperationsHomeView: View {
     
     // MARK: - History Header
     private var historyHeader: some View {
-        HStack {
-            Text("Операции")
-                .font(.headline)
-            Text("\(historyCount)")
-                .foregroundStyle(.secondary)
-            Spacer()
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.42)) {
+                historyExpanded = !isHistoryExpanded
+            }
+        } label: {
+            HStack {
+                Text("Операции").font(.headline)
+                Text("\(historyCount)").foregroundStyle(.secondary)
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .rotationEffect(.degrees(isHistoryExpanded ? 0 : -90))
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .background(.thinMaterial, in: .rect(cornerRadius: 24))
+        .accessibilityValue(isHistoryExpanded ? "Развёрнуто" : "Свёрнуто")
     }
     
     // MARK: - Day Sections
@@ -373,7 +387,7 @@ struct OperationsHomeView: View {
 
     private var daySections: some View {
         ForEach(dayGroups, id: \.day) { group in
-            Group {
+            VStack(spacing: 8) {
                 HStack {
                     Text(group.day.formatted(.dateTime.weekday(.wide).day().month(.wide).year()))
                     Spacer()
@@ -381,26 +395,43 @@ struct OperationsHomeView: View {
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .listRowSeparator(.hidden)
+                .padding(.horizontal, 18)
 
-                ForEach(group.operations) { op in
-                    if op.isManual {
-                        Button {
-                            editedOperation = browser.history.manualOperations?.first { $0.id == op.manualID }
-                        } label: {
-                            OperationRow(operation: op, input: resolvedInput(for: op)).foregroundStyle(.primary)
+                VStack(spacing: 0) {
+                    ForEach(group.operations) { op in
+                        Group {
+                            if op.isManual {
+                                Button {
+                                    editedOperation = browser.history.manualOperations?.first { $0.id == op.manualID }
+                                } label: {
+                                    historyOperationRow(op)
+                                }
+                            } else {
+                                NavigationLink {
+                                    OperationDetailView(browser: browser, operation: op)
+                                } label: {
+                                    historyOperationRow(op)
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
-                    } else {
-                        NavigationLink {
-                            OperationDetailView(browser: browser, operation: op)
-                        } label: {
-                            OperationRow(operation: op, input: resolvedInput(for: op))
-                        }
+                        if op.id != group.operations.last?.id { Divider().padding(.leading, 62) }
                     }
                 }
-            }.listRowBackground(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.82))
+                .background(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.82), in: .rect(cornerRadius: 24))
+            }
         }
+    }
+
+    private func historyOperationRow(_ operation: BankOperation) -> some View {
+        HStack(spacing: 8) {
+            OperationRow(operation: operation, input: resolvedInput(for: operation))
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
     }
 
     /// Accounts and groups selected for the main screen's current balance.
@@ -418,6 +449,43 @@ struct OperationsHomeView: View {
     private func rubles(_ kopecks: Int64) -> String {
         (Decimal(kopecks) / 100).formatted(.currency(code: "RUB"))
     }
+}
+
+/// A stationary list is revealed from its top edge; rows keep their shape instead of scaling or fading.
+private struct RollingHistory<Content: View>: View {
+    let expanded: Bool
+    let content: Content
+    @State private var contentHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(expanded: Bool, @ViewBuilder content: () -> Content) {
+        self.expanded = expanded
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.preference(key: RollingHistoryHeight.self, value: geometry.size.height)
+                }
+            }
+            .frame(height: expanded ? (contentHeight > 0 ? contentHeight : nil) : 0, alignment: .top)
+            .clipped()
+            .allowsHitTesting(expanded)
+            .accessibilityHidden(!expanded)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.42), value: expanded)
+            .onPreferenceChange(RollingHistoryHeight.self) { height in
+                if abs(height - contentHeight) > 0.5 { contentHeight = height }
+            }
+    }
+}
+
+private struct RollingHistoryHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 // MARK: - Custom Dates Sheet
