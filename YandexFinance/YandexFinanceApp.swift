@@ -974,6 +974,15 @@ struct FinanceDashboardView: View {
     @State private var selectedStart: Date = monthStart(of: Date())
     @State private var showCalendar = false
     @State private var calendarDate = Date()
+    @State private var pendingTrendStart: Date?
+
+    private func selectTrendPeriod(_ start: Date) {
+        if unit == .year {
+            pendingTrendStart = start
+            unit = .month
+        }
+        selectedStart = start
+    }
 
     private func shift(_ step: Int) {
         if let start = shiftedReportStart(selectedStart, unit: unit, by: step) { selectedStart = start }
@@ -1089,6 +1098,11 @@ struct FinanceDashboardView: View {
         let _ = presentation.prepare(browser.history)
         let inputs = presentation.inputs(browser.history)
         let report = presentation.report(browser.history, interval: interval)
+        let trend = presentation.value("report-series:\(unit.rawValue):\(interval.start):\(interval.end)") {
+            ReportSeries.periods(inputs: inputs,
+                                 intervals: ReportSeries.intervals(selectedStart: selectedStart, unit: unit),
+                                 taxonomy: browser.history.expenseTaxonomy)
+        }
         let periods = reportComparisonPeriods(start: selectedStart, unit: unit)
         let comparison = presentation.value("comparison:\(periods.current):\(periods.previous)") {
             FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous, taxonomy: browser.history.expenseTaxonomy)
@@ -1103,6 +1117,11 @@ struct FinanceDashboardView: View {
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: unit) { _, newUnit in
+                        if let start = pendingTrendStart {
+                            selectedStart = start
+                            pendingTrendStart = nil
+                            return
+                        }
                         // Keep the period that contains the shown one (or today, if the shown one is current).
                         let anchor = min(Date(), max(selectedStart, interval.start))
                         selectedStart = reportStart(of: anchor, unit: newUnit)
@@ -1126,6 +1145,10 @@ struct FinanceDashboardView: View {
                 }.glassRows()
                 Section("Расходы по категориям") {
                     CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
+                }.glassRows()
+
+                Section("Динамика") {
+                    TrendChart(periods: trend, unit: unit, onSelect: selectTrendPeriod)
                 }.glassRows()
 
                 // Income and expenses open straight into subcategories and operations.

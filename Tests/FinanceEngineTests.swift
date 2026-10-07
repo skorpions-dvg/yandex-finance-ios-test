@@ -1033,6 +1033,40 @@ struct FinanceEngineTests {
         require(history.accountBalances(card, at: [start.addingTimeInterval(-86400)]) == [100_000], "before the start the entered balance")
     }
 
+    static func testReportSeries() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ year: Int, _ month: Int, _ day: Int = 1) -> Date {
+            calendar.date(from: DateComponents(year: year, month: month, day: day))!
+        }
+        let months = ReportSeries.intervals(selectedStart: date(2032, 6, 17), unit: .month, calendar: calendar)
+        require(months.count == 12 && months.first?.start == date(2031, 7) && months.last?.start == date(2032, 6),
+                "trend: twelve months ending with the selected month")
+        for index in 1..<months.count {
+            require(months[index - 1].end == months[index].start, "trend months have no gaps or overlap")
+        }
+        let year = ReportSeries.intervals(selectedStart: date(2032, 6, 17), unit: .year, calendar: calendar)
+        require(year.count == 12 && year.first?.start == date(2032, 1) && year.last?.end == date(2033, 1),
+                "year trend contains January through December of that year")
+        let days = ReportSeries.intervals(selectedStart: date(2032, 3, 3), unit: .day, calendar: calendar)
+        require(days.count == 14 && days.first?.start == date(2032, 2, 19) && days.last?.end == date(2032, 3, 4),
+                "day trend contains fourteen days, including leap February")
+        for index in 1..<days.count {
+            require(days[index - 1].end == days[index].start, "trend days have no gaps or overlap")
+        }
+        let inputs = [op(-10_000, kind: "expense", date: "2032-05-02T10:00:00Z"),
+                      op(6_000, kind: "income", date: "2032-05-04T10:00:00Z"),
+                      op(-30_000, kind: "expense", date: "2032-06-02T10:00:00Z")]
+        let periods = ReportSeries.periods(inputs: inputs, intervals: months, taxonomy: .builtin)
+        require(ReportSeries.average(periods) == ReportSeries.Average(incomeKopecks: 3_000, expenseKopecks: 20_000, activePeriods: 2),
+                "trend average includes only months with operations, including months without income")
+        require(periods[10].report.netExpenseKopecks == 10_000 && periods[11].report.netExpenseKopecks == 30_000,
+                "trend amounts come from the existing reports for each interval")
+        let empty = ReportSeries.periods(inputs: [], intervals: months, taxonomy: .builtin)
+        require(ReportSeries.average(empty) == ReportSeries.Average(incomeKopecks: 0, expenseKopecks: 0, activePeriods: 0),
+                "empty trend has a zero average without division by zero")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1425,6 +1459,7 @@ struct FinanceEngineTests {
         testOperationLooks()
         testOtherShrinks()
         testAccountMovements()
+        testReportSeries()
 
         print("Finance engine tests passed")
     }
