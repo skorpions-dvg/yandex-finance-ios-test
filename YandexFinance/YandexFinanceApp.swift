@@ -33,6 +33,8 @@ struct ContentView: View {
     /// Live page position for the tab bar lens. A reference, so scrolling never re-evaluates this view or its pages.
     @State private var tabProgress = TabBarProgress()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Height the floating tab bar takes at the bottom of every page.
+    static let barSpace: CGFloat = 74
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
@@ -43,7 +45,8 @@ struct ContentView: View {
             // One opaque wallpaper covers the mounted bank page without hiding its WebView.
             WallpaperBackground()
                 .opacity(browser.bankPageVisible ? 0 : 1)
-            VStack(spacing: 0) {
+            // The pages run under the tab bar, which floats over them, so their content shows through its glass.
+            ZStack(alignment: .bottom) {
                 GeometryReader { geometry in
                     let width = geometry.size.width
                     let height = geometry.size.height
@@ -53,15 +56,19 @@ struct ContentView: View {
                     ScrollViewReader { proxy in
                     ScrollView(.horizontal) {
                         HStack(spacing: 0) {
+                            // Clear Liquid Glass: the wallpaper and the edge of the page show through, nothing is dimmed.
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
-                                .frame(width: drawerWidth, height: max(0, height - 24), alignment: .top)
-                                .glassEffect(.regular, in: .rect(cornerRadius: 24))
-                                .clipShape(.rect(cornerRadius: 24))
+                                .frame(width: drawerWidth, height: max(0, height - Self.barSpace - 16), alignment: .top)
+                                .glassEffect(.clear, in: .rect(cornerRadius: 28))
+                                .clipShape(.rect(cornerRadius: 28))
                                 .padding(.horizontal, 8)
+                                .padding(.top, 4)
                                 .frame(height: height, alignment: .top)
                                 .id(0)
                             OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
                                                onHorizontalPan: { _, _, _ in })
+                                // Lists scroll under the floating bar and stop with their last row above it.
+                                .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.barSpace) }
                                 .frame(width: width, height: height)
                                 .overlay {
                                     // While the accounts are open, a tap on the visible edge of the page closes them.
@@ -72,10 +79,14 @@ struct ContentView: View {
                                 .id(1)
                             FinanceDashboardView(browser: browser, presentation: presentation,
                                                  onHorizontalPan: { _, _, _ in })
+                                // Lists scroll under the floating bar and stop with their last row above it.
+                                .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.barSpace) }
                                 .frame(width: width, height: height)
                                 .id(2)
                             SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
                                          onHorizontalPan: { _, _, _ in })
+                                // Lists scroll under the floating bar and stop with their last row above it.
+                                .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.barSpace) }
                                 .frame(width: width, height: height)
                                 .id(3)
                         }
@@ -97,8 +108,6 @@ struct ContentView: View {
                 }
 
                 LensTabBar(progress: tabProgress, reduceMotion: reduceMotion, select: selectTab)
-                    .padding(6)
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.7))
                     .padding(.horizontal, 40)
                     .padding(.bottom, 8)
             }
@@ -167,45 +176,61 @@ private struct LensTabBar: View {
     private let tabs: [(title: String, symbol: String)] = [
         ("Операции", "list.bullet.rectangle"), ("Отчёты", "chart.pie"), ("Настройки", "gearshape")
     ]
+    private let inset: CGFloat = 6
 
     var body: some View {
         GeometryReader { bar in
-            let segment = bar.size.width / 3
+            let segment = (bar.size.width - inset * 2) / 3
             let position = dragged ?? progress.value
-            // Between two tabs the lens swells like a drop of glass and settles back on a tab.
-            let between = abs(position - position.rounded()) * 2
-            let swell: CGFloat = held ? 1.22 : 1 + 0.18 * between
+            let lensX = inset + (position - 1) * segment
             ZStack(alignment: .leading) {
-                // The only glass in the bar: untinted, interactive Liquid Glass that bends what is behind it.
-                // The bar has no fill of its own, so the wallpaper really passes under the lens.
-                GlassEffectContainer {
-                    Color.clear
-                        .frame(width: segment, height: bar.size.height)
-                        .glassEffect(.regular.interactive(), in: .capsule)
-                }
-                .scaleEffect(x: swell, y: 1 + (swell - 1) * 0.6 - between * 0.08)
-                .offset(x: (position - 1) * segment)
-                .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.62), value: held)
-                HStack(spacing: 0) {
-                    ForEach(0..<3, id: \.self) { index in
-                        let active = Int(position.rounded()) == index + 1
-                        let distance = CGFloat(index + 1) - position
-                        let aside: CGFloat = held ? (distance >= 0 ? 1 : -1) * 8 * max(0, 1 - abs(distance)) : 0
-                        VStack(spacing: 4) {
-                            Image(systemName: tabs[index].symbol).font(.title3)
-                            Text(tabs[index].title).font(.caption2.weight(.medium))
+                // The bar: frosted Liquid Glass, so the content under it is blurred, as in Telegram.
+                ZStack(alignment: .leading) {
+                    // At rest the chosen tab is a soft light capsule.
+                    Capsule()
+                        .fill(Color.primary.opacity(0.1))
+                        .frame(width: segment, height: bar.size.height - inset * 2)
+                        .offset(x: (position - 1) * segment)
+                        .opacity(held ? 0 : 1)
+                    HStack(spacing: 0) {
+                        ForEach(0..<3, id: \.self) { index in
+                            let active = Int(position.rounded()) == index + 1
+                            let distance = CGFloat(index + 1) - position
+                            let aside: CGFloat = held ? (distance >= 0 ? 1 : -1) * 8 * max(0, 1 - abs(distance)) : 0
+                            VStack(spacing: 4) {
+                                Image(systemName: tabs[index].symbol).font(.title3)
+                                Text(tabs[index].title).font(.caption2.weight(.medium))
+                            }
+                            .foregroundStyle(active ? Color.accentColor : Color.primary)
+                            .offset(x: abs(distance) < 0.15 ? 0 : aside)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
+                            .accessibilityAction { select(index + 1) }
                         }
-                        .foregroundStyle(active ? Color.accentColor : Color.primary)
-                        .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
-                        .offset(x: abs(distance) < 0.15 ? 0 : aside)
-                        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.7), value: held)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
-                        .accessibilityAction { select(index + 1) }
                     }
                 }
+                .padding(inset)
+                .glassEffect(.regular, in: .capsule)
+
+                // Held: a clear glass bubble, taller than the bar, travels with the finger.
+                Capsule()
+                    .fill(Color.white.opacity(0.04))
+                    .glassEffect(.clear.interactive(), in: .capsule)
+                    .overlay(
+                        Capsule().strokeBorder(
+                            LinearGradient(colors: [.white.opacity(0.7), .white.opacity(0.08), .cyan.opacity(0.35)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            lineWidth: 1.2)
+                    )
+                    .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+                    .frame(width: segment * 1.08, height: bar.size.height * 1.38)
+                    .offset(x: lensX - segment * 0.04)
+                    .scaleEffect(held ? 1 : 0.7, anchor: .center)
+                    .opacity(held ? 1 : 0)
+                    .allowsHitTesting(false)
             }
+            .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.66), value: held)
             .contentShape(Rectangle())
             // One gesture for the whole bar: a tap selects the tab under the finger, a drag carries the lens.
             .highPriorityGesture(
@@ -213,11 +238,11 @@ private struct LensTabBar: View {
                     .onChanged { drag in
                         if held || abs(drag.translation.width) > 6 {
                             held = true
-                            dragged = min(3, max(1, drag.location.x / max(1, segment) + 0.5))
+                            dragged = min(3, max(1, (drag.location.x - inset) / max(1, segment) + 0.5))
                         }
                     }
                     .onEnded { drag in
-                        let tab = Int(min(3, max(1, drag.location.x / max(1, segment) + 0.5)).rounded())
+                        let tab = Int(min(3, max(1, (drag.location.x - inset) / max(1, segment) + 0.5)).rounded())
                         withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
                             held = false
                             dragged = abs(progress.value - CGFloat(tab)) < 0.02 ? nil : CGFloat(tab)
@@ -231,7 +256,7 @@ private struct LensTabBar: View {
                     }
             )
         }
-        .frame(height: 50)
+        .frame(height: 62)
         .onChange(of: progress.value) { _, value in
             if !held, let target = dragged, abs(value - target) < 0.02 { dragged = nil }
         }
