@@ -76,6 +76,15 @@ struct ContentView: View {
                                 .frame(width: max(0, width - drawerPosition))
                                 .contentShape(Rectangle())
                                 .onTapGesture { closeAccounts() }
+                                .gesture(HorizontalPanCapture(onPan: { translation, velocity, ended in
+                                    if ended {
+                                        animate {
+                                            drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
+                                                                                           width: drawerWidth, wasOpen: true)
+                                            drawerTranslation = 0
+                                        }
+                                    } else { drawerTranslation = min(0, translation) }
+                                }, excludesHorizontalScrollViews: false))
                                 .offset(x: drawerPosition)
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true,
                                          onHorizontalPan: { translation, velocity, ended in
