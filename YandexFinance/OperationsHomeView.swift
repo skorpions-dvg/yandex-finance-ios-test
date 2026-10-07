@@ -70,14 +70,25 @@ struct OperationsHomeView: View {
                         busyRow
                     }
                     Section {
-                        historyHeader
+                        DisclosureGroup(isExpanded: Binding(
+                            get: { isHistoryExpanded },
+                            set: { expanded in
+                                withAnimation(reduceMotion ? nil : .smooth(duration: 0.32)) {
+                                    historyExpanded = expanded
+                                }
+                            }
+                        )) {
+                            if historyCount == 0 {
+                                Text("За этот период операций нет")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                daySections
+                            }
+                        } label: {
+                            historyHeader
+                        }
+                        .tint(.primary)
                     }.listRowBackground(GlassRowBackground())
-                    if historyCount == 0 {
-                        Text("За этот период операций нет")
-                            .foregroundStyle(.secondary)
-                    } else if isHistoryExpanded {
-                        daySections
-                    }
                 }
                 .appSurface()
                 .listStyle(.insetGrouped)
@@ -319,22 +330,13 @@ struct OperationsHomeView: View {
     
     // MARK: - History Header
     private var historyHeader: some View {
-        Button(action: {
-            withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) {
-                historyExpanded = !isHistoryExpanded
-            }
-        }) {
-            HStack {
-                Text("Операции")
-                    .font(.headline)
-                Text("\(historyCount)")
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .rotationEffect(.degrees(isHistoryExpanded ? 90 : 0))
-            }
+        HStack {
+            Text("Операции")
+                .font(.headline)
+            Text("\(historyCount)")
+                .foregroundStyle(.secondary)
+            Spacer()
         }
-        .buttonStyle(.plain)
     }
     
     // MARK: - Day Sections
@@ -371,7 +373,16 @@ struct OperationsHomeView: View {
 
     private var daySections: some View {
         ForEach(dayGroups, id: \.day) { group in
-            Section {
+            Group {
+                HStack {
+                    Text(group.day.formatted(.dateTime.weekday(.wide).day().month(.wide).year()))
+                    Spacer()
+                    Text(signedRubles(dayTotal(group.operations)))
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .listRowSeparator(.hidden)
+
                 ForEach(group.operations) { op in
                     if op.isManual {
                         Button {
@@ -387,12 +398,6 @@ struct OperationsHomeView: View {
                             OperationRow(operation: op, input: resolvedInput(for: op))
                         }
                     }
-                }
-            } header: {
-                HStack {
-                    Text(group.day.formatted(.dateTime.weekday(.wide).day().month(.wide).year()))
-                    Spacer()
-                    Text(signedRubles(dayTotal(group.operations)))
                 }
             }.listRowBackground(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.82))
         }
