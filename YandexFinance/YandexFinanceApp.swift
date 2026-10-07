@@ -682,12 +682,14 @@ struct FinanceDashboardView: View {
     }
 
     private func changeRow(_ title: String, _ change: FinancialEngine.MonthlyChange) -> some View {
-        LabeledContent(title) {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(rubles(change.current))
                 Text("было \(rubles(change.previous)) · \(signed(change.delta)) · \(relativeText(change))")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
