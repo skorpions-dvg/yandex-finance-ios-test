@@ -411,6 +411,9 @@ struct SettingsView: View {
             .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
             .navigationTitle("Настройки")
         }
+        // View-destination links (Обои, Категории) are not part of the path, so a new identity is what
+        // reliably returns to the root when the Settings tab is tapped again.
+        .id(resetToken)
         .onChange(of: resetToken) { _, _ in navigationPath = NavigationPath() }
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
                       document: exportedBackup, contentType: .json,

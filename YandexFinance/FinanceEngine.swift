@@ -427,7 +427,9 @@ enum FinancialEngine {
             guard date >= interval.start && date < interval.end else { continue }
             operationCount += 1
             let assessment = classify(operation)
-            if assessment.type != .cancelled {
+            // The Save statement repeats the deposit side of transfers the card statement already has.
+            let fromSaveStatement = operation.paymentMethod == "Сейв (выписка)"
+            if assessment.type != .cancelled && !fromSaveStatement {
                 if operation.amountKopecks < 0 { bankDebit += -operation.amountKopecks }
                 if operation.amountKopecks > 0 { bankCredit += operation.amountKopecks }
             }
@@ -445,6 +447,7 @@ enum FinancialEngine {
             case .split:
                 add(&expenseGroups, "Сплит", nil, abs(assessment.originalAmountKopecks))
             case .internalTransfer:
+                if fromSaveStatement { continue }
                 movement += abs(assessment.originalAmountKopecks)
                 let title = movementCategory(for: operation)
                 var item = movementGroups[title] ?? (0, Int64(0))

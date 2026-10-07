@@ -720,6 +720,8 @@ struct FinanceEngineTests {
         let both = card + [depositIn, depositOut, interest]
         let before = FinancialEngine.report(card, in: interval), after = FinancialEngine.report(both, in: interval)
         require(after.incomeKopecks == before.incomeKopecks + 123 && after.netExpenseKopecks == before.netExpenseKopecks, "both statements add only deposit interest to report")
+        require(after.movementKopecks == before.movementKopecks && after.bankDebitKopecks == before.bankDebitKopecks
+                && after.bankCreditKopecks == before.bankCreditKopecks, "the deposit side of own transfers is not counted twice in movements or card turnover")
         let save = FinancialEngine.saveAccountSummary(both, in: interval), old = FinancialEngine.saveAccountSummary(card, in: interval)
         require(save.toSaveKopecks == old.toSaveKopecks && save.fromSaveKopecks == old.fromSaveKopecks && save.interestIncomeKopecks == old.interestIncomeKopecks + 123, "deposit transfers never double Save totals")
         require(FinancialEngine.accountBalance(startKopecks: 100_000, since: start, tracksBankCard: true, operations: both) == FinancialEngine.accountBalance(startKopecks: 100_000, since: start, tracksBankCard: true, operations: card), "deposit rows do not move card balance")

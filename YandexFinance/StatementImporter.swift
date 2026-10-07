@@ -158,7 +158,7 @@ enum StatementImporter {
                 identity = statementIdentity(signature: signature, occurrence: occurrence)
                 inferred = classify(description: row.description, amount: row.amount, holder: holder)
             } else {
-                let value = normalize(row.description), interest = normalize(row.description).contains("процент")
+                let value = normalize(row.description), interest = row.amount > 0 && value.contains("процент")
                 let digest = SHA256.hash(data: Data("statement-save-v1|\(signature)|\(occurrence)".utf8))
                 identity = "statement-save:" + digest.map { String(format: "%02x", $0) }.joined()
                 if interest { inferred = ("Проценты", "interest_income", [], row.description) }
