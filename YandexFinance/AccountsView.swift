@@ -107,8 +107,7 @@ struct AccountsView: View {
             .listStyle(.plain)
             .font(usesGlass ? .subheadline : .body)
             .scrollContentBackground(.hidden)
-            .gesture(HorizontalPanCapture(onPan: onHorizontalPan, excludesHorizontalScrollViews: false),
-                     including: usesGlass ? .all : .none)
+            .gesture(HorizontalPanCapture(onPan: onHorizontalPan, excludesHorizontalScrollViews: false, enabled: usesGlass))
             .containerBackground(Color.clear, for: .navigation)
             .presentationBackground { WallpaperBackground() }
             .toolbarBackground(usesGlass ? .hidden : .automatic, for: .navigationBar)

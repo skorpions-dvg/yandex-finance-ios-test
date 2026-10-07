@@ -5,6 +5,7 @@ import UIKit
 struct HorizontalPanCapture: UIGestureRecognizerRepresentable {
     var onPan: (CGFloat, CGFloat, Bool) -> Void
     var excludesHorizontalScrollViews = true
+    var enabled = true
 
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
         let pan = UIPanGestureRecognizer()
@@ -13,11 +14,13 @@ struct HorizontalPanCapture: UIGestureRecognizerRepresentable {
         pan.delaysTouchesEnded = false
         pan.delegate = context.coordinator
         context.coordinator.excludesHorizontalScrollViews = excludesHorizontalScrollViews
+        context.coordinator.enabled = enabled
         return pan
     }
 
     func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
         context.coordinator.excludesHorizontalScrollViews = excludesHorizontalScrollViews
+        context.coordinator.enabled = enabled
     }
 
     func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
@@ -36,8 +39,9 @@ struct HorizontalPanCapture: UIGestureRecognizerRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var excludesHorizontalScrollViews = true
+        var enabled = true
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
-            guard let pan = gesture as? UIPanGestureRecognizer else { return false }
+            guard enabled, let pan = gesture as? UIPanGestureRecognizer else { return false }
             let velocity = pan.velocity(in: pan.view?.window)
             return abs(velocity.x) > abs(velocity.y) * 1.5
         }
