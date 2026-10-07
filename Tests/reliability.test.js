@@ -677,7 +677,8 @@ assert.match(appSwift, /selection: \.income\(subcategory: line\.title\)/, 'incom
 assert.match(financeEngine, /technical fallback into financial income|Collector uses .unclassified_income./s, 'unclassified positive movements must not be promoted blindly');
 assert.match(financeTests, /technical unclassified income must stay unknown/, 'Swift tests must cover positive unclassified safety');
 assert.match(financeTests, /cashback with percent text remains cashback income/, 'cashback must beat generic percent wording');
-assert.ok(appSwift.includes('Text("Сборка \\(buildNumber)")'), 'finance screen must expose the installed build number');
+assert.ok(appSwift.includes('CFBundleVersion'), 'settings must expose the installed build number');
+assert.ok(!appSwift.includes('Text("Сборка \\(buildNumber)")'), 'reports must not duplicate the settings build number');
 assert.match(swift, /operationURL == operationURL/, 'identity-less issues should be deduplicated by operation URL');
 
 // v34.4: period changes cannot be inferred solely from dynamic row updates.

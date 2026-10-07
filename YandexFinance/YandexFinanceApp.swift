@@ -356,21 +356,29 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("Журнал проверок") }.listRowBackground(GlassRowBackground())
                 Section {
-                    Button("Экспортировать резервную копию (JSON)") {
-                        do { exportedBackup = BackupDocument(data: try browser.backupData()) }
-                        catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Button("Экспортировать резервную копию (JSON)") {
+                            do { exportedBackup = BackupDocument(data: try browser.backupData()) }
+                            catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
+                        }
+                        .disabled(!browser.storageAvailable || browser.busy)
+                        Text("Сохранить операции, счета и правила в файл JSON.").font(.caption).foregroundStyle(.secondary)
                     }
-                    .disabled(!browser.storageAvailable || browser.busy)
-                    Text("Сохранить операции, счета и правила в файл JSON.").font(.caption).foregroundStyle(.secondary)
-                    Button("Восстановить из копии (JSON)") { showBackupImporter = true }
-                        .disabled(browser.busy)
-                    Text("Заменить данные приложения сохранённой копией JSON.").font(.caption).foregroundStyle(.secondary)
-                    Button("Импортировать PDF-выписки") { browser.syncSixMonthsHistory() }
-                        .disabled(!browser.storageAvailable || browser.busy)
-                    Text("Выбрать одну или несколько выписок счёта и Сейва.").font(.caption).foregroundStyle(.secondary)
-                    Button("Импортировать разметку категорий") { showCategoryImporter = true }
-                        .disabled(!browser.storageAvailable || browser.busy)
-                    Text("Применить категории из JSON после просмотра изменений.").font(.caption).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Button("Восстановить из копии (JSON)") { showBackupImporter = true }
+                            .disabled(browser.busy)
+                        Text("Заменить данные приложения сохранённой копией JSON.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Button("Импортировать PDF-выписки") { browser.syncSixMonthsHistory() }
+                            .disabled(!browser.storageAvailable || browser.busy)
+                        Text("Выбрать одну или несколько выписок счёта и Сейва.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Button("Импортировать разметку категорий") { showCategoryImporter = true }
+                            .disabled(!browser.storageAvailable || browser.busy)
+                        Text("Применить категории из JSON после просмотра изменений.").font(.caption).foregroundStyle(.secondary)
+                    }
                 } header: { Text("Файлы и данные") }.listRowBackground(GlassRowBackground())
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
@@ -666,9 +674,7 @@ struct FinanceDashboardView: View {
         }
     }
 
-    private var buildNumber: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-    }
+
 
     var body: some View {
         // Compute the interval based on the selected month.
@@ -713,8 +719,6 @@ struct FinanceDashboardView: View {
                     }
                     Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("Сборка \(buildNumber)")
-                        .font(.caption2).foregroundStyle(.tertiary)
                 }.listRowBackground(GlassRowBackground())
 
                 Section("К предыдущему месяцу") {
@@ -736,18 +740,7 @@ struct FinanceDashboardView: View {
                     CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
                 }.listRowBackground(GlassRowBackground())
 
-                Section("Состояние данных") {
-                    Toggle("Автообновление", isOn: $browser.autoUpdate)
-                        .disabled(browser.busy)
-                    if !browser.autoUpdate {
-                        Text("Автообновление выключено. Новые операции не будут проверяться автоматически при следующем открытии приложения.")
-                            .foregroundStyle(.orange)
-                    }
-                    if let date = browser.history.lastCompletedSync {
-                        Text("Последняя полная проверка выбранного окна: \(date.formatted(date: .abbreviated, time: .shortened))")
-                    } else {
-                        Text("Полнота обновления ещё не подтверждена").foregroundStyle(.orange)
-                    }
+                Section("Полнота данных") {
                     if !browser.bootstrapComplete {
                         Text("Архив до 01.10.2026 ещё не импортирован. Итоги за старые месяцы будут неполными до импорта PDF-выписки.")
                     }
