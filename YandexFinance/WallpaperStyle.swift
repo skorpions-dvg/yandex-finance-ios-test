@@ -126,6 +126,14 @@ struct GlassRowBackground: View {
     var body: some View { Rectangle().fill(.thinMaterial) }
 }
 
+extension View {
+    /// Translucent rows over the wallpaper with separators strong enough to keep neighbouring rows apart.
+    func glassRows() -> some View {
+        listRowBackground(GlassRowBackground())
+            .listRowSeparatorTint(Color.primary.opacity(0.3))
+    }
+}
+
 /// Resolution-independent artwork shared by the preview and the full-screen background.
 struct BuiltinWallpaperImage: View {
     let preset: BuiltinWallpaper

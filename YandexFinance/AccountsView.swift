@@ -107,7 +107,6 @@ struct AccountsView: View {
             .listStyle(.plain)
             .font(usesGlass ? .subheadline : .body)
             .scrollContentBackground(.hidden)
-            .gesture(HorizontalPanCapture(onPan: onHorizontalPan, excludesHorizontalScrollViews: false, enabled: usesGlass))
             .containerBackground(Color.clear, for: .navigation)
             .presentationBackground { WallpaperBackground() }
             .toolbarBackground(usesGlass ? .hidden : .automatic, for: .navigationBar)
@@ -395,7 +394,7 @@ struct AccountFormView: View {
                 if infoVisible { infoBanner }
                 Section {
                     TextField("Название", text: $name)
-                } footer: { Text("Например, «Наличные» или «Карта».") }.listRowBackground(GlassRowBackground())
+                } footer: { Text("Например, «Наличные» или «Карта».") }.glassRows()
                 Section {
                     Button { showsIcons.toggle() } label: {
                         HStack {
@@ -410,11 +409,14 @@ struct AccountFormView: View {
                         Text("Цвет")
                         colorPicker
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(account == nil ? "Начальный баланс" : "Остаток на момент создания")
                         TextField("Сумма", text: $balanceText).keyboardType(.decimalPad)
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.18)))
                     }
                     if let account {
                         Text("Текущий остаток: \(accountMoney(accountBalance(account, history: browser.history)))")
@@ -423,13 +425,13 @@ struct AccountFormView: View {
                     if parsedBalance == nil {
                         Text("Введите сумму с точностью до копеек.").font(.footnote).foregroundStyle(.red)
                     }
-                } footer: { Text("Остаток на счёте сейчас. Дальше он меняется операциями.") }.listRowBackground(GlassRowBackground())
+                } footer: { Text("Остаток на счёте сейчас. Дальше он меняется операциями.") }.glassRows()
                 Section {
                     Toggle("Учитывать счёт в текущем остатке", isOn: $showsBalance)
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
                 Section {
                     Toggle("Карта Яндекс Банка", isOn: $tracksBankCard)
-                } footer: { Text("Операции, загруженные из банка, будут менять остаток этого счёта.") }.listRowBackground(GlassRowBackground())
+                } footer: { Text("Операции, загруженные из банка, будут менять остаток этого счёта.") }.glassRows()
                 Section {
                     Picker("Группа", selection: $groupID) {
                         Text("Без группы").tag(nil as UUID?)
@@ -437,11 +439,11 @@ struct AccountFormView: View {
                             Text(group.name).tag(Optional(group.id))
                         }
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
                 if account != nil {
                     Section {
                         Button("Удалить счёт", role: .destructive) { confirmDeletion = true }
-                    }.listRowBackground(GlassRowBackground())
+                    }.glassRows()
                 }
             }
             .tint(.orange)
@@ -589,7 +591,7 @@ struct AccountGroupFormView: View {
                     Toggle("Учитывать в текущем остатке", isOn: $includesInBalance)
                 } footer: {
                     Text("Настройка влияет на текущий остаток и запас на главном экране. Суммы на странице счетов остаются видимыми.")
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             }
                 .appSurface()
                 .navigationTitle(group == nil ? "Новая группа" : "Группа")

@@ -15,10 +15,10 @@ struct UncategorizedReviewView: View {
                     .listRowBackground(Color.clear)
             } else {
                 if !named.isEmpty {
-                    Section("Получатели") { rows(named) }.listRowBackground(GlassRowBackground())
+                    Section("Получатели") { rows(named) }.glassRows()
                 }
                 if !unnamed.isEmpty {
-                    Section("Без названия") { rows(unnamed) }.listRowBackground(GlassRowBackground())
+                    Section("Без названия") { rows(unnamed) }.glassRows()
                 }
                 Section {
                     Text("Осталось: \(groups.reduce(0) { $0 + $1.operations.count }) операций, \(money(groups.reduce(Decimal.zero) { $0 + $1.amountKopecks }))")
@@ -75,7 +75,7 @@ private struct ReviewGroupOperationsView: View {
                     } label: {
                         Text(group.appliesToAll ? "Выбрать категорию для всех" : "Выбрать категорию")
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
                 Section(group.title) {
                     ForEach(group.operations.sorted {
                         (BankDateParser.parse($0.occurredAt) ?? .distantPast) > (BankDateParser.parse($1.occurredAt) ?? .distantPast)
@@ -92,7 +92,7 @@ private struct ReviewGroupOperationsView: View {
                             }.font(.subheadline)
                         }
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             } else {
                 ContentUnavailableView("Всё разобрано", systemImage: "checkmark.circle")
                     .listRowBackground(Color.clear)

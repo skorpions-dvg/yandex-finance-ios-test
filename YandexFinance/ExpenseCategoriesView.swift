@@ -53,17 +53,17 @@ struct ExpenseCategoriesView: View {
                 } label: {
                     Label("Разобрать операции (\(review.reduce(0) { $0 + $1.operations.count }))", systemImage: "checklist")
                 }
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
             Section {
                 Button("Импортировать разметку категорий", systemImage: "square.and.arrow.down") {
                     showCategoryImporter = true
                 }
                 .disabled(browser.busy || !browser.storageAvailable)
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
             Section {
                 Text(Date().formatted(.dateTime.month(.wide).year()))
                     .font(.subheadline).foregroundStyle(.secondary)
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
             Section {
                 ForEach(visibleItems, id: \.self) { item in
                     switch item {
@@ -86,7 +86,7 @@ struct ExpenseCategoriesView: View {
                 }
                 .moveDisabled(!editMode.isEditing)
                 .deleteDisabled(!editMode.isEditing)
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
             if !(browser.history.incomeCategoryRules ?? []).isEmpty {
                 Section("Правила доходов") {
                     ForEach(browser.history.incomeCategoryRules ?? []) { rule in
@@ -99,7 +99,7 @@ struct ExpenseCategoriesView: View {
                             error = browser.message
                         }
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             }
             if !(browser.history.categoryRules ?? []).isEmpty {
                 Section("Правила") {
@@ -116,7 +116,7 @@ struct ExpenseCategoriesView: View {
                             error = browser.message
                         }
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             }
         }
         .listStyle(.plain)
@@ -269,13 +269,13 @@ struct ExpenseCategoryImportPreview: View {
                         }
                         Text("Суммы, даты, счета и история сохранятся. Разметка применяется только к указанным в файле операциям.")
                             .font(.footnote).foregroundStyle(.secondary)
-                    }.listRowBackground(GlassRowBackground())
+                    }.glassRows()
                     Section("Категории назначения") {
                         ForEach(result.destinations.keys.sorted(), id: \.self) { path in
                             LabeledContent(path.replacingOccurrences(of: "/", with: " → "),
                                            value: String(result.destinations[path] ?? 0))
                         }
-                    }.listRowBackground(GlassRowBackground())
+                    }.glassRows()
                 }
             }
             .appSurface()
@@ -334,7 +334,7 @@ private struct ExpenseCategoryFormView: View {
                 if createsGroup {
                     Section {
                         Toggle("Обязательные платежи", isOn: $fixedCosts)
-                    } footer: { Text("Крупные платежи этой группы не считаются разовыми в прогнозе") }.listRowBackground(GlassRowBackground())
+                    } footer: { Text("Крупные платежи этой группы не считаются разовыми в прогнозе") }.glassRows()
                 } else if category == nil {
                     Picker("Группа", selection: $groupID) {
                         Text("Выберите группу").tag(nil as UUID?)
@@ -406,7 +406,7 @@ private struct ExpenseCategoryMergeView: View {
                                     Text(category.name).foregroundStyle(.primary)
                                 }
                             }
-                        }.listRowBackground(GlassRowBackground())
+                        }.glassRows()
                     }
                 }
             }
@@ -457,13 +457,13 @@ struct OperationIncomeCategoryView: View {
                         }
                     }
                 }
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
             if !operation.isManual && applyToAll == nil {
                 Section {
                     Toggle("Для всех поступлений „\(operation.description)“", isOn: $forSender)
                 } footer: {
                     Text("Прошлые и будущие поступления этого отправителя тоже перейдут в эту категорию")
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             }
         }
         .tint(.orange)
@@ -505,13 +505,13 @@ struct OperationExpenseCategoryView: View {
                             }
                         }
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             }
             if applyToAll == nil { Section {
                 Toggle("Для всех операций „\(operation.description)“", isOn: $forPayee)
             } footer: {
                 Text("Прошлые и будущие расходы этого получателя тоже перейдут в эту категорию")
-            }.listRowBackground(GlassRowBackground()) }
+            }.glassRows() }
         }
         .tint(.orange)
         .appSurface()

@@ -22,7 +22,7 @@ struct ForecastDetailView: View {
                         Text("Добавьте счета, чтобы считать запас из остатка")
                             .foregroundStyle(.secondary)
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
                 forecastSection
             }
             .appSurface()
@@ -111,7 +111,7 @@ struct ForecastDetailView: View {
                 Text("Истории пока мало (\(f.historyMonths) мес.), прогноз приблизительный.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-        }.listRowBackground(GlassRowBackground())
+        }.glassRows()
     }
     
     private func balanceLine(_ balance: Int64, scenario: String) -> some View {

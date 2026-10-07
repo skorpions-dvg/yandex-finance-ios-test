@@ -589,10 +589,10 @@ assert.throws(() => parse(groupURL, groupCard.replace('17 марта, 12:34\n+31
 assert.throws(() => parse(groupURL, groupCard + '\n' + purchase, ''), /несколько карточек/);
 assert.throws(() => parse(groupURL, groupCard + '\n' + groupCard, ''), /Несколько разделов/);
 assert.match(appSwift, /@State private var selectedTab = 1/);
-assert.match(appSwift, /NavigationMotion\.pageTarget/);
+assert.match(appSwift, /scrollTargetBehavior\(\.viewAligned/, 'pages move with a native paging scroll view');
 assert.doesNotMatch(appSwift, /tabViewStyle\(\.page/,
   'a native page pan must not compete with the accounts drawer');
-assert.match(appSwift, /NavigationMotion\.drawerShouldOpen/);
+assert.match(appSwift, /AccountsView\(browser: browser, onClose: closeAccounts, usesGlass: true\)[\s\S]{0,800}\.id\(0\)/, 'the accounts are the first page of the same scroll view');
 assert.doesNotMatch(appSwift, /TabView\(selection: \$browser.selectedTab\)/,
   'tab navigation must not broadcast changes to every bank observer');
 assert.match(swift, /bankPageVisible = true/, 'card retry must bring the hidden bank page to the front');
@@ -652,7 +652,7 @@ assert.ok(!/errSecSuccess, let bytes = result as\? Data \{[\s\S]{0,200}write\(to
 assert.match(swift, /Не сохранено после проверки/);
 assert.match(source, /V34\.6\.3 keeps conservative verification/);
 assert.match(source, /перевод между счетами одного клиента/);
-assert.match(appSwift, /Section\(\"Сейв\"\)/);
+assert.doesNotMatch(appSwift, /Section\("Сейв"\)/, 'the Save block was removed from the reports at the user\'s request');
 assert.match(appSwift, /Карта ↔ Сейв/);
 console.log('v25: finance engine handles fractional ISO8601 dates, half-open periods, and surfaces invalid dates.');
 

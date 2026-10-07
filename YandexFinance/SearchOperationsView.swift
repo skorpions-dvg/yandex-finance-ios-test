@@ -46,7 +46,7 @@ struct SearchOperationsView: View {
                                 }
                             }
                         }
-                    }.listRowBackground(GlassRowBackground())
+                    }.glassRows()
                 }
             }
             .sheet(item: $editedOperation) { operation in

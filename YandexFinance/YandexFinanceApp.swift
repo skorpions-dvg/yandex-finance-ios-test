@@ -25,13 +25,11 @@ struct YandexFinanceApp: App {
 @MainActor
 struct ContentView: View {
     @ObservedObject var browser: BankBrowser
+    /// Horizontal page: 0 — accounts drawer, 1 — Операции, 2 — Отчёты, 3 — Настройки.
+    @State private var page: Int? = 1
     @State private var selectedTab = 1
     @State private var settingsReset = 0
     @State private var presentation = FinancePresentationCache()
-    @State private var pageMotion = NavigationTranslation()
-    @State private var drawerOpen = false
-    @State private var drawerMotion = NavigationTranslation()
-    @State private var panSession = NavigationPanSession()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack(alignment: .top) {
@@ -44,41 +42,53 @@ struct ContentView: View {
             WallpaperBackground()
                 .opacity(browser.bankPageVisible ? 0 : 1)
             VStack(spacing: 0) {
-            GeometryReader { geometry in
-                let width = geometry.size.width
-                let drawerWidth = NavigationMotion.drawerWidth(width)
-                ZStack(alignment: .leading) {
-                    MovingPages(motion: pageMotion, tab: selectedTab, width: width) {
+                GeometryReader { geometry in
+                    let width = geometry.size.width
+                    let height = geometry.size.height
+                    let drawerWidth = NavigationMotion.drawerWidth(width)
+                    // A native paging scroll view moves the screens with the finger on the render server: no SwiftUI
+                    // update per frame, and UIKit itself decides between this horizontal swipe and a list's vertical scroll.
+                    ScrollViewReader { proxy in
+                    ScrollView(.horizontal) {
                         HStack(spacing: 0) {
+                            AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
+                                .frame(width: drawerWidth, height: max(0, height - 24), alignment: .top)
+                                .glassEffect(.regular, in: .rect(cornerRadius: 24))
+                                .clipShape(.rect(cornerRadius: 24))
+                                .padding(.horizontal, 8)
+                                .frame(height: height, alignment: .top)
+                                .id(0)
                             OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
-                                               onHorizontalPan: { pan($0, $1, $2, width: width) })
-                                .frame(width: width, height: geometry.size.height)
-                                .allowsHitTesting(selectedTab == 1)
-                                .accessibilityHidden(selectedTab != 1)
+                                               onHorizontalPan: { _, _, _ in })
+                                .frame(width: width, height: height)
+                                .overlay {
+                                    // While the accounts are open, a tap on the visible edge of the page closes them.
+                                    if page == 0 {
+                                        Color.clear.contentShape(Rectangle()).onTapGesture(perform: closeAccounts)
+                                    }
+                                }
+                                .id(1)
                             FinanceDashboardView(browser: browser, presentation: presentation,
-                                                 onHorizontalPan: { pan($0, $1, $2, width: width) })
-                                .frame(width: width, height: geometry.size.height)
-                                .allowsHitTesting(selectedTab == 2)
-                                .accessibilityHidden(selectedTab != 2)
+                                                 onHorizontalPan: { _, _, _ in })
+                                .frame(width: width, height: height)
+                                .id(2)
                             SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
-                                         onHorizontalPan: { pan($0, $1, $2, width: width) })
-                                .frame(width: width, height: geometry.size.height)
-                                .allowsHitTesting(selectedTab == 3)
-                                .accessibilityHidden(selectedTab != 3)
+                                         onHorizontalPan: { _, _, _ in })
+                                .frame(width: width, height: height)
+                                .id(3)
                         }
+                        .scrollTargetLayout()
                     }
-                    .allowsHitTesting(!drawerOpen)
-                    MovingDrawer(motion: drawerMotion, isOpen: drawerOpen, width: width,
-                                 height: geometry.size.height, drawerWidth: drawerWidth,
-                                 onClose: closeAccounts,
-                                 onPan: { drawerPan($0, $1, $2, width: drawerWidth) }) {
-                        AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true,
-                                     onHorizontalPan: { drawerPan($0, $1, $2, width: drawerWidth) })
+                    .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
+                    .scrollPosition(id: $page, anchor: .leading)
+                    .scrollIndicators(.hidden)
+                    .onChange(of: page) { _, newPage in
+                        if let newPage, newPage >= 1 { selectedTab = newPage }
+                    }
+                    // The first layout starts at the leading edge (the accounts); open on the selected tab instead.
+                    .onAppear { proxy.scrollTo(selectedTab, anchor: .leading) }
                     }
                 }
-                .frame(width: width, height: geometry.size.height, alignment: .leading)
-                .clipped()
-            }
 
                 HStack(spacing: 4) {
                     tabButton(1, title: "Операции", symbol: "list.bullet.rectangle")
@@ -124,49 +134,15 @@ struct ContentView: View {
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.3), changes)
     }
 
-    private func openAccounts() {
-        animate { drawerOpen = true; drawerMotion.offset = 0 }
-    }
+    private func openAccounts() { animate { page = 0 } }
 
-    private func closeAccounts() { animate { drawerOpen = false; drawerMotion.offset = 0 } }
-
-    private func drawerPan(_ translation: CGFloat, _ velocity: CGFloat, _ ended: Bool, width: CGFloat) {
-        if ended {
-            animate {
-                drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
-                                                              width: width, wasOpen: true)
-                drawerMotion.offset = 0
-            }
-        } else { drawerMotion.offset = min(0, translation) }
-    }
-
-    private func pan(_ translation: CGFloat, _ velocity: CGFloat, _ ended: Bool, width: CGFloat) {
-        if panSession.route == 0 && translation != 0 { panSession.route = selectedTab == 1 && translation > 0 ? 1 : 2 }
-        if ended {
-            animate {
-                if panSession.route == 1 {
-                    drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
-                                                                  width: NavigationMotion.drawerWidth(width), wasOpen: false)
-                } else if panSession.route == 2 {
-                    selectedTab = NavigationMotion.pageTarget(current: selectedTab, translation: translation, velocity: velocity, width: width)
-                }
-                drawerMotion.offset = 0
-                pageMotion.offset = 0
-            }
-            panSession.route = 0
-        } else if panSession.route == 1 {
-            drawerMotion.offset = max(0, translation)
-        } else {
-            let beyondLastPage = selectedTab == 3 && translation < 0
-            pageMotion.offset = beyondLastPage ? translation * 0.15 : translation
-        }
-    }
+    private func closeAccounts() { animate { page = 1 } }
 
     private func tabButton(_ tab: Int, title: String, symbol: String) -> some View {
         Button {
             if selectedTab == tab && tab == 3 { settingsReset += 1 }
-            panSession.route = 0
-            animate { selectedTab = tab; pageMotion.offset = 0; drawerOpen = false; drawerMotion.offset = 0 }
+            selectedTab = tab
+            animate { page = tab }
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: symbol).font(.title3)
@@ -180,83 +156,6 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
-    }
-}
-
-@MainActor
-private final class NavigationPanSession {
-    var route = 0 // 1: drawer, 2: pages; gesture bookkeeping does not invalidate screens.
-}
-
-/// Only transform layers observe live finger movement. The screens remain stable between pan events.
-@MainActor
-private final class NavigationTranslation: ObservableObject {
-    @Published var offset: CGFloat = 0
-}
-
-@MainActor
-private struct MovingPages<Content: View>: View {
-    @ObservedObject private var motion: NavigationTranslation
-    let tab: Int
-    let width: CGFloat
-    let content: Content
-
-    init(motion: NavigationTranslation, tab: Int, width: CGFloat, @ViewBuilder content: () -> Content) {
-        self.motion = motion
-        self.tab = tab
-        self.width = width
-        self.content = content()
-    }
-
-    var body: some View {
-        content
-            .frame(width: width * 3, alignment: .leading)
-            .offset(x: -CGFloat(tab - 1) * width + motion.offset)
-    }
-}
-
-@MainActor
-private struct MovingDrawer<Content: View>: View {
-    @ObservedObject private var motion: NavigationTranslation
-    let isOpen: Bool
-    let width: CGFloat
-    let height: CGFloat
-    let drawerWidth: CGFloat
-    let onClose: () -> Void
-    let onPan: (CGFloat, CGFloat, Bool) -> Void
-    let content: Content
-
-    init(motion: NavigationTranslation, isOpen: Bool, width: CGFloat, height: CGFloat, drawerWidth: CGFloat,
-         onClose: @escaping () -> Void, onPan: @escaping (CGFloat, CGFloat, Bool) -> Void,
-         @ViewBuilder content: () -> Content) {
-        self.motion = motion
-        self.isOpen = isOpen
-        self.width = width
-        self.height = height
-        self.drawerWidth = drawerWidth
-        self.onClose = onClose
-        self.onPan = onPan
-        self.content = content()
-    }
-
-    var body: some View {
-        let position = NavigationMotion.drawerPosition(translation: motion.offset, width: drawerWidth, wasOpen: isOpen)
-        ZStack(alignment: .topLeading) {
-            Color.clear
-                .frame(width: max(0, width - position))
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onClose)
-                .gesture(HorizontalPanCapture(onPan: onPan, excludesHorizontalScrollViews: false))
-                .offset(x: position)
-            content
-                .frame(width: drawerWidth, height: max(0, height - 24), alignment: .top)
-                .glassEffect(.regular, in: .rect(cornerRadius: 24))
-                .clipShape(.rect(cornerRadius: 24))
-                .offset(x: -(drawerWidth + 8) + position)
-        }
-        .frame(width: width, height: height, alignment: .topLeading)
-        .allowsHitTesting(isOpen)
-        .accessibilityHidden(!isOpen)
     }
 }
 
@@ -280,7 +179,7 @@ struct OperationDetailView: View {
                         }
                     }
                     Text("Итог группы — сумма этих составляющих, не дополнительная операция. Вид поступления пока не определён.").font(.footnote)
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             }
             if let id = browser.history.expenseCategoryID(for: operation),
                let pair = browser.history.expenseCategory(id: id) {
@@ -348,7 +247,7 @@ struct SettingsView: View {
                             Button("Сбросить локальное хранилище", role: .destructive) { confirmStorageReset = true }
                                 .disabled(browser.busy)
                         }
-                    }.listRowBackground(GlassRowBackground())
+                    }.glassRows()
                 }
                 Section {
                     Picker("Тема", selection: $appearanceTheme) {
@@ -363,15 +262,15 @@ struct SettingsView: View {
                     Text("Ниже этой суммы запас до конца месяца показывается жёлтым.")
                         .font(.caption).foregroundStyle(.secondary)
                     NavigationLink("Обои", destination: WallpaperSettingsView())
-                } header: { Text("Отображение") }.listRowBackground(GlassRowBackground())
+                } header: { Text("Отображение") }.glassRows()
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
                 Section {
                     Button("Страница банка") { browser.bankPageVisible = true }
                     Text("Откройте, чтобы войти в банк или посмотреть, что происходит при проверке. Обычно страница скрыта: проверка идёт без неё.")
                         .font(.caption).foregroundStyle(.secondary)
-                } header: { Text("Банк") }.listRowBackground(GlassRowBackground())
+                } header: { Text("Банк") }.glassRows()
                 Section {
                     if browser.busy {
                         HStack { ProgressView(); Text("Обновление операций…"); Spacer(); Button("Остановить") { browser.cancel() } }
@@ -399,7 +298,7 @@ struct SettingsView: View {
                         Text("Автообновление выключено. Новые операции не будут проверяться при открытии приложения. После сброса хранилища это делается специально; включите его после ручной синхронизации.")
                             .font(.caption).foregroundStyle(.orange)
                     }
-                } header: { Text("Обновление") }.listRowBackground(GlassRowBackground())
+                } header: { Text("Обновление") }.glassRows()
                 Section {
                     Text("Сохранено операций: \(browser.history.operations.count)")
                     if let imported = browser.history.statementImportedAt {
@@ -424,7 +323,7 @@ struct SettingsView: View {
                     }
                     Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
                         .font(.footnote).foregroundStyle(.secondary)
-                } header: { Text("Журнал проверок") }.listRowBackground(GlassRowBackground())
+                } header: { Text("Журнал проверок") }.glassRows()
                 Section {
                     VStack(alignment: .leading, spacing: 2) {
                         Button("Экспортировать резервную копию (JSON)") {
@@ -460,7 +359,7 @@ struct SettingsView: View {
                 } header: { Text("Файлы и данные") }
                 .font(.subheadline)
                 .environment(\.defaultMinListRowHeight, 40)
-                .listRowBackground(GlassRowBackground())
+                .glassRows()
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
                             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -483,7 +382,7 @@ struct SettingsView: View {
                                     }
                                 }.padding(.vertical, 4)
                             }
-                        }.listRowBackground(GlassRowBackground())
+                        }.glassRows()
                     }
                 Section {
                     Text("Версия \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · сборка \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
@@ -496,7 +395,6 @@ struct SettingsView: View {
             }
             .contentMargins(.bottom, 16, for: .scrollContent)
             .appSurface()
-            .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
             .navigationTitle("Настройки")
         }
         // View-destination links (Обои, Категории) are not part of the path, so a new identity is what
@@ -645,7 +543,7 @@ struct FinanceCategoryOperationsView: View {
                 LabeledContent("Раздел", value: selection.parentTitle)
                 Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
                     .font(.caption).foregroundStyle(.secondary)
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
 
             Section("Операции") {
                 if visibleOperations.isEmpty {
@@ -669,7 +567,7 @@ struct FinanceCategoryOperationsView: View {
                         }
                     }
                 }
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
         }
         .appSurface()
         .navigationTitle(selection.title)
@@ -774,7 +672,6 @@ struct FinanceDashboardView: View {
         let _ = presentation.prepare(browser.history)
         let inputs = presentation.inputs(browser.history)
         let report = presentation.report(browser.history, interval: interval)
-        let save = presentation.value("save:\(interval.start):\(interval.end)") { FinancialEngine.saveAccountSummary(inputs, in: interval) }
         let periods = monthComparisonPeriods(selectedStart: monthStart)
         let comparison = presentation.value("comparison:\(periods.current):\(periods.previous)") {
             FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous, taxonomy: browser.history.expenseTaxonomy)
@@ -792,7 +689,7 @@ struct FinanceDashboardView: View {
                     .buttonStyle(.borderless)
                 Section("Расходы по категориям") {
                     CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
 
                 // Income and expenses open straight into subcategories and operations.
                 incomeBlock(report, interval: interval)
@@ -814,7 +711,7 @@ struct FinanceDashboardView: View {
                     }
                     Text("Период: \(interval.start.formatted(date: .abbreviated, time: .omitted)) — \(interval.end.addingTimeInterval(-1).formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption).foregroundStyle(.secondary)
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
 
                 Section("К предыдущему месяцу") {
                     if periods.isPartial {
@@ -830,7 +727,7 @@ struct FinanceDashboardView: View {
                     } else {
                         LabeledContent("Рост расходов", value: "—")
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
 
                 Section("Полнота данных") {
                     if !browser.bootstrapComplete {
@@ -840,19 +737,7 @@ struct FinanceDashboardView: View {
                     if issues > 0 { Text("Не прочитано операций: \(issues). Итоги могут быть неполными.").foregroundStyle(.orange) }
                     if browser.busy { ProgressView("Обновление данных…") }
                     Text("Разница доходов и расходов не является остатком на банковских счетах.")
-                }.listRowBackground(GlassRowBackground()).font(.footnote)
-
-                Section("Сейв") {
-                    LabeledContent("В Сейв", value: rubles(save.toSaveKopecks))
-                    LabeledContent("Из Сейва", value: rubles(save.fromSaveKopecks))
-                    LabeledContent("Чистое пополнение", value: signed(save.netTransferKopecks))
-                    if save.interestIncomeKopecks > 0 {
-                        LabeledContent("Начисленные проценты", value: "+" + rubles(save.interestIncomeKopecks))
-                    }
-                    Text("Это движение по Сейву за выбранный месяц, а не текущий остаток на счёте. Переводы Карта ↔ Сейв не входят в доходы и расходы; начисленные банком проценты входят в доходы.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.listRowBackground(GlassRowBackground())
-
+                }.glassRows().font(.footnote)
 
                 Section("Сверка с банком") {
                     LabeledContent("Банковские списания", value: rubles(report.bankDebitKopecks))
@@ -863,16 +748,15 @@ struct FinanceDashboardView: View {
                         Text("В базе есть операции с нераспознанной датой. Их нельзя надёжно отнести к этому месяцу, поэтому сверка с банком может быть неполной.")
                             .font(.caption).foregroundStyle(.orange)
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
 
                 Section("Правила") {
                     Text("Возвраты уменьшают расходы и не считаются доходом. Переводы Карта ↔ Сейв и другие подтверждённые переводы между своими счетами относятся к перемещениям; проценты по Сейву считаются доходом.")
                     Text("Сплит показывается отдельно и пока не входит в итог расходов, пока исходная покупка и платежи не связаны — так мы не создаём двойной расход.")
                     Text("Старое завершённое списание без современного типа считается расходом. Непонятное положительное поступление автоматически доходом не назначается.")
-                }.listRowBackground(GlassRowBackground()).font(.footnote).foregroundStyle(.secondary)
+                }.glassRows().font(.footnote).foregroundStyle(.secondary)
             }
             .appSurface()
-            .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
             .navigationTitle("Отчёты")
         }
     }
@@ -907,7 +791,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Доходы", value: rubles(report.incomeKopecks))
             }
-        }.listRowBackground(GlassRowBackground())
+        }.glassRows()
     }
 
     private func expenseBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
@@ -925,7 +809,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Расходы", value: rubles(report.netExpenseKopecks))
             }
-        }.listRowBackground(GlassRowBackground())
+        }.glassRows()
     }
 
     private func movementBlock(_ report: FinanceReport, interval: DateInterval) -> some View {
@@ -943,7 +827,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Перемещения", value: rubles(report.movementKopecks))
             }
-        }.listRowBackground(GlassRowBackground())
+        }.glassRows()
     }
 
     private func incompleteBlock(_ report: FinanceReport) -> some View {
@@ -975,7 +859,7 @@ struct FinanceDashboardView: View {
             } label: {
                 blockLabel("Не завершено", value: "\(incompleteCount(report)) оп.")
             }
-        }.listRowBackground(GlassRowBackground())
+        }.glassRows()
     }
 
     private func incompleteCount(_ report: FinanceReport) -> Int {

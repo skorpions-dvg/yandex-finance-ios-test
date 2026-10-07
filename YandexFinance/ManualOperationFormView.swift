@@ -80,7 +80,7 @@ struct ManualOperationFormView: View {
                 if operation != nil {
                     Section {
                         Button("Удалить операцию", role: .destructive) { confirmDeletion = true }
-                    }.listRowBackground(GlassRowBackground())
+                    }.glassRows()
                 }
             }
             .scrollDismissesKeyboard(.interactively)
@@ -133,7 +133,7 @@ struct ManualOperationFormView: View {
                     .font(.title.weight(.semibold))
                     .keyboardType(.decimalPad)
                     .foregroundStyle(kind == .income ? Color.green : Color.primary)
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
             if kind == .expense {
                 Section("Категория") {
                     if let group, let subcategory {
@@ -161,7 +161,7 @@ struct ManualOperationFormView: View {
                             Label(name, systemImage: style.icon).foregroundStyle(style.color)
                         }
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             } else if kind == .income {
                 Section {
                     Picker("Категория", selection: $subcategory) {
@@ -170,7 +170,7 @@ struct ManualOperationFormView: View {
                             Text(name).tag(Optional(name))
                         }
                     }
-                }.listRowBackground(GlassRowBackground())
+                }.glassRows()
             }
             Section {
                 if eligibleAccounts.isEmpty {
@@ -187,7 +187,7 @@ struct ManualOperationFormView: View {
                 if kind != .transfer {
                     Text("Операции по карте Яндекс Банка загружаются из банка автоматически")
                 }
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
             Section {
                 HStack {
                     Text("Дата и время")
@@ -202,7 +202,7 @@ struct ManualOperationFormView: View {
                 if let account = accounts.first(where: { $0.id == accountID }), date < account.startDate {
                     Text("Операция до начального остатка сохранится в истории и отчётах, но не изменит остаток счёта.")
                 }
-            }.listRowBackground(GlassRowBackground())
+            }.glassRows()
         }
     }
 

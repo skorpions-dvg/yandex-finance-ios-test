@@ -64,36 +64,32 @@ struct OperationsHomeView: View {
                                 Button("Скрыть", systemImage: "xmark") { lastSavedOperationID = nil }
                                     .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
                             }
-                        }.listRowBackground(GlassRowBackground())
+                        }.glassRows()
                     }
                     if browser.busy {
                         busyRow
                     }
                     Section {
-                        VStack(spacing: 0) {
-                            historyHeader
-                            RollingHistory(expanded: isHistoryExpanded) {
-                                VStack(alignment: .leading, spacing: 18) {
-                                    if historyCount == 0 {
-                                        Text("За этот период операций нет")
-                                            .foregroundStyle(.secondary)
-                                            .padding(18)
-                                    } else {
-                                        daySections
-                                    }
-                                }
-                                .padding(.top, 18)
-                                .padding(.bottom, 4)
-                            }
-                        }
+                        historyHeader
                     }
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
+                    // Ordinary list sections: the list inserts and removes them itself, rolling the days out below the
+                    // header and back up, and only the rows on screen are built.
+                    if isHistoryExpanded {
+                        if historyCount == 0 {
+                            Section {
+                                Text("За этот период операций нет").foregroundStyle(.secondary)
+                            }
+                            .listRowBackground(historyRowBackground)
+                        } else {
+                            daySections
+                        }
+                    }
                 }
                 .appSurface()
                 .listStyle(.insetGrouped)
-                .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
@@ -194,7 +190,7 @@ struct OperationsHomeView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-        }.listRowBackground(GlassRowBackground())
+        }.glassRows()
     }
     
     private var periodIsCustom: Bool {
@@ -297,7 +293,7 @@ struct OperationsHomeView: View {
                 }
                 .buttonStyle(.plain)
             }
-        }.listRowBackground(GlassRowBackground())
+        }.glassRows()
     }
     
     private func reserveColor(_ reserve: Int64) -> Color {
@@ -385,9 +381,40 @@ struct OperationsHomeView: View {
         }
     }
 
+    /// One calm surface for every history row, so rows do not differ in colour over the wallpaper.
+    private var historyRowBackground: Color {
+        Color(uiColor: .secondarySystemGroupedBackground).opacity(0.82)
+    }
+
     private var daySections: some View {
         ForEach(dayGroups, id: \.day) { group in
-            VStack(spacing: 8) {
+            Section {
+                ForEach(group.operations) { op in
+                    Group {
+                        if op.isManual {
+                            Button {
+                                editedOperation = browser.history.manualOperations?.first { $0.id == op.manualID }
+                            } label: {
+                                historyOperationRow(op)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            // The hidden link makes the whole row open the card without a second list chevron.
+                            historyOperationRow(op)
+                                .background {
+                                    NavigationLink {
+                                        OperationDetailView(browser: browser, operation: op)
+                                    } label: { EmptyView() }
+                                    .opacity(0)
+                                }
+                        }
+                    }
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(historyRowBackground)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 62 }
+                    .listRowSeparatorTint(Color.primary.opacity(0.22))
+                }
+            } header: {
                 HStack {
                     Text(group.day.formatted(.dateTime.weekday(.wide).day().month(.wide).year()))
                     Spacer()
@@ -395,30 +422,7 @@ struct OperationsHomeView: View {
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 18)
-
-                VStack(spacing: 0) {
-                    ForEach(group.operations) { op in
-                        Group {
-                            if op.isManual {
-                                Button {
-                                    editedOperation = browser.history.manualOperations?.first { $0.id == op.manualID }
-                                } label: {
-                                    historyOperationRow(op)
-                                }
-                            } else {
-                                NavigationLink {
-                                    OperationDetailView(browser: browser, operation: op)
-                                } label: {
-                                    historyOperationRow(op)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        if op.id != group.operations.last?.id { Divider().padding(.leading, 62) }
-                    }
-                }
-                .background(Color(uiColor: .secondarySystemGroupedBackground).opacity(0.82), in: .rect(cornerRadius: 24))
+                .textCase(nil)
             }
         }
     }
@@ -449,43 +453,6 @@ struct OperationsHomeView: View {
     private func rubles(_ kopecks: Int64) -> String {
         (Decimal(kopecks) / 100).formatted(.currency(code: "RUB"))
     }
-}
-
-/// A stationary list is revealed from its top edge; rows keep their shape instead of scaling or fading.
-private struct RollingHistory<Content: View>: View {
-    let expanded: Bool
-    let content: Content
-    @State private var contentHeight: CGFloat = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    init(expanded: Bool, @ViewBuilder content: () -> Content) {
-        self.expanded = expanded
-        self.content = content()
-    }
-
-    var body: some View {
-        content
-            .frame(maxWidth: .infinity)
-            .fixedSize(horizontal: false, vertical: true)
-            .background {
-                GeometryReader { geometry in
-                    Color.clear.preference(key: RollingHistoryHeight.self, value: geometry.size.height)
-                }
-            }
-            .frame(height: expanded ? (contentHeight > 0 ? contentHeight : nil) : 0, alignment: .top)
-            .clipped()
-            .allowsHitTesting(expanded)
-            .accessibilityHidden(!expanded)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.42), value: expanded)
-            .onPreferenceChange(RollingHistoryHeight.self) { height in
-                if abs(height - contentHeight) > 0.5 { contentHeight = height }
-            }
-    }
-}
-
-private struct RollingHistoryHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 // MARK: - Custom Dates Sheet
