@@ -19,6 +19,8 @@ struct ManualOperationFormView: View {
     @State private var saveError = false
     @State private var saveErrorMessage = ""
     @State private var saved = false
+    /// Photos of a receipt added to an operation that is not saved yet; they are attached when it is saved.
+    @State private var pendingReceipts: [String] = []
     @State private var showDateTime = false
     @State private var selectsTime = false
 
@@ -76,9 +78,10 @@ struct ManualOperationFormView: View {
                                            description: Text("Добавьте счёт на главном экране в разделе «Все счета»."))
                 } else {
                     fields
+                    ReceiptSection(browser: browser, identity: ManualOperation.identityPrefix + operationID.uuidString,
+                                   pending: operation == nil ? $pendingReceipts : nil)
                 }
-                if let operation {
-                    ReceiptSection(browser: browser, identity: ManualOperation.identityPrefix + operation.id.uuidString)
+                if operation != nil {
                     Section {
                         Button("Удалить операцию", role: .destructive) { confirmDeletion = true }
                     }.glassRows()
@@ -87,11 +90,16 @@ struct ManualOperationFormView: View {
             .scrollDismissesKeyboard(.interactively)
             .tint(.accentColor)
             .appSurface()
+            .interactiveDismissDisabled(!pendingReceipts.isEmpty && !saved)
             .navigationTitle(operation == nil ? "Добавить" : "Операция")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Отмена", systemImage: "xmark") { dismiss() }
+                    Button("Отмена", systemImage: "xmark") {
+                        ReceiptStore.delete(pendingReceipts)
+                        pendingReceipts = []
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Сохранить", systemImage: "checkmark", action: save)
@@ -265,13 +273,17 @@ struct ManualOperationFormView: View {
                                     toAccountID: kind == .transfer ? toAccountID : nil,
                                     group: kind == .expense ? group : nil,
                                     subcategory: kind == .transfer ? nil : subcategory, note: note)
+        let photos = pendingReceipts
+        let identity = ManualOperation.identityPrefix + operationToSave.id.uuidString
         let success = browser.updateUserData { history in
             var operations = history.manualOperations ?? []
             if let index = operations.firstIndex(where: { $0.id == operationToSave.id }) { operations[index] = operationToSave }
             else { operations.append(operationToSave) }
             history.manualOperations = operations
+            for name in photos { history.addReceipt(name, toIdentity: identity) }
         }
         if success {
+            pendingReceipts = []
             saved = true
             onSave?(operationToSave)
             dismiss()

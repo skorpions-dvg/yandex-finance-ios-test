@@ -923,6 +923,8 @@ extension SavedHistory {
 enum ReceiptLogic {
     /// The longest side of a stored photo: enough to read a receipt, small enough (about 300 KB) to keep many.
     static let maxSide = 1600.0
+    /// A PDF becomes pictures of its first pages only.
+    static let maxPagesPerDocument = 5
 
     static func fileName(id: UUID = UUID()) -> String { "receipt-\(id.uuidString.lowercased()).jpg" }
 

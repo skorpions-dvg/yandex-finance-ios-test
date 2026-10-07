@@ -1,6 +1,8 @@
 import SwiftUI
 import PhotosUI
 import VisionKit
+import PDFKit
+import UniformTypeIdentifiers
 
 /// The document scanner of iOS: it cuts the receipt out of the background and straightens it.
 struct DocumentScanner: UIViewControllerRepresentable {
@@ -37,53 +39,117 @@ struct DocumentScanner: UIViewControllerRepresentable {
     }
 }
 
-private struct ReceiptPhoto: Identifiable {
-    let name: String
-    var id: String { name }
+/// The plain camera: one ordinary photo, for the cases when the scanner cannot find the edges of the receipt.
+struct CameraPicker: UIViewControllerRepresentable {
+    let onImage: (UIImage) -> Void
+    let onFinish: () -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onImage: onImage, onFinish: onFinish) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let onImage: (UIImage) -> Void
+        let onFinish: () -> Void
+
+        init(onImage: @escaping (UIImage) -> Void, onFinish: @escaping () -> Void) {
+            self.onImage = onImage
+            self.onFinish = onFinish
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage { onImage(image) }
+            onFinish()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { onFinish() }
+    }
 }
 
-/// «Чек» in the card of an operation: photos of the receipt, a button to scan one and one to take it from the gallery.
+/// What the «Чек» section shows full screen: the scanner, the camera or one saved photo.
+private enum ReceiptScreen: Identifiable {
+    case scanner
+    case camera
+    case photo(String)
+
+    var id: String {
+        switch self {
+        case .scanner: return "scanner"
+        case .camera: return "camera"
+        case .photo(let name): return "photo-" + name
+        }
+    }
+}
+
+/// «Чек» in an operation: a row «Добавить чек» with a menu of ways (scan, camera, gallery, document) and the photos
+/// under it. For an operation that does not exist yet (a new manual one) `pending` holds the photos until it is saved.
 @MainActor
 struct ReceiptSection: View {
     @ObservedObject var browser: BankBrowser
     let identity: String
-    @State private var showScanner = false
+    /// Photos of an operation that is not saved yet; nil for an operation that exists.
+    var pending: Binding<[String]>? = nil
+    @State private var screen: ReceiptScreen?
+    @State private var showGallery = false
+    @State private var showFiles = false
     @State private var picked: [PhotosPickerItem] = []
-    @State private var viewing: ReceiptPhoto?
     @State private var failed = false
 
+    private var files: [String] { pending?.wrappedValue ?? browser.history.receiptFiles(forIdentity: identity) }
+
     var body: some View {
-        let files = browser.history.receiptFiles(forIdentity: identity)
+        let files = self.files
         Section {
             VStack(alignment: .leading, spacing: 12) {
+                Menu {
+                    if VNDocumentCameraViewController.isSupported {
+                        Button { screen = .scanner } label: { Label("Сканировать", systemImage: "doc.viewfinder") }
+                    }
+                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                        Button { screen = .camera } label: { Label("Камера", systemImage: "camera") }
+                    }
+                    Button { showGallery = true } label: { Label("Из галереи", systemImage: "photo.on.rectangle") }
+                    Button { showFiles = true } label: { Label("Документ", systemImage: "doc") }
+                } label: {
+                    HStack {
+                        Label("Добавить чек", systemImage: "doc.badge.plus")
+                        Spacer()
+                        Image(systemName: "ellipsis")
+                    }
+                    .contentShape(Rectangle())
+                }
                 if !files.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             ForEach(files, id: \.self) { name in
-                                Button { viewing = ReceiptPhoto(name: name) } label: { thumbnail(name) }
+                                Button { screen = .photo(name) } label: { thumbnail(name) }
                                     .buttonStyle(.borderless)
                             }
                         }
                     }
                 }
-                HStack(spacing: 20) {
-                    if VNDocumentCameraViewController.isSupported {
-                        Button { showScanner = true } label: { Label("Сканировать", systemImage: "doc.viewfinder") }
-                            .buttonStyle(.borderless)
-                    }
-                    PhotosPicker(selection: $picked, maxSelectionCount: 5, matching: .images) {
-                        Label("Из галереи", systemImage: "photo.on.rectangle")
-                    }
-                    .buttonStyle(.borderless)
-                }
             }
             .padding(.vertical, 4)
-            .fullScreenCover(isPresented: $showScanner) {
-                DocumentScanner(onScan: { images in add(images) }, onFinish: { showScanner = false })
-                    .ignoresSafeArea()
+            .fullScreenCover(item: $screen) { screen in
+                switch screen {
+                case .scanner:
+                    DocumentScanner(onScan: { add($0) }, onFinish: { self.screen = nil }).ignoresSafeArea()
+                case .camera:
+                    CameraPicker(onImage: { add([$0]) }, onFinish: { self.screen = nil }).ignoresSafeArea()
+                case .photo(let name):
+                    ReceiptViewer(name: name, onDelete: { remove(name) })
+                }
             }
-            .fullScreenCover(item: $viewing) { photo in
-                ReceiptViewer(browser: browser, identity: identity, name: photo.name)
+            .photosPicker(isPresented: $showGallery, selection: $picked, maxSelectionCount: 5, matching: .images)
+            .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image, .pdf], allowsMultipleSelection: true) { result in
+                importDocuments(result)
             }
             .onChange(of: picked) { _, items in
                 guard !items.isEmpty else { return }
@@ -119,9 +185,25 @@ struct ReceiptSection: View {
         var added = 0
         for image in images {
             guard let name = ReceiptStore.save(image) else { continue }
-            if browser.updateUserData({ $0.addReceipt(name, toIdentity: identity) }) { added += 1 } else { ReceiptStore.delete([name]) }
+            if let pending {
+                pending.wrappedValue.append(name)
+                added += 1
+            } else if browser.updateUserData({ $0.addReceipt(name, toIdentity: identity) }) {
+                added += 1
+            } else {
+                ReceiptStore.delete([name])
+            }
         }
         if added == 0 && !images.isEmpty { failed = true }
+    }
+
+    private func remove(_ name: String) {
+        if let pending {
+            pending.wrappedValue.removeAll { $0 == name }
+            ReceiptStore.delete([name])
+        } else if browser.updateUserData({ $0.removeReceipt(name, fromIdentity: identity) }) {
+            ReceiptStore.delete([name])
+        }
     }
 
     private func load(_ items: [PhotosPickerItem]) async {
@@ -132,14 +214,43 @@ struct ReceiptSection: View {
         picked = []
         if images.isEmpty { failed = true } else { add(images) }
     }
+
+    /// Pictures from «Файлы» as they are; a PDF becomes pictures of its first pages.
+    private func importDocuments(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { failed = true; return }
+        var images: [UIImage] = []
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            if url.pathExtension.lowercased() == "pdf" {
+                images += Self.pages(ofPDFAt: url)
+            } else if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
+                images.append(image)
+            }
+        }
+        if images.isEmpty { failed = true } else { add(images) }
+    }
+
+    private static func pages(ofPDFAt url: URL) -> [UIImage] {
+        guard let document = PDFDocument(url: url) else { return [] }
+        var images: [UIImage] = []
+        for index in 0..<min(document.pageCount, ReceiptLogic.maxPagesPerDocument) {
+            guard let page = document.page(at: index) else { continue }
+            let bounds = page.bounds(for: .mediaBox)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            let factor = ReceiptLogic.maxSide / Double(max(bounds.width, bounds.height))
+            let size = CGSize(width: bounds.width * factor, height: bounds.height * factor)
+            images.append(page.thumbnail(of: size, for: .mediaBox))
+        }
+        return images
+    }
 }
 
 /// One receipt on the whole screen: pinch to zoom, drag when zoomed, double tap to reset, a button to delete it.
 @MainActor
 private struct ReceiptViewer: View {
-    @ObservedObject var browser: BankBrowser
-    let identity: String
     let name: String
+    let onDelete: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
@@ -186,10 +297,8 @@ private struct ReceiptViewer: View {
             }
             .confirmationDialog("Удалить фото чека?", isPresented: $confirmDeletion, titleVisibility: .visible) {
                 Button("Удалить фото", role: .destructive) {
-                    if browser.updateUserData({ $0.removeReceipt(name, fromIdentity: identity) }) {
-                        ReceiptStore.delete([name])
-                        dismiss()
-                    }
+                    onDelete()
+                    dismiss()
                 }
                 Button("Отмена", role: .cancel) { }
             }
