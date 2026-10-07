@@ -121,7 +121,7 @@ struct ExpenseCategoryImport: Codable {
                   operation.occurredAt == item.occurredAt,
                   operation.amountKopecks == item.amountKopecks,
                   original.categoryOverrides?[item.identity] == nil,
-                  !ruledPayees.contains(FinancialEngine.counterpartyKey(operation.description)),
+                  !ruledPayees.contains(FinancialEngine.payeeRuleKey(operation.description)),
                   resolver.resolve(operation)?.path == item.fromPath else {
                 skipped += 1
                 continue

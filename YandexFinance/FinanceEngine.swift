@@ -754,6 +754,15 @@ enum FinancialEngine {
 
     /// Counterparty key from the bank text: letters only, so amounts, dates and account numbers that change from
     /// month to month (for example a utility bill "ЭЭ 3732.24, ГВС …, ПРД08.2026") do not split one payee into many.
+    /// Payee key for rules «for every operation of this payee»; empty when the title names nobody: a statement row
+    /// damaged into a date and amounts, or a title with fewer than three letters. Such a key would join unrelated
+    /// operations under one rule.
+    static func payeeRuleKey(_ title: String) -> String {
+        if title.range(of: #"^\s*\d{2}\.\d{2}\.\d{4}"#, options: .regularExpression) != nil { return "" }
+        let key = counterpartyKey(title)
+        return key.filter(\.isLetter).count >= 3 ? key : ""
+    }
+
     static func counterpartyKey(_ text: String) -> String {
         String(normalized(text).map { $0.isLetter ? $0 : " " }).split(separator: " ").joined(separator: " ")
     }
@@ -1222,7 +1231,8 @@ enum FinancialEngine {
         if containsAny(freeText, ["dzhinsy", "джинсы", "gloria jeans", "ostin", "befree", "sportmaster", "спортмастер"]) {
             return FinanceCategoryPath(group: "Покупки", subcategory: "Одежда")
         }
-        if containsAny(freeText, ["etk55", "omsk_tpp"]) {
+        // A city transport card: «ETK» with the region number, as transport operators print it.
+        if freeText.range(of: "etk[0-9]{2}", options: .regularExpression) != nil {
             return FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")
         }
         if containsAny(freeText, ["tutu", "туту.ру", "aviasales", "авиасейлс", "rzd", "ржд"]) {

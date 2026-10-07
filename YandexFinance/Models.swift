@@ -414,7 +414,7 @@ struct ExpenseCategoryResolver {
         guard !operation.isManual else { return nil }
         let type = FinancialEngine.classify(operation.financialInput).type
         guard type == .income || type == .interestIncome else { return nil }
-        let chosen = incomeOverrides[operation.identity] ?? incomeRuleByKey[FinancialEngine.counterpartyKey(operation.description)]
+        let chosen = incomeOverrides[operation.identity] ?? incomeRuleByKey[FinancialEngine.payeeRuleKey(operation.description)]
         return chosen.flatMap { FinancialEngine.incomeSubcategoryOrder.contains($0) ? $0 : nil }
     }
 
@@ -431,7 +431,7 @@ struct ExpenseCategoryResolver {
             let id = idByPath[guessPath] ?? idBySource[guessPath]
             return (id, id.flatMap { pathByID[$0] } ?? guessPath)
         }
-        for id in [overrides[operation.identity], ruleByKey[FinancialEngine.counterpartyKey(operation.description)]] {
+        for id in [overrides[operation.identity], ruleByKey[FinancialEngine.payeeRuleKey(operation.description)]] {
             if let id, let path = pathByID[id] { return (id, path) }
         }
         if let id = idBySource[guessPath], let path = pathByID[id] { return (id, path) }
@@ -616,7 +616,7 @@ extension SavedHistory {
             manualOperations?[index].subcategory = category.name
             return true
         }
-        let key = FinancialEngine.counterpartyKey(operation.description)
+        let key = FinancialEngine.payeeRuleKey(operation.description)
         if forPayee && !key.isEmpty {
             var rules = categoryRules ?? []
             if let index = rules.firstIndex(where: { $0.payeeKey == key }) { rules[index].categoryID = categoryID }
@@ -668,7 +668,7 @@ extension SavedHistory {
             manualOperations?[index].subcategory = category
             return true
         }
-        let key = FinancialEngine.counterpartyKey(operation.description)
+        let key = FinancialEngine.payeeRuleKey(operation.description)
         if forSender && !key.isEmpty {
             var rules = incomeCategoryRules ?? []
             if let index = rules.firstIndex(where: { $0.payeeKey == key }) { rules[index].category = category }
@@ -741,7 +741,7 @@ extension SavedHistory {
     /// Title and icon: the choice on this operation, then the payee rule. The comment belongs to the operation only.
     func look(for operation: BankOperation) -> OperationLook {
         let own = operationLooks?[operation.identity]
-        let key = FinancialEngine.counterpartyKey(operation.description)
+        let key = FinancialEngine.payeeRuleKey(operation.description)
         let rule = key.isEmpty ? nil : payeeLookRules?.first { $0.payeeKey == key }
         return OperationLook(title: own?.title ?? rule?.title, icon: own?.icon ?? rule?.icon, note: own?.note)
     }
@@ -751,7 +751,7 @@ extension SavedHistory {
     mutating func setLook(title: String?, icon: String?, for operation: BankOperation, forPayee: Bool) {
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let newTitle = (cleanTitle?.isEmpty ?? true) || cleanTitle == operation.description ? nil : cleanTitle
-        let key = FinancialEngine.counterpartyKey(operation.description)
+        let key = FinancialEngine.payeeRuleKey(operation.description)
         var looks = operationLooks ?? [:]
         var own = looks[operation.identity] ?? OperationLook()
         if forPayee && !key.isEmpty {

@@ -28,7 +28,7 @@ enum UncategorizedReview {
         let rules = Set((history.categoryRules ?? []).map(\.payeeKey))
         var grouped: [String: ReviewGroup] = [:]
         for (operation, input) in zip(operations, inputs) {
-            let key = FinancialEngine.counterpartyKey(operation.description)
+            let key = FinancialEngine.payeeRuleKey(operation.description)
             let type = FinancialEngine.classify(input).type
             let kind: ReviewGroup.Kind
             if (type == .expense || type == .commission),

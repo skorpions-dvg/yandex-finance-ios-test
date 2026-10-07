@@ -316,10 +316,10 @@ struct FinanceEngineTests {
         // Shaped like the real archive: transfers to one person of varying size, a utility bill whose text carries
         // the amounts and the period, groceries, and one large transfer to someone new.
         var habits: [FinancialOperationInput] = [op(-500, kind: "expense", category: "Такси", description: "Такси", date: iso(4, 3))]
-        let elizaveta = "Исходящий перевод СБП, Елизавета Павловна В., +7 923 000-00-00, Сбербанк"
+        let personA = "Исходящий перевод СБП, Мария Ивановна П., +7 923 000-00-00, Сбербанк"
         let transfers: [(Int, Int, Int64)] = [(7, 2, 25_000), (7, 21, 16_000), (8, 9, 20_000), (9, 4, 20_000), (9, 23, 12_000)]
         for (month, day, amount) in transfers {
-            habits.append(op(-amount, kind: "transfer", category: "Перевод", description: elizaveta, date: iso(month, day)))
+            habits.append(op(-amount, kind: "transfer", category: "Перевод", description: personA, date: iso(month, day)))
         }
         let bills: [Int64] = [25_147, 18_310, 22_905]
         let groceries: [[Int64]] = [[1_100, 2_700], [900, 3_400], [1_800, 2_200]]
@@ -328,7 +328,7 @@ struct FinanceEngineTests {
             habits.append(op(-groceries[index][0], kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 6)))
             habits.append(op(-groceries[index][1], kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 19)))
         }
-        habits.append(op(-66_000, kind: "transfer", category: "Перевод", description: "Исходящий перевод СБП, Юрий Олегович А., +7 996 000-00-00", date: iso(9, 25)))
+        habits.append(op(-66_000, kind: "transfer", category: "Перевод", description: "Исходящий перевод СБП, Пётр Сергеевич К., +7 996 000-00-00", date: iso(9, 25)))
         // A utility bill paid once under a new name and a small purchase in a rare category are not one-offs.
         habits.append(op(-25_147, kind: "expense", category: "ЖКХ", description: "ЖКУ сентябрь, лицевой счёт", date: iso(9, 14)))
         habits.append(op(-1_200, kind: "expense", category: "Развлечения", description: "KDTS MAIAKOVSKII", date: iso(8, 15)))
@@ -872,8 +872,8 @@ struct FinanceEngineTests {
     }
 
     static func testOperationLooks() {
-        let first = bankOp("l1", -30_000, description: "IP OZHEGOV A.L. 0412", mcc: "5814")
-        let second = bankOp("l2", -45_000, description: "IP OZHEGOV A.L. 0977", mcc: "5814")
+        let first = bankOp("l1", -30_000, description: "IP TESTOV A.A. 0412", mcc: "5814")
+        let second = bankOp("l2", -45_000, description: "IP TESTOV A.A. 0977", mcc: "5814")
         let other = bankOp("l3", -10_000, description: "Магазин", mcc: "5411")
         var history = SavedHistory()
         history.operations = [first, second, other]
@@ -893,7 +893,7 @@ struct FinanceEngineTests {
 
         history.setLook(title: "", icon: nil, for: first, forPayee: true)
         require(history.payeeLookRules?.isEmpty == true && history.look(for: first).title == nil, "clearing the rule returns the bank title")
-        history.setLook(title: "IP OZHEGOV A.L. 0412", icon: nil, for: first, forPayee: false)
+        history.setLook(title: "IP TESTOV A.A. 0412", icon: nil, for: first, forPayee: false)
         require(history.operationLooks?[first.identity] == nil, "the bank's own title is not stored as a custom one")
         history.setNote("", for: second)
         require(history.operationLooks?[second.identity]?.note == nil && history.look(for: second).title == "Обед с коллегами",
@@ -915,20 +915,20 @@ struct FinanceEngineTests {
             return p.group + "/" + p.subcategory
         }
         // Statement rows have no MCC and Latin titles.
-        require(path("Оплата товаров и услуг MAGNIT MM PERIMETR") == "Еда/Супермаркеты", "Magnit in Latin is a supermarket")
+        require(path("Оплата товаров и услуг MAGNIT MM TEST") == "Еда/Супермаркеты", "Magnit in Latin is a supermarket")
         require(path("Оплата товаров и услуг YANDEX*5411*DK") == "Еда/Супермаркеты", "MCC inside a Yandex title")
         require(path("Оплата товаров и услуг YANDEX*5399*MARKET") == "Покупки/Маркетплейсы", "Yandex Market")
         require(path("Оплата товаров и услуг YANDEX*4121*FASTEN") == "Транспорт/Такси", "taxi by embedded MCC")
         require(path("Оплата товаров и услуг YANDEX*4215*DOSTAVKA") == "Другое/Доставка и курьеры", "courier by embedded MCC")
-        require(path("Оплата товаров и услуг ETK55_OMSK_TPP") == "Транспорт/Общественный транспорт", "Omsk transport card")
+        require(path("Оплата товаров и услуг ETK77_CITY_TPP") == "Транспорт/Общественный транспорт", "city transport card")
         require(path("Оплата СБП QR (Лемана ПРО СБП онлайн)") == "Покупки/Дом и быт", "Lemana Pro")
         require(path("Оплата товаров и услуг LEMANAPROGPB088") == "Покупки/Дом и быт", "Lemana Pro in Latin")
-        require(path("Оплата товаров и услуг Semeynay apteka 199650") == "Обязательные/Здоровье", "pharmacy in Latin")
+        require(path("Оплата товаров и услуг APTEKA TEST 1") == "Обязательные/Здоровье", "pharmacy in Latin")
         require(path("Оплата товаров и услуг DZHINSY TUT") == "Покупки/Одежда", "clothes")
         require(path("Оплата СБП QR (Tutu_SBP4)") == "Другое/Путешествия", "tickets")
         // What cannot be known from the title stays where it was.
         require(path("Оплата СБП QR (Сервисы Яндекса)") == "Другое/Прочее", "Yandex services are not guessed")
-        require(path("Оплата товаров и услуг IP OZHEGOV A.L.") == "Другое/Прочее", "a sole trader is not guessed")
+        require(path("Оплата товаров и услуг IP TESTOV A.A.") == "Другое/Прочее", "a sole trader is not guessed")
         require(FinancialEngine.embeddedMCC("YANDEX*5411*DK") == "5411" && FinancialEngine.embeddedMCC("Магазин 5411") == "", "embedded MCC only between stars")
         // A real MCC wins over the title.
         require(path("YANDEX*5411*DK", mcc: "5812") == "Еда/Кафе и рестораны", "the card's own MCC wins")
@@ -970,6 +970,22 @@ struct FinanceEngineTests {
         edited.moveExpenseCategory(oldID, toGroup: edited.categoryTree.first { $0.name == "Другое" }!.id, at: 0)
         edited.moveTransfersToOwnGroup()
         require(edited.categoryTree.first { $0.name == "Другое" }!.categories.contains { $0.id == oldID }, "a move back by the user stays")
+        // A damaged statement title names nobody: no payee rule may join such rows.
+        let junk = "28.09.2026 в 16:39 28.09.2026 –232,00 ₽ –232,00 ₽"
+        require(FinancialEngine.payeeRuleKey(junk) == "" && FinancialEngine.payeeRuleKey("АБ") == "", "no rule key without a real name")
+        require(FinancialEngine.payeeRuleKey("Оплата товаров и услуг MAGNIT") == FinancialEngine.counterpartyKey("Оплата товаров и услуг MAGNIT"),
+                "real names keep their key, so existing rules still apply")
+        var damaged = SavedHistory()
+        let junk1 = bankOp("j1", -22_200, description: junk), junk2 = bankOp("j2", -34_900, description: junk)
+        damaged.operations = [junk1, junk2]
+        let food = damaged.categoryTree[0].categories[0].id
+        require(damaged.setExpenseCategory(food, for: junk1, forPayee: true), "a damaged row can still get a category")
+        require((damaged.categoryRules ?? []).isEmpty && damaged.expenseCategoryID(for: junk1) == food && damaged.expenseCategoryID(for: junk2) != food,
+                "but only for itself, never as a rule for every damaged row")
+        damaged.setLook(title: "Магазин", icon: nil, for: junk1, forPayee: true)
+        require((damaged.payeeLookRules ?? []).isEmpty && damaged.look(for: junk2).title == nil, "the same for own titles")
+        require(UncategorizedReview.groups(damaged).allSatisfy { $0.operations.count == 1 }, "damaged rows are reviewed one by one")
+
         var untouched = SavedHistory()
         untouched.moveTransfersToOwnGroup()
         require(untouched.expenseCategories == nil, "the built-in tree is not materialized by the move")
