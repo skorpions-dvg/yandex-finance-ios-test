@@ -32,6 +32,7 @@ struct ContentView: View {
     @State private var presentation = FinancePresentationCache()
     /// Live page position for the tab bar lens. A reference, so scrolling never re-evaluates this view or its pages.
     @State private var tabProgress = TabBarProgress()
+    @State private var tabSelection = TabBarSelection()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Height the floating tab bar takes at the bottom of every page.
     static let barSpace: CGFloat = 74
@@ -101,14 +102,17 @@ struct ContentView: View {
                     }
                     .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in
                         let pagesStart = drawerWidth + 16
-                        tabProgress.value = min(3, max(1, (x - pagesStart) / max(1, width) + 1))
+                        let value = min(3, max(1, (x - pagesStart) / max(1, width) + 1))
+                        tabProgress.value = value
+                        let tab = Int(value.rounded())
+                        if tabSelection.active != tab { tabSelection.active = tab }
                     }
                     // The first layout starts at the leading edge (the accounts); open on the selected tab instead.
                     .onAppear { proxy.scrollTo(selectedTab, anchor: .leading) }
                     }
                 }
 
-                LensTabBar(progress: tabProgress, reduceMotion: reduceMotion, select: selectTab)
+                LensTabBar(progress: tabProgress, selection: tabSelection, reduceMotion: reduceMotion, select: selectTab)
                     .padding(.horizontal, 40)
                     .padding(.bottom, 8)
             }
@@ -163,99 +167,179 @@ final class TabBarProgress: ObservableObject {
     @Published var value: CGFloat = 1
 }
 
-/// Bottom tabs with a glass lens like Telegram: the lens follows the pages while they scroll, can be dragged along
-/// the bar with a finger (it grows while held) and settles on the nearest tab.
+@MainActor
+final class TabBarSelection: ObservableObject {
+    /// The tab the pages are on, changed only when it really changes (not on every scrolled frame).
+    @Published var active = 1
+}
+
+/// Finger position of the held lens, observed only by the bubble so a drag never redraws the bar.
+@MainActor
+final class LensDrag: ObservableObject {
+    @Published var position: CGFloat = 1
+    @Published var velocity: CGFloat = 0
+}
+
+private let tabItems: [(title: String, symbol: String)] = [
+    ("Операции", "list.bullet.rectangle"), ("Отчёты", "chart.pie"), ("Настройки", "gearshape")
+]
+
+/// Bottom tabs like Telegram: frosted glass bar, a light capsule under the chosen tab that follows the pages, and a
+/// clear glass drop while the finger holds it, magnifying the tab under it. Each layer observes only what it shows.
 @MainActor
 private struct LensTabBar: View {
-    @ObservedObject var progress: TabBarProgress
+    let progress: TabBarProgress
+    let selection: TabBarSelection
     let reduceMotion: Bool
     let select: (Int) -> Void
-    /// Lens position while held or until the pages reach the chosen tab; nil follows the pages.
-    @State private var dragged: CGFloat?
+    @State private var drag = LensDrag()
     @State private var held = false
-
-    private let tabs: [(title: String, symbol: String)] = [
-        ("Операции", "list.bullet.rectangle"), ("Отчёты", "chart.pie"), ("Настройки", "gearshape")
-    ]
-    /// Same size as before 41.40: 50 pt of tabs inside a 6 pt glass rim.
     private let inset: CGFloat = 6
 
     var body: some View {
         GeometryReader { bar in
             let segment = bar.size.width / 3
-            let position = dragged ?? progress.value
             ZStack(alignment: .leading) {
-                // At rest the chosen tab is a soft light capsule.
-                Capsule()
-                    .fill(Color.primary.opacity(0.1))
-                    .frame(width: segment, height: bar.size.height)
-                    .offset(x: (position - 1) * segment)
+                IdleCapsule(progress: progress, segment: segment, height: bar.size.height)
                     .opacity(held ? 0 : 1)
-                HStack(spacing: 0) {
-                    ForEach(0..<3, id: \.self) { index in
-                        let active = Int(position.rounded()) == index + 1
-                        let distance = CGFloat(index + 1) - position
-                        let aside: CGFloat = held ? (distance >= 0 ? 1 : -1) * 8 * max(0, 1 - abs(distance)) : 0
-                        VStack(spacing: 4) {
-                            Image(systemName: tabs[index].symbol).font(.title3)
-                            Text(tabs[index].title).font(.caption2.weight(.medium))
-                        }
-                        .foregroundStyle(active ? Color.accentColor : Color.primary)
-                        .offset(x: abs(distance) < 0.15 ? 0 : aside)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .accessibilityElement(children: .combine)
-                        .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
-                        .accessibilityAction { select(index + 1) }
-                    }
-                }
+                TabLabels(selection: selection, select: select)
             }
             .contentShape(Rectangle())
             // One gesture for the whole bar: a tap selects the tab under the finger, a drag carries the lens.
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { drag in
-                        if held || abs(drag.translation.width) > 6 {
-                            held = true
-                            dragged = min(3, max(1, drag.location.x / max(1, segment) + 0.5))
+                    .onChanged { value in
+                        let position = min(3, max(1, value.location.x / max(1, segment) + 0.5))
+                        if !held && abs(value.translation.width) > 6 {
+                            drag.position = position
+                            drag.velocity = 0
+                            withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.6)) { held = true }
+                        } else if held {
+                            drag.position = position
+                            drag.velocity = value.velocity.width
                         }
                     }
-                    .onEnded { drag in
-                        let tab = Int(min(3, max(1, drag.location.x / max(1, segment) + 0.5)).rounded())
-                        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
+                    .onEnded { value in
+                        let tab = Int(min(3, max(1, value.location.x / max(1, segment) + 0.5)).rounded())
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.7)) {
                             held = false
-                            dragged = abs(progress.value - CGFloat(tab)) < 0.02 ? nil : CGFloat(tab)
+                            drag.position = CGFloat(tab)
+                            drag.velocity = 0
                         }
                         select(tab)
-                        // Hand the lens back to the pages even if they never report reaching the tab.
-                        Task { @MainActor in
-                            try? await Task.sleep(nanoseconds: 700_000_000)
-                            if !held { dragged = nil }
-                        }
                     }
             )
         }
         .frame(height: 50)
-        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.66), value: held)
         .padding(inset)
         // Frosted glass with a grey haze, so what passes under the bar is blurred and the labels stay readable.
         .glassEffect(.regular.tint(Color(white: 0.45).opacity(0.28)), in: .capsule)
-        // The bubble lives outside the bar's layout: it never resizes the bar and is placed, not laid out.
-        .overlay {
-            GeometryReader { outer in
-                let segment = (outer.size.width - inset * 2) / 3
-                let position = dragged ?? progress.value
-                LensBubble()
-                    .frame(width: segment * 1.12, height: outer.size.height * 1.3)
-                    .scaleEffect(held ? 1 : 0.6)
-                    .opacity(held ? 1 : 0)
-                    .position(x: inset + (position - 0.5) * segment, y: outer.size.height / 2)
-                    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.62), value: held)
-                    .allowsHitTesting(false)
+        .overlay { BubbleLayer(drag: drag, held: held, inset: inset, reduceMotion: reduceMotion) }
+    }
+}
+
+/// The light capsule under the chosen tab; the only part of the bar that moves while the pages scroll.
+private struct IdleCapsule: View {
+    @ObservedObject var progress: TabBarProgress
+    let segment: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        Capsule()
+            .fill(Color.primary.opacity(0.1))
+            .frame(width: segment, height: height)
+            .offset(x: (progress.value - 1) * segment)
+    }
+}
+
+/// Icons and titles. They redraw only when the chosen tab changes, and then the new icon plays its animation.
+private struct TabLabels: View {
+    @ObservedObject var selection: TabBarSelection
+    let select: (Int) -> Void
+    @State private var plays = [0, 0, 0]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(0..<3, id: \.self) { index in
+                let active = selection.active == index + 1
+                VStack(spacing: 4) {
+                    icon(index)
+                        .font(.title3)
+                        .symbolVariant(active ? .fill : .none)
+                    Text(tabItems[index].title).font(.caption2.weight(.medium))
+                }
+                .foregroundStyle(active ? Color.accentColor : Color.primary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
+                .accessibilityAction { select(index + 1) }
             }
         }
-        .onChange(of: progress.value) { _, value in
-            if !held, let target = dragged, abs(value - target) < 0.02 { dragged = nil }
+        .onChange(of: selection.active) { _, tab in
+            if (1...3).contains(tab) { plays[tab - 1] += 1 }
         }
+    }
+
+    // Операции and Отчёты bounce, the Settings gear turns, as Telegram's tab icons come alive when chosen.
+    @ViewBuilder private func icon(_ index: Int) -> some View {
+        let image = Image(systemName: tabItems[index].symbol)
+        if index == 2 {
+            image.symbolEffect(.rotate, value: plays[index])
+        } else {
+            image.symbolEffect(.bounce, value: plays[index])
+        }
+    }
+}
+
+/// The held drop: clear glass over a magnified, tinted copy of the tabs, so the tab under it looks seen through a lens.
+private struct BubbleLayer: View {
+    @ObservedObject var drag: LensDrag
+    let held: Bool
+    let inset: CGFloat
+    let reduceMotion: Bool
+
+    var body: some View {
+        GeometryReader { outer in
+            let width = outer.size.width
+            let height = outer.size.height
+            let segment = (width - inset * 2) / 3
+            let centerX = inset + (drag.position - 0.5) * segment
+            // A fast finger stretches the drop along the way and flattens it a little.
+            let stretch = min(abs(drag.velocity) / 2600, 0.16)
+            let bubbleWidth = segment * 1.12
+            let bubbleHeight = height * 1.3
+            ZStack {
+                ZStack {
+                    Capsule().fill(Color(white: 0.32).opacity(0.6))
+                        .frame(width: bubbleWidth, height: bubbleHeight)
+                        .position(x: centerX, y: height / 2)
+                    HStack(spacing: 0) {
+                        ForEach(0..<3, id: \.self) { index in
+                            VStack(spacing: 4) {
+                                Image(systemName: tabItems[index].symbol).font(.title3).symbolVariant(.fill)
+                                Text(tabItems[index].title).font(.caption2.weight(.semibold))
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
+                    .foregroundStyle(Color.accentColor)
+                    .padding(inset)
+                    .frame(width: width, height: height)
+                    .scaleEffect(1.22, anchor: UnitPoint(x: centerX / max(1, width), y: 0.5))
+                }
+                .mask {
+                    Capsule().frame(width: bubbleWidth, height: bubbleHeight).position(x: centerX, y: height / 2)
+                }
+                LensBubble()
+                    .frame(width: bubbleWidth, height: bubbleHeight)
+                    .position(x: centerX, y: height / 2)
+            }
+            .scaleEffect(x: 1 + stretch, y: 1 - stretch * 0.45, anchor: UnitPoint(x: centerX / max(1, width), y: 0.5))
+            .scaleEffect(held ? 1 : 0.55, anchor: UnitPoint(x: centerX / max(1, width), y: 0.5))
+            .opacity(held ? 1 : 0)
+            .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.7), value: stretch)
+        }
+        .allowsHitTesting(false)
     }
 }
 
