@@ -205,7 +205,7 @@ assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сум�
 assert.ok(!/var\s+byID\s*=\s*Dictionary\(uniqueKeysWithValues:/.test(swift), 'Duplicate IDs must not crash Dictionary initialization');
 const inactiveBody = swift.match(/func becameInactive\(\) \{([\s\S]*?)\n    \}/)?.[1] || '';
 assert.ok(!/if\s+busy\s*\{\s*cancel\(\)/.test(inactiveBody) && !/self\.cancel\(\)/.test(inactiveBody), '.inactive must not cancel an active import');
-assert.ok(appSwift.includes('Импортировать выписку'), 'Manual six-month retry button must exist');
+assert.ok(appSwift.includes('Импортировать PDF-выписки'), 'Manual statement import button must exist');
 assert.ok(source.includes("stopReason === 'running' && (opened >= maxOpened"), 'Limit must not overwrite a more specific stop reason');
 assert.ok(!source.includes('enoughMonthChoices'), 'Picker-size heuristic must not mark full history complete');
 assert.ok(source.includes('window.__financeCheckpointQueue.push({sequence: ++checkpointSequence, operation})'), 'Parsed operations must enter the checkpoint queue');
@@ -700,3 +700,18 @@ assert.equal(month35('01.13–04.13'),null);
 const noStamp35 = url([{type:'DEPOT',chainId:'synthetic-date'}]);
 assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','31 апреля, 06:11'),''),/календарная дата/);
 assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Сегодня, 24:61'),''),/время/);
+
+// Stage 41.13: Settings must distinguish saving a JSON backup from opening PDFs.
+{
+  const settings = appSwift.slice(appSwift.indexOf('struct SettingsView:'), appSwift.indexOf('enum FinanceOperationSelection:'));
+  for (const label of ['Экспортировать резервную копию (JSON)', 'Восстановить из копии (JSON)', 'Импортировать PDF-выписки', 'Импортировать разметку категорий']) {
+    assert.ok(settings.includes('Button("' + label + '"'), 'Settings action: ' + label);
+  }
+  assert.match(settings, /Button\("Импортировать PDF-выписки"\)\s*\{ browser\.syncSixMonthsHistory\(\) \}/);
+  assert.match(swift, /UIDocumentPickerViewController\(forOpeningContentTypes: \[\.pdf\], asCopy: true\)/);
+  assert.match(swift, /picker\.allowsMultipleSelection = true/);
+  assert.match(settings, /document: exportedBackup, contentType: \.json/);
+  assert.match(settings, /fileImporter\(isPresented: \$showBackupImporter, allowedContentTypes: \[\.json\]\)/);
+  assert.match(settings, /fileImporter\(isPresented: \$showCategoryImporter, allowedContentTypes: \[\.json\]\)/);
+  console.log('Stage 41.13: four Settings actions use PDF selection and JSON backup/category files.');
+}

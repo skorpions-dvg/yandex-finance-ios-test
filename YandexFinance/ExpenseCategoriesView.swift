@@ -242,7 +242,7 @@ struct ExpenseCategoriesView: View {
     }
 }
 
-private struct ExpenseCategoryImportPreview: View {
+struct ExpenseCategoryImportPreview: View {
     @ObservedObject var browser: BankBrowser
     let plan: ExpenseCategoryImport
     @Environment(\.dismiss) private var dismiss

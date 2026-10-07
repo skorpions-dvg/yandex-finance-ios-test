@@ -259,7 +259,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        importStatements(urls)
+        controller.dismiss(animated: true) { [weak self] in self?.importStatements(urls) }
     }
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
@@ -300,7 +300,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             history = preview.history
             message = preview.summary
             statementPreview = nil; statementPreviewBase = nil
-        } catch { message = "Архив не сохранён: \(error.localizedDescription)" }
+        } catch {
+            statementPreview = nil; statementPreviewBase = nil
+            message = "Архив не сохранён: \(error.localizedDescription)"
+        }
     }
 
     func retry(_ issue: ImportIssue) {

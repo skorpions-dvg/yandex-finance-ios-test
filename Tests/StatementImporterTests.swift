@@ -160,19 +160,9 @@ extension StatementImporterTests {
         context.closePDF()
         let document = PDFDocument(url: url)!
         let cells = StatementImporter.cells(from: document.page(at: 0)!)
-        if !cells.contains(where: { $0.text == "Описание" }) || !cells.contains(where: { $0.text == "29.09.2026" }) {
-            print("DIAG_RAW " + Data((document.page(at: 0)!.string ?? "").utf8).base64EncodedString())
-            print("DIAG_CELLS " + cells.prefix(150).map { Data($0.text.utf8).base64EncodedString() + ":\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";"))
-            print("DIAG_COUNTS \(document.page(at: 0)!.numberOfCharacters) \((document.page(at: 0)!.string! as NSString).length)")
-        }
         expect(cells.contains { $0.text == "Описание" }, "PDF extraction keeps heading word boundaries")
         expect(cells.contains { $0.text == "29.09.2026" }, "PDF extraction keeps date word boundaries")
-        let parsed: StatementImportResult
-        do { parsed = try StatementImporter.importPDF(at: url) }
-        catch {
-            fputs("DIAG_PARSE_CELLS " + cells.map { Data($0.text.utf8).base64EncodedString() + ":\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";") + "\n", stderr)
-            throw error
-        }
+        let parsed = try StatementImporter.importPDF(at: url)
         expect(parsed.operations.count == 4, "two physical tables with multiline descriptions")
         expect(parsed.operations.contains { $0.kind == "installment_payment" && $0.description == "Оплата товаров и услуг Yandex*5399*Ysplit" }, "Split description belongs to its own row")
         expect(parsed.operations.contains { $0.kind == "refund" && $0.description == "Возврат средств СБП QR Тестовый магазин" }, "refund physical row")

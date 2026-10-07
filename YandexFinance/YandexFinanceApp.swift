@@ -252,6 +252,9 @@ struct SettingsView: View {
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
     @State private var exportedBackup: BackupDocument?
     @State private var showBackupImporter = false
+    @State private var showCategoryImporter = false
+    @State private var importedCategoryPlan: ExpenseCategoryImport?
+    @State private var categoryImportError: String?
     @State private var pendingRestore: URL?
     var body: some View {
         let _ = presentation.prepare(browser.history)
@@ -302,8 +305,6 @@ struct SettingsView: View {
                         if browser.canResume {
                             Button("Продолжить загрузку истории") { browser.continueInitialHistory() }.disabled(!browser.storageAvailable)
                         }
-                        Button("Импортировать выписку") { browser.syncSixMonthsHistory() }
-                            .disabled(!browser.storageAvailable)
                     }
                     if !browser.message.isEmpty {
                         Text(browser.message).font(.footnote).accessibilityIdentifier("syncStatus")
@@ -347,16 +348,22 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("Журнал проверок") }.listRowBackground(GlassRowBackground())
                 Section {
-                    Button("Экспортировать резервную копию") {
+                    Button("Экспортировать резервную копию (JSON)") {
                         do { exportedBackup = BackupDocument(data: try browser.backupData()) }
                         catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
                     }
                     .disabled(!browser.storageAvailable || browser.busy)
-                    Button("Восстановить из копии") { showBackupImporter = true }
+                    Text("Сохранить операции, счета и правила в файл JSON.").font(.caption).foregroundStyle(.secondary)
+                    Button("Восстановить из копии (JSON)") { showBackupImporter = true }
                         .disabled(browser.busy)
-                    Text("Копия — файл со всеми операциями, счетами и группами. Сохраните его в «Файлы» или iCloud Drive. В нём ваши финансовые данные в открытом виде: не пересылайте его другим.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } header: { Text("Резервная копия") }.listRowBackground(GlassRowBackground())
+                    Text("Заменить данные приложения сохранённой копией JSON.").font(.caption).foregroundStyle(.secondary)
+                    Button("Импортировать PDF-выписки") { browser.syncSixMonthsHistory() }
+                        .disabled(!browser.storageAvailable || browser.busy)
+                    Text("Выбрать одну или несколько выписок счёта и Сейва.").font(.caption).foregroundStyle(.secondary)
+                    Button("Импортировать разметку категорий") { showCategoryImporter = true }
+                        .disabled(!browser.storageAvailable || browser.busy)
+                    Text("Применить категории из JSON после просмотра изменений.").font(.caption).foregroundStyle(.secondary)
+                } header: { Text("Файлы и данные") }.listRowBackground(GlassRowBackground())
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
                             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -405,6 +412,22 @@ struct SettingsView: View {
             Button("Применить") { browser.applyStatementImport() }
             Button("Отмена", role: .cancel) { browser.cancelStatementImport() }
         } message: { Text(browser.statementPreview?.summary ?? "") }
+        .fileImporter(isPresented: $showCategoryImporter, allowedContentTypes: [.json]) { result in
+            do {
+                let url = try result.get()
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let plan = try ExpenseCategoryImport.decode(Data(contentsOf: url))
+                _ = try plan.preview(browser.history)
+                importedCategoryPlan = plan
+            } catch { categoryImportError = error.localizedDescription }
+        }
+        .sheet(isPresented: Binding(get: { importedCategoryPlan != nil }, set: { if !$0 { importedCategoryPlan = nil } })) {
+            if let plan = importedCategoryPlan { ExpenseCategoryImportPreview(browser: browser, plan: plan) }
+        }
+        .alert("Не удалось импортировать разметку", isPresented: Binding(get: { categoryImportError != nil }, set: { if !$0 { categoryImportError = nil } })) {
+            Button("OK", role: .cancel) { categoryImportError = nil }
+        } message: { Text(categoryImportError ?? "") }
         .fileImporter(isPresented: $showBackupImporter, allowedContentTypes: [.json]) { result in
             if case .success(let url) = result { pendingRestore = url }
         }
