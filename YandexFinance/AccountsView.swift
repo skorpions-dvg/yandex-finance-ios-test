@@ -28,6 +28,7 @@ struct AccountsView: View {
     @ObservedObject var browser: BankBrowser
     var onClose: (() -> Void)? = nil
     var usesGlass = false
+    var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void = { _, _, _ in }
     @State private var presentation = FinancePresentationCache()
     @Environment(\.dismiss) private var dismiss
     @State private var editMode: EditMode = .inactive
@@ -106,6 +107,8 @@ struct AccountsView: View {
             .listStyle(.plain)
             .font(usesGlass ? .subheadline : .body)
             .scrollContentBackground(.hidden)
+            .gesture(HorizontalPanCapture(onPan: onHorizontalPan, excludesHorizontalScrollViews: false),
+                     including: usesGlass ? .all : .none)
             .containerBackground(Color.clear, for: .navigation)
             .presentationBackground { WallpaperBackground() }
             .toolbarBackground(usesGlass ? .hidden : .automatic, for: .navigationBar)

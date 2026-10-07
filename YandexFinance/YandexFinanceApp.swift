@@ -72,15 +72,11 @@ struct ContentView: View {
                         ZStack(alignment: .topLeading) {
                             Color.clear
                                 .frame(width: max(0, width - drawerPosition))
-                                .offset(x: drawerPosition)
                                 .contentShape(Rectangle())
                                 .onTapGesture { closeAccounts() }
-                            AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
-                                .frame(width: drawerWidth, height: max(0, geometry.size.height - 24), alignment: .top)
-                                .glassEffect(.regular, in: .rect(cornerRadius: 24))
-                                .clipShape(.rect(cornerRadius: 24))
-                                .gesture(
-                                    HorizontalPanCapture(onPan: { translation, velocity, ended in
+                                .offset(x: drawerPosition)
+                            AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true,
+                                         onHorizontalPan: { translation, velocity, ended in
                                         if ended {
                                             animate {
                                                 drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
@@ -88,10 +84,13 @@ struct ContentView: View {
                                                 drawerTranslation = 0
                                             }
                                         } else { drawerTranslation = min(0, translation) }
-                                    }, excludesHorizontalScrollViews: false)
-                                )
+                                    })
+                                .frame(width: drawerWidth, height: max(0, geometry.size.height - 24), alignment: .top)
+                                .glassEffect(.regular, in: .rect(cornerRadius: 24))
+                                .clipShape(.rect(cornerRadius: 24))
                                 .offset(x: -(drawerWidth + 8) + drawerPosition)
                         }
+                        .frame(width: width, height: geometry.size.height, alignment: .topLeading)
                         .allowsHitTesting(drawerOpen)
                         .accessibilityHidden(!drawerOpen)
                     }
