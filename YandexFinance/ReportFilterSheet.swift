@@ -6,6 +6,8 @@ struct ReportFilterSheet: View {
     let presentation: FinancePresentationCache
     let interval: DateInterval
     let mode: ReportMode
+    /// «Income and expenses» has no switch between the two, so its filter offers the categories and payees of both.
+    var bothModes = false
     @Binding var filter: ReportFilter
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
@@ -23,22 +25,30 @@ struct ReportFilterSheet: View {
         return slices.map(\.title)
     }
 
-    var body: some View {
-        let _ = presentation.prepare(browser.history)
-        let groups = Self.groups(browser: browser, presentation: presentation, interval: interval, mode: mode)
-        let payees: [ReportSlice] = presentation.value("filter-payees:\(mode.rawValue):\(interval.start):\(interval.end):\(ReportFilter.none.cacheKey)") {
+    private func payees(_ mode: ReportMode) -> [ReportSlice] {
+        presentation.value("filter-payees:\(mode.rawValue):\(interval.start):\(interval.end):\(ReportFilter.none.cacheKey)") {
             ReportEngine.slices(presentation.inputs(browser.history), in: interval, mode: mode,
                                 grouping: .payees, taxonomy: browser.history.expenseTaxonomy, filter: .none)
         }
+    }
+
+    var body: some View {
+        let _ = presentation.prepare(browser.history)
+        let allPayees: [ReportSlice] = {
+            guard bothModes else { return payees(mode) }
+            var seen = Set<String>()
+            return (payees(.expenses) + payees(.income)).sorted { $0.amountKopecks > $1.amountKopecks }.filter { seen.insert($0.id).inserted }
+        }()
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let shownPayees = Array(payees.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) }.prefix(50))
+        let shownPayees = Array(allPayees.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) }.prefix(50))
         NavigationStack {
             List {
-                Section("Категории") {
-                    ForEach(groups, id: \.self) { group in
-                        Toggle(group, isOn: includedGroup(group))
-                    }
-                }.glassRows()
+                if bothModes {
+                    groupsSection("Категории расходов", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: .expenses))
+                    groupsSection("Категории доходов", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: .income))
+                } else {
+                    groupsSection("Категории", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: mode))
+                }
                 Section("Получатели") {
                     TextField("Поиск получателя", text: $search)
                         .autocorrectionDisabled()
@@ -58,7 +68,7 @@ struct ReportFilterSheet: View {
                 }.glassRows()
             }
             .appSurface()
-            .navigationTitle("Фильтр · \(mode.title)")
+            .navigationTitle(bothModes ? "Фильтр" : "Фильтр · \(mode.title)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Сбросить") { filter = .none } }
@@ -66,6 +76,14 @@ struct ReportFilterSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private func groupsSection(_ title: String, _ groups: [String]) -> some View {
+        Section(title) {
+            ForEach(groups, id: \.self) { group in
+                Toggle(group, isOn: includedGroup(group))
+            }
+        }.glassRows()
     }
 
     private func includedGroup(_ group: String) -> Binding<Bool> {

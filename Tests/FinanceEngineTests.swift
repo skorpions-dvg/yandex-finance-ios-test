@@ -1369,6 +1369,19 @@ struct FinanceEngineTests {
                 "with a filter the flow is the plain sum of allowed expenses and income")
         require(ReportEngine.flow(inputs, buckets: weeks, filter: ReportFilter(excludedGroups: [income[0].title])).reduce(0) { $0 + $1.incomeKopecks } == 0,
                 "an excluded income category is out of the flow")
+        // The list behind a row follows the same filter as its sum
+        let slicesSum = ReportEngine.slices(inputs, in: september, mode: .expenses, grouping: .categories, taxonomy: taxonomy, filter: withoutFood)
+            .reduce(Int64(0)) { $0 + $1.amountKopecks }
+        let allowedInMonth = inputs.filter { input in
+            guard let when = BankDateParser.parse(input.occurredAt), when >= september.start, when < september.end else { return false }
+            return ReportEngine.isAllowed(input, by: withoutFood)
+        }.reduce(Int64(0)) { $0 + FinancialEngine.classify($1).expenseContributionKopecks }
+        require(allowedInMonth == slicesSum, "the operations behind «Все расходы» add up to the filtered structure")
+        let shopOnly = inputs.filter { ReportEngine.isAllowed($0, by: noShop) && FinancialEngine.classify($0).type == .expense && $0.description == "Пятёрочка" }
+        require(shopOnly.isEmpty, "an excluded payee is not in the list either")
+        require(inputs.allSatisfy { ReportEngine.isAllowed($0, by: .none) }, "without a filter every operation is allowed")
+        require(ReportEngine.isAllowed(op(5_000, kind: "refund", category: "Возврат", description: "Возврат Пятёрочка", date: iso(9, 5)), by: withoutFood),
+                "refunds are not filtered by category")
         require(withoutFood.cacheKey != ReportFilter.none.cacheKey && ReportFilter(excludedGroups: ["Еда"]).cacheKey == withoutFood.cacheKey, "the cache key follows the filter")
 
         // Balances

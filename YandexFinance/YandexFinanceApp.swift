@@ -902,13 +902,15 @@ struct FinanceCategoryOperationsView: View {
     @ObservedObject var browser: BankBrowser
     let interval: DateInterval
     let selection: FinanceOperationSelection
+    /// The filter of the report this list was opened from: the list holds exactly the operations behind the sum.
+    var filter: ReportFilter = .none
     @State private var editedManualOperation: ManualOperation?
 
     private var operations: [BankOperation] {
         zip(browser.history.allOperations, browser.history.financialInputs)
             .filter { operation, input in
                 guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { return false }
-                return selection.matches(input)
+                return selection.matches(input) && ReportEngine.isAllowed(input, by: filter)
             }
             .map { $0.0 }
             .sorted { lhs, rhs in

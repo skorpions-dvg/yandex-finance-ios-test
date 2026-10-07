@@ -181,6 +181,15 @@ enum ReportEngine {
         return kept.isEmpty ? buckets : kept
     }
 
+    /// Whether an operation passes the filter: the list behind a report row shows exactly what its sum is made of.
+    /// Operations that are neither expenses nor income of the reports (refunds, Split, transfers) are not filtered.
+    static func isAllowed(_ input: FinancialOperationInput, by filter: ReportFilter) -> Bool {
+        guard filter.isActive else { return true }
+        if let item = entry(input, mode: .expenses) { return filter.allows(group: item.group, payee: item.payee) }
+        if let item = entry(input, mode: .income) { return filter.allows(group: item.group, payee: item.payee) }
+        return true
+    }
+
     // MARK: Structure
 
     private static func date(_ input: FinancialOperationInput) -> Date? { BankDateParser.parse(input.occurredAt) }

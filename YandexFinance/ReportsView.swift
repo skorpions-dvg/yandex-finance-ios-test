@@ -107,7 +107,8 @@ struct ReportsView: View {
                 ReportPeriodSheet(period: $period, first: first)
             }
             .sheet(isPresented: $showFilterSheet) {
-                ReportFilterSheet(browser: browser, presentation: presentation, interval: interval, mode: mode, filter: $filter)
+                ReportFilterSheet(browser: browser, presentation: presentation, interval: interval, mode: mode,
+                                  bothModes: tab == .flow, filter: $filter)
             }
             .onChange(of: mode) { _, newMode in
                 let groups = ReportFilterSheet.groups(browser: browser, presentation: presentation, interval: interval, mode: newMode)
@@ -393,7 +394,7 @@ private struct ReportSliceList: View {
             Section {
                 NavigationLink {
                     FinanceCategoryOperationsView(browser: browser, interval: interval,
-                                                  selection: mode == .expenses ? .allExpenses : .allIncome)
+                                                  selection: mode == .expenses ? .allExpenses : .allIncome, filter: filter)
                 } label: {
                     VStack(spacing: 6) {
                         HStack {
@@ -497,7 +498,7 @@ private struct ReportDetailView: View {
             }.glassRows()
             Section {
                 NavigationLink {
-                    FinanceCategoryOperationsView(browser: browser, interval: interval, selection: selection)
+                    FinanceCategoryOperationsView(browser: browser, interval: interval, selection: selection, filter: filter)
                 } label: {
                     HStack {
                         Image(systemName: "sum").foregroundStyle(.secondary).frame(width: 28)
@@ -509,7 +510,7 @@ private struct ReportDetailView: View {
                 ForEach(slice.children) { child in
                     NavigationLink {
                         FinanceCategoryOperationsView(browser: browser, interval: interval,
-                                                      selection: .expense(group: slice.title, subcategory: child.title))
+                                                      selection: .expense(group: slice.title, subcategory: child.title), filter: filter)
                     } label: {
                         HStack {
                             Circle().fill(ReportPalette.color(slice.title).opacity(0.7)).frame(width: 12, height: 12).frame(width: 28)
