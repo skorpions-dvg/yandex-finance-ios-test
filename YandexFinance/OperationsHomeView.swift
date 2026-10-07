@@ -20,6 +20,7 @@ struct OperationsHomeView: View {
     @State private var customFrom = Date()
     @State private var customThrough = Date()
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     
     // MARK: - Computed values
     private var interval: DateInterval {
@@ -319,7 +320,9 @@ struct OperationsHomeView: View {
     // MARK: - History Header
     private var historyHeader: some View {
         Button(action: {
-            historyExpanded = !isHistoryExpanded
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) {
+                historyExpanded = !isHistoryExpanded
+            }
         }) {
             HStack {
                 Text("Операции")
