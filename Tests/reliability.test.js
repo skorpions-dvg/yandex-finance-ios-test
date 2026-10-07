@@ -626,8 +626,8 @@ const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.sw
 assert.match(projectV25, /FinanceEngine\.swift/);
 // Build numbers and README consistency are checked together above.
 assert.match(appSwift, /\("Отчёты", "chart\.pie"\)/);
-assert.match(appSwift, /Button\(action: previousMonth\)[\s\S]{0,400}Button\(action: nextMonth\)[\s\S]{0,300}\}\s*(?:\/\/[^\n]*\s*)?\.buttonStyle\(\.borderless\)/,
-  'month switcher buttons share a List row and must be borderless, otherwise one tap fires both');
+assert.match(appSwift, /Button \{ shift\(-1\) \}[\s\S]{0,700}Button \{ shift\(1\) \}[\s\S]{0,300}\}\s*(?:\/\/[^\n]*\s*)?\.buttonStyle\(\.borderless\)/,
+  'period switcher buttons share a List row and must be borderless, otherwise one tap fires all of them');
 assert.match(appSwift, /Банковские списания/);
 assert.match(appSwift, /DisclosureGroup/);
 assert.match(financeEngine, /case internalTransfer = "internal_transfer"/);

@@ -185,10 +185,26 @@ struct BuiltinWallpaperImage: View {
     }
 }
 
+private struct BottomBarSpaceKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    /// Room the floating tab bar takes at the bottom of a page; lists end their content above it.
+    var bottomBarSpace: CGFloat {
+        get { self[BottomBarSpaceKey.self] }
+        set { self[BottomBarSpaceKey.self] = newValue }
+    }
+}
+
 struct AppSurfaceModifier: ViewModifier {
+    @Environment(\.bottomBarSpace) private var bottomBarSpace
+
     func body(content: Content) -> some View {
         content
             .scrollContentBackground(.hidden)
+            // The last row stops above the floating tab bar instead of hiding under it.
+            .contentMargins(.bottom, bottomBarSpace, for: .scrollContent)
             .containerBackground(Color.clear, for: .navigation)
             // Pages stay transparent over the stationary wallpaper owned by ContentView.
             // A presented sheet owns one background beneath its navigation transitions.

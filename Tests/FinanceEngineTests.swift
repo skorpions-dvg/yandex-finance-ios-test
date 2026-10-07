@@ -69,6 +69,28 @@ struct FinanceEngineTests {
         let yearBoundary = monthComparisonPeriods(selectedStart: date(2024, 1), currentDate: date(2024, 1, 15, 12), calendar: calendar)
         require(yearBoundary.previous == interval(date(2023, 12), date(2023, 12, 16)), "January compares with December of the previous year")
 
+        // Reports by day and by year.
+        let now = date(2024, 3, 5, 15)
+        require(reportStart(of: now, unit: .day, calendar: calendar) == date(2024, 3, 5), "day start")
+        require(reportStart(of: now, unit: .year, calendar: calendar) == date(2024, 1), "year start")
+        require(reportInterval(start: date(2024, 1), unit: .year, calendar: calendar) == interval(date(2024, 1), date(2025, 1)), "a year interval")
+        require(shiftedReportStart(date(2024, 3, 5), unit: .day, by: 1, currentDate: now, calendar: calendar) == nil, "no future day")
+        require(shiftedReportStart(date(2024, 3, 5), unit: .day, by: -1, currentDate: now, calendar: calendar) == date(2024, 3, 4), "previous day")
+        require(shiftedReportStart(date(2024, 1), unit: .year, by: -1, currentDate: now, calendar: calendar) == date(2023, 1), "previous year")
+        require(shiftedReportStart(date(2023, 1), unit: .year, by: 1, currentDate: now, calendar: calendar) == date(2024, 1), "back to this year")
+        let today = reportComparisonPeriods(start: date(2024, 3, 5), unit: .day, currentDate: now, calendar: calendar)
+        require(today.isPartial && today.current == interval(date(2024, 3, 5), now)
+                && today.previous == interval(date(2024, 3, 4), date(2024, 3, 4, 15)), "today compares with yesterday up to the same hour")
+        let pastDay = reportComparisonPeriods(start: date(2024, 3, 1), unit: .day, currentDate: now, calendar: calendar)
+        require(!pastDay.isPartial && pastDay.previous == interval(date(2024, 2, 29), date(2024, 3, 1)), "a past day compares with the whole previous day")
+        let thisYear = reportComparisonPeriods(start: date(2024, 1), unit: .year, currentDate: now, calendar: calendar)
+        require(thisYear.isPartial && thisYear.current == interval(date(2024, 1), date(2024, 3, 6))
+                && thisYear.previous == interval(date(2023, 1), date(2023, 3, 6)), "this year compares the same elapsed days")
+        let pastYear = reportComparisonPeriods(start: date(2023, 1), unit: .year, currentDate: now, calendar: calendar)
+        require(!pastYear.isPartial && pastYear.previous == interval(date(2022, 1), date(2023, 1)), "a past year compares with the whole previous year")
+        require(reportComparisonPeriods(start: date(2024, 2), unit: .month, currentDate: date(2024, 2, 6, 10), calendar: calendar) == partial,
+                "months keep their existing comparison")
+
         let longerThanFebruary = monthComparisonPeriods(selectedStart: date(2024, 3), currentDate: date(2024, 3, 31, 23), calendar: calendar)
         require(longerThanFebruary.current == interval(date(2024, 3), date(2024, 4)), "31 elapsed days cover all of March")
         require(longerThanFebruary.previous == interval(date(2024, 2), date(2024, 3)), "shorter February is used whole and does not spill into March")

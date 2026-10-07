@@ -35,7 +35,7 @@ struct ContentView: View {
     @State private var tabSelection = TabBarSelection()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Height the floating tab bar takes at the bottom of every page.
-    static let barSpace: CGFloat = 74
+    static let barSpace: CGFloat = 56
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
@@ -70,7 +70,7 @@ struct ContentView: View {
                             OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
                                                onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
-                                .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.barSpace) }
+                                .environment(\.bottomBarSpace, Self.barSpace)
                                 .frame(width: width, height: height)
                                 .overlay {
                                     // While the accounts are open, a tap on the visible edge of the page closes them.
@@ -82,13 +82,13 @@ struct ContentView: View {
                             FinanceDashboardView(browser: browser, presentation: presentation,
                                                  onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
-                                .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.barSpace) }
+                                .environment(\.bottomBarSpace, Self.barSpace)
                                 .frame(width: width, height: height)
                                 .id(2)
                             SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
                                          onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
-                                .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: Self.barSpace) }
+                                .environment(\.bottomBarSpace, Self.barSpace)
                                 .frame(width: width, height: height)
                                 .id(3)
                         }
@@ -112,9 +112,10 @@ struct ContentView: View {
                     }
                 }
 
+                // Close to the bottom edge, just above the home indicator, as in Telegram.
                 LensTabBar(progress: tabProgress, selection: tabSelection, reduceMotion: reduceMotion, select: selectTab)
                     .padding(.horizontal, 40)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, -14)
             }
             .opacity(browser.bankPageVisible ? 0 : 1)
             .allowsHitTesting(!browser.bankPageVisible)
@@ -969,20 +970,29 @@ struct FinanceDashboardView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
     var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
-    // Selected month start date (first day of the month). Defaults to current month.
-    @State private var selectedMonthStart: Date = monthStart(of: Date())
+    /// Shown period: a day, a month or a year, by its first moment. Defaults to the current month.
+    @State private var unit: ReportUnit = .month
+    @State private var selectedStart: Date = monthStart(of: Date())
+    @State private var showCalendar = false
+    @State private var calendarDate = Date()
 
-    // Helper to go to previous month.
-    private func previousMonth() {
-        if let newDate = Calendar.current.date(byAdding: .month, value: -1, to: selectedMonthStart) {
-            selectedMonthStart = newDate
+    private func shift(_ step: Int) {
+        if let start = shiftedReportStart(selectedStart, unit: unit, by: step) { selectedStart = start }
+    }
+
+    private var periodTitle: String {
+        switch unit {
+        case .day: return selectedStart.formatted(.dateTime.day().month(.abbreviated).year())
+        case .month: return selectedStart.formatted(.dateTime.month(.wide).year())
+        case .year: return selectedStart.formatted(.dateTime.year())
         }
     }
 
-    // Helper to go to next month (not into future months).
-    private func nextMonth() {
-        if let newDate = nextMonthIfAllowed(selectedStart: selectedMonthStart) {
-            selectedMonthStart = newDate
+    private var unitWord: String {
+        switch unit {
+        case .day: return "дня"
+        case .month: return "месяца"
+        case .year: return "года"
         }
     }
 
@@ -1008,6 +1018,9 @@ struct FinanceDashboardView: View {
 
     private func periodText(_ period: DateInterval) -> String {
         let last = period.end.addingTimeInterval(-1)
+        if Calendar.current.isDate(period.start, inSameDayAs: last) {
+            return period.start.formatted(.dateTime.day().month())
+        }
         return "\(period.start.formatted(.dateTime.day().month())) — \(last.formatted(.dateTime.day().month()))"
     }
 
@@ -1072,27 +1085,46 @@ struct FinanceDashboardView: View {
 
 
     var body: some View {
-        // Compute the interval based on the selected month.
-        let monthStart = selectedMonthStart
-        let interval = DateInterval(start: monthStart, end: Calendar.current.date(byAdding: .month, value: 1, to: monthStart)!)
+        // The interval of the selected day, month or year.
+        let interval = reportInterval(start: selectedStart, unit: unit)
         let _ = presentation.prepare(browser.history)
         let inputs = presentation.inputs(browser.history)
         let report = presentation.report(browser.history, interval: interval)
-        let periods = monthComparisonPeriods(selectedStart: monthStart)
+        let periods = reportComparisonPeriods(start: selectedStart, unit: unit)
         let comparison = presentation.value("comparison:\(periods.current):\(periods.previous)") {
             FinancialEngine.compareReports(inputs, currentInterval: periods.current, previousInterval: periods.previous, taxonomy: browser.history.expenseTaxonomy)
         }
         NavigationStack {
             List {
+                Section {
+                    Picker("Период", selection: $unit) {
+                        Text("День").tag(ReportUnit.day)
+                        Text("Месяц").tag(ReportUnit.month)
+                        Text("Год").tag(ReportUnit.year)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: unit) { _, newUnit in
+                        // Keep the period that contains the shown one (or today, if the shown one is current).
+                        let anchor = min(Date(), max(selectedStart, interval.start))
+                        selectedStart = reportStart(of: anchor, unit: newUnit)
+                    }
                     HStack {
-                        Button(action: previousMonth) { Image(systemName:"chevron.left") }
-                        Text(selectedMonthStart.formatted(.dateTime.month().year()))
-                            .fontWeight(.semibold)
-                        Button(action: nextMonth) { Image(systemName:"chevron.right") }
-                            .disabled(nextMonthIfAllowed(selectedStart: selectedMonthStart) == nil)
+                        Button { shift(-1) } label: { Image(systemName: "chevron.left") }
+                        Spacer()
+                        // A tap on the period opens a calendar to jump straight to a date.
+                        Button {
+                            calendarDate = selectedStart
+                            showCalendar = true
+                        } label: {
+                            Text(periodTitle).fontWeight(.semibold).foregroundStyle(.primary)
+                        }
+                        Spacer()
+                        Button { shift(1) } label: { Image(systemName: "chevron.right") }
+                            .disabled(shiftedReportStart(selectedStart, unit: unit, by: 1) == nil)
                     }
                     // In a List row every default-style button fires on any tap in the row.
                     .buttonStyle(.borderless)
+                }.glassRows()
                 Section("Расходы по категориям") {
                     CategoryExpenseChart(groups: FinancialEngine.expenseByGroup(report), refundsKopecks: report.refundsKopecks)
                 }.glassRows()
@@ -1108,7 +1140,7 @@ struct FinanceDashboardView: View {
                     incompleteBlock(report)
                 }
 
-                Section("Итог месяца") {
+                Section("Итог \(unitWord)") {
                     LabeledContent("Разница", value: signed(report.differenceKopecks))
                     LabeledContent("Операций", value: String(report.operationCount))
                     if report.invalidDateCount > 0 {
@@ -1183,6 +1215,27 @@ struct FinanceDashboardView: View {
             .navigationTitle("Отчёты")
             // Large titles lose their leading margin inside the horizontal pages; inline matches «Операции».
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showCalendar) {
+                NavigationStack {
+                    DatePicker("Дата", selection: $calendarDate, in: ...Date(), displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                        .padding()
+                        .navigationTitle("Перейти к дате")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button("Отмена", systemImage: "xmark") { showCalendar = false }
+                            }
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Готово", systemImage: "checkmark") {
+                                    selectedStart = reportStart(of: calendarDate, unit: unit)
+                                    showCalendar = false
+                                }
+                            }
+                        }
+                }
+                .presentationDetents([.medium, .large])
+            }
         }
     }
 
