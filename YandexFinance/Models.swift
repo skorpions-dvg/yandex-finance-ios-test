@@ -781,6 +781,61 @@ extension SavedHistory {
     }
 }
 
+// MARK: - Account report (stage 42)
+
+/// One operation as it moves one account: `delta` is its signed effect on that account's balance
+/// (a transfer is negative for the account it leaves and positive for the one it reaches).
+struct AccountMovement: Identifiable {
+    let operation: BankOperation
+    let date: Date
+    let delta: Int64
+    var id: String { operation.identity }
+}
+
+extension SavedHistory {
+    /// Every operation that moves `account`, counted exactly as `Account.balance` counts it, newest first:
+    /// for the scanned card — bank rows from its start date (without cancelled rows and without the Save side of
+    /// card ↔ Save transfers); for other accounts — manual entries from its start date.
+    func accountMovements(_ account: Account) -> [AccountMovement] {
+        var result: [AccountMovement] = []
+        if account.tracksBankCard {
+            let inputs = operations.map(\.financialInput)
+            let otherAccountRows = FinancialEngine.saveSidePairRows(inputs)
+            for (index, operation) in operations.enumerated() {
+                let input = inputs[index]
+                guard !FinancialEngine.isSaveSide(input), !otherAccountRows.contains(index),
+                      let date = BankDateParser.parse(operation.occurredAt), date >= account.startDate,
+                      FinancialEngine.classify(input).type != .cancelled else { continue }
+                result.append(AccountMovement(operation: operation, date: date, delta: operation.amountKopecks))
+            }
+        } else {
+            for manual in manualOperations ?? [] where manual.date >= account.startDate {
+                let delta: Int64
+                switch manual.kind {
+                case .expense: delta = manual.accountID == account.id ? -manual.amountKopecks : 0
+                case .income: delta = manual.accountID == account.id ? manual.amountKopecks : 0
+                case .transfer:
+                    delta = (manual.accountID == account.id ? -manual.amountKopecks : 0)
+                        + (manual.toAccountID == account.id ? manual.amountKopecks : 0)
+                }
+                if manual.accountID == account.id || (manual.kind == .transfer && manual.toAccountID == account.id) {
+                    result.append(AccountMovement(operation: manual.bankOperation, date: manual.date, delta: delta))
+                }
+            }
+        }
+        return result.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+    }
+
+    /// Balance of `account` at each moment (operations strictly before it count); before the start date it is the
+    /// entered start balance. The last value for `Date.distantFuture` equals `Account.balance`.
+    func accountBalances(_ account: Account, at moments: [Date]) -> [Int64] {
+        let movements = accountMovements(account).sorted { $0.date < $1.date }
+        return moments.map { moment in
+            movements.lazy.filter { $0.date < moment }.reduce(account.startBalanceKopecks) { $0 + $1.delta }
+        }
+    }
+}
+
 /// Plain JSON copy of everything the app keeps, for the user's own backup.
 enum HistoryBackup {
     static let formatVersion = 1

@@ -991,6 +991,48 @@ struct FinanceEngineTests {
         require(untouched.expenseCategories == nil, "the built-in tree is not materialized by the move")
     }
 
+    static func testAccountMovements() {
+        let start = BankDateParser.parse("2032-06-01T00:00:00Z")!
+        let card = Account(name: "Карта", icon: "creditcard", color: "yellow", startBalanceKopecks: 100_000, startDate: start, tracksBankCard: true)
+        let cash = Account(name: "Наличные", icon: "banknote", color: "green", startBalanceKopecks: 50_000, startDate: start)
+        let save = Account(name: "Сейв", icon: "building.columns", color: "blue", startBalanceKopecks: 0, startDate: start)
+        var history = SavedHistory()
+        history.accounts = [card, cash, save]
+        let before = bankOp("m0", -9_000, description: "Магазин", mcc: "5411", date: "2032-05-30T10:00:00Z")
+        let shop = bankOp("m1", -10_000, description: "Магазин", mcc: "5411", date: "2032-06-02T10:00:00Z")
+        var cancelled = bankOp("m2", -7_000, description: "Магазин", mcc: "5411", date: "2032-06-02T11:00:00Z")
+        cancelled = BankOperation(identity: cancelled.identity, occurredAt: cancelled.occurredAt, timePrecision: "exact",
+                                  description: cancelled.description, amountKopecks: cancelled.amountKopecks, currency: "RUB",
+                                  status: "Отменено", category: "Тест", mcc: "5411", purpose: nil, paymentMethod: nil, providers: [], kind: "expense")
+        let toSave = bankOp("m3", -20_000, description: "Счёт в Сейвах", kind: "internal_transfer", date: "2032-06-03T09:00:00.100Z")
+        let saveSide = bankOp("m4", 20_000, description: "Счёт в Сейвах", kind: "internal_transfer", date: "2032-06-03T09:00:00.300Z")
+        history.operations = [before, shop, cancelled, toSave, saveSide]
+        let coffee = ManualOperation(kind: .expense, amountKopecks: 3_000, date: start.addingTimeInterval(86400), accountID: cash.id,
+                                     group: "Еда", subcategory: "Кафе и рестораны")
+        let deposit = ManualOperation(kind: .transfer, amountKopecks: 20_000, date: start.addingTimeInterval(2 * 86400 + 3600),
+                                      accountID: card.id, toAccountID: save.id)
+        let fromCash = ManualOperation(kind: .transfer, amountKopecks: 5_000, date: start.addingTimeInterval(3 * 86400),
+                                       accountID: cash.id, toAccountID: save.id)
+        history.manualOperations = [coffee, deposit, fromCash]
+
+        let cardMoves = history.accountMovements(card)
+        require(cardMoves.map(\.operation.identity) == ["m3", "m1"], "the card: its own rows from the start, newest first, no cancelled or Save side")
+        require(cardMoves.map(\.delta) == [-20_000, -10_000], "card deltas are the bank amounts")
+        let cashMoves = history.accountMovements(cash)
+        require(cashMoves.map(\.delta) == [-5_000, -3_000], "cash: an expense and a transfer out")
+        let saveMoves = history.accountMovements(save)
+        require(saveMoves.map(\.delta) == [5_000, 20_000], "the Save receives both transfers as positive")
+
+        for account in [card, cash, save] {
+            let now = history.accountBalances(account, at: [.distantFuture])[0]
+            require(now == account.balance(bankOperations: history.operations.map(\.financialInput), manual: history.manualOperations ?? []),
+                    "the balance series ends at the account balance: \(account.name)")
+        }
+        let days = (0...4).map { start.addingTimeInterval(Double($0) * 86400) }
+        require(history.accountBalances(cash, at: days) == [50_000, 50_000, 47_000, 47_000, 42_000], "cash balance day by day")
+        require(history.accountBalances(card, at: [start.addingTimeInterval(-86400)]) == [100_000], "before the start the entered balance")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1382,6 +1424,7 @@ struct FinanceEngineTests {
         testCardToSaveTransfer()
         testOperationLooks()
         testOtherShrinks()
+        testAccountMovements()
 
         print("Finance engine tests passed")
     }
