@@ -64,6 +64,8 @@ struct ReportsView: View {
     @State private var stepChoice: ReportStep = .automatic
     @State private var perAccount = false
     @State private var showPeriodSheet = false
+    @State private var filter: ReportFilter = .none
+    @State private var showFilterSheet = false
 
     private var calendar: Calendar { .current }
 
@@ -87,14 +89,14 @@ struct ReportsView: View {
                     switch tab {
                     case .structure:
                         StructureContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
-                                         grouping: grouping, showsChart: true, buckets: buckets)
+                                         grouping: grouping, showsChart: true, buckets: buckets, filter: filter)
                     case .dynamics:
                         DynamicsContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
-                                        grouping: grouping, buckets: buckets, step: step)
+                                        grouping: grouping, buckets: buckets, step: step, filter: filter)
                     case .balances:
                         BalancesContent(browser: browser, presentation: presentation, interval: shownInterval, buckets: shownBuckets, step: step, perAccount: perAccount)
                     case .flow:
-                        FlowContent(presentation: presentation, browser: browser, interval: shownInterval, buckets: shownBuckets, step: step)
+                        FlowContent(presentation: presentation, browser: browser, interval: shownInterval, buckets: shownBuckets, step: step, filter: filter)
                     }
                 }
                 .appSurface()
@@ -103,6 +105,13 @@ struct ReportsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showPeriodSheet) {
                 ReportPeriodSheet(period: $period, first: first)
+            }
+            .sheet(isPresented: $showFilterSheet) {
+                ReportFilterSheet(browser: browser, presentation: presentation, interval: interval, mode: mode, filter: $filter)
+            }
+            .onChange(of: mode) { _, newMode in
+                let groups = ReportFilterSheet.groups(browser: browser, presentation: presentation, interval: interval, mode: newMode)
+                filter.excludedGroups.formIntersection(Set(groups))
             }
         }
     }
@@ -183,6 +192,19 @@ struct ReportsView: View {
                     } label: { pill(stepChoice == .automatic ? "Шаг" : stepChoice.title) }
                     .tint(.white)
                 }
+                if tab != .balances {
+                    Button { showFilterSheet = true } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "line.3.horizontal.decrease.circle")
+                            Text(filter.isActive ? "Фильтр · \(filter.excludedGroups.count + filter.excludedPayees.count)" : "Фильтр")
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(filter.isActive ? Color.accentColor : Color.primary.opacity(0.1), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.horizontal, 16)
         }
@@ -224,12 +246,13 @@ private struct StructureContent: View {
     let grouping: ReportGrouping
     let showsChart: Bool
     let buckets: [DateInterval]
+    let filter: ReportFilter
 
     var body: some View {
-        let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping)
+        let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, filter: filter)
         let report = presentation.report(browser.history, interval: interval)
         let total = slices.reduce(Int64(0)) { $0 + $1.amountKopecks }
-        let headline = mode == .expenses ? report.netExpenseKopecks : total
+        let headline = mode == .expenses && !filter.isActive ? report.netExpenseKopecks : total
         if showsChart {
             Section {
                 if slices.isEmpty {
@@ -267,8 +290,8 @@ private struct StructureContent: View {
             }.glassRows()
         }
         ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices, total: total, headline: headline,
-                        refundsKopecks: mode == .expenses ? report.refundsKopecks : 0)
-        separateSection(report)
+                        refundsKopecks: mode == .expenses && !filter.isActive ? report.refundsKopecks : 0, filter: filter)
+        if !filter.isActive { separateSection(report) }
     }
 
     /// A percentage on a sector: the angle of its middle, clockwise from the top. Small sectors have no label.
@@ -355,12 +378,13 @@ private struct ReportSliceList: View {
     /// The figure of the «all» row: the same as the centre of the ring (expenses are net of refunds).
     let headline: Int64
     let refundsKopecks: Int64
+    let filter: ReportFilter
 
     static func compute(browser: BankBrowser, presentation: FinancePresentationCache, interval: DateInterval,
-                        mode: ReportMode, grouping: ReportGrouping) -> [ReportSlice] {
-        presentation.value("slices:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end)") {
+                        mode: ReportMode, grouping: ReportGrouping, filter: ReportFilter) -> [ReportSlice] {
+        presentation.value("slices:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(filter.cacheKey)") {
             ReportEngine.slices(presentation.inputs(browser.history), in: interval, mode: mode, grouping: grouping,
-                                taxonomy: browser.history.expenseTaxonomy)
+                                taxonomy: browser.history.expenseTaxonomy, filter: filter)
         }
     }
 
@@ -383,7 +407,7 @@ private struct ReportSliceList: View {
                 }
                 ForEach(slices) { slice in
                     NavigationLink {
-                        ReportDetailView(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slice: slice)
+                        ReportDetailView(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slice: slice, filter: filter)
                     } label: {
                         VStack(spacing: 6) {
                             HStack {
@@ -441,6 +465,7 @@ private struct ReportDetailView: View {
     let mode: ReportMode
     let grouping: ReportGrouping
     let slice: ReportSlice
+    let filter: ReportFilter
     @State private var stepChoice: ReportStep = .automatic
 
     private var selection: FinanceOperationSelection {
@@ -453,8 +478,8 @@ private struct ReportDetailView: View {
     var body: some View {
         let step = ReportEngine.step(stepChoice, for: interval)
         let buckets = ReportEngine.buckets(interval, step: step)
-        let bars = presentation.value("detail-bars:\(mode.rawValue):\(grouping.rawValue):\(slice.id):\(interval.start):\(interval.end):\(step.rawValue)") {
-            ReportEngine.bars(presentation.inputs(browser.history), buckets: buckets, mode: mode, grouping: grouping, focus: slice.id)
+        let bars = presentation.value("detail-bars:\(mode.rawValue):\(grouping.rawValue):\(slice.id):\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
+            ReportEngine.bars(presentation.inputs(browser.history), buckets: buckets, mode: mode, grouping: grouping, focus: slice.id, filter: filter)
         }
         List {
             Section {
@@ -566,20 +591,21 @@ private struct DynamicsContent: View {
     let grouping: ReportGrouping
     let buckets: [DateInterval]
     let step: ReportStep
+    let filter: ReportFilter
 
     var body: some View {
-        let bars = presentation.value("bars:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(step.rawValue)") {
-            ReportEngine.bars(presentation.inputs(browser.history), buckets: buckets, mode: mode, grouping: grouping)
+        let bars = presentation.value("bars:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
+            ReportEngine.bars(presentation.inputs(browser.history), buckets: buckets, mode: mode, grouping: grouping, filter: filter)
         }
         Section {
             StackedBarsChart(bars: bars, buckets: buckets, step: step)
         }.glassRows()
-        let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping)
+        let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, filter: filter)
         let report = presentation.report(browser.history, interval: interval)
         let total = slices.reduce(Int64(0)) { $0 + $1.amountKopecks }
         ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices,
-                        total: total, headline: mode == .expenses ? report.netExpenseKopecks : total,
-                        refundsKopecks: mode == .expenses ? report.refundsKopecks : 0)
+                        total: total, headline: mode == .expenses && !filter.isActive ? report.netExpenseKopecks : total,
+                        refundsKopecks: mode == .expenses && !filter.isActive ? report.refundsKopecks : 0, filter: filter)
     }
 }
 
@@ -699,10 +725,11 @@ private struct FlowContent: View {
     let interval: DateInterval
     let buckets: [DateInterval]
     let step: ReportStep
+    let filter: ReportFilter
 
     var body: some View {
-        let points = presentation.value("flow:\(interval.start):\(interval.end):\(step.rawValue)") {
-            ReportEngine.flow(presentation.inputs(browser.history), buckets: buckets)
+        let points = presentation.value("flow:\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
+            ReportEngine.flow(presentation.inputs(browser.history), buckets: buckets, filter: filter)
         }
         let income = points.reduce(Int64(0)) { $0 + $1.incomeKopecks }
         let expense = points.reduce(Int64(0)) { $0 + $1.expenseKopecks }
