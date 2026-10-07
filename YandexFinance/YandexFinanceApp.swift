@@ -6,11 +6,13 @@ import UniformTypeIdentifiers
 struct YandexFinanceApp: App {
     @StateObject private var browser = BankBrowser()
     @StateObject private var wallpaper = WallpaperStore()
+    @AppStorage("appearanceTheme") private var appearanceTheme = AppTheme.system.rawValue
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
             ContentView(browser: browser)
                 .environmentObject(wallpaper)
+                .preferredColorScheme(AppTheme(rawValue: appearanceTheme)?.colorScheme)
                 .onAppear { if scenePhase == .active { browser.becameActive() } }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { browser.becameActive() }
@@ -253,6 +255,7 @@ struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
     var resetToken: Int
+    @AppStorage("appearanceTheme") private var appearanceTheme = AppTheme.system.rawValue
     @State private var navigationPath = NavigationPath()
     var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
@@ -284,6 +287,9 @@ struct SettingsView: View {
                     }.listRowBackground(GlassRowBackground())
                 }
                 Section {
+                    Picker("Тема", selection: $appearanceTheme) {
+                        ForEach(AppTheme.allCases) { theme in Text(theme.title).tag(theme.rawValue) }
+                    }
                     Toggle("История всегда развёрнута", isOn: $historyAlwaysExpanded)
                     Text("Иначе список операций на главном экране открывается по нажатию на «Операции».")
                         .font(.caption).foregroundStyle(.secondary)

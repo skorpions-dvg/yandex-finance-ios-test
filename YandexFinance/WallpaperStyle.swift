@@ -3,6 +3,25 @@ import PhotosUI
 import UniformTypeIdentifiers
 import ImageIO
 
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .system: return "Системная"
+        case .light: return "Светлая"
+        case .dark: return "Тёмная"
+        }
+    }
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 struct BuiltinWallpaper: Identifiable {
     let id: String
     let name: String
@@ -95,7 +114,7 @@ struct WallpaperBackground: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
-            .overlay(Color.black.opacity(colorScheme == .dark ? 0.28 : 0.08))
+            .overlay((colorScheme == .dark ? Color.black : Color.white).opacity(colorScheme == .dark ? 0.28 : 0.58))
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
