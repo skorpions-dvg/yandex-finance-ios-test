@@ -28,11 +28,11 @@ struct ContentView: View {
     @State private var selectedTab = 1
     @State private var settingsReset = 0
     @State private var presentation = FinancePresentationCache()
-    @State private var pageTranslation: CGFloat = 0
+    @State private var pageMotion = NavigationTranslation()
     @State private var drawerOpen = false
     @State private var drawerTranslation: CGFloat = 0
     @State private var drawerMounted = false
-    @State private var panRoute = 0 // 1: drawer, 2: pages
+    @State private var panSession = NavigationPanSession()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack(alignment: .top) {
@@ -50,25 +50,25 @@ struct ContentView: View {
                 let drawerWidth = NavigationMotion.drawerWidth(width)
                 let drawerPosition = NavigationMotion.drawerPosition(translation: drawerTranslation, width: drawerWidth, wasOpen: drawerOpen)
                 ZStack(alignment: .leading) {
-                    HStack(spacing: 0) {
-                        OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
-                                           onHorizontalPan: { pan($0, $1, $2, width: width) })
-                            .frame(width: width, height: geometry.size.height)
-                            .allowsHitTesting(selectedTab == 1)
-                            .accessibilityHidden(selectedTab != 1)
-                        FinanceDashboardView(browser: browser, presentation: presentation,
-                                             onHorizontalPan: { pan($0, $1, $2, width: width) })
-                            .frame(width: width, height: geometry.size.height)
-                            .allowsHitTesting(selectedTab == 2)
-                            .accessibilityHidden(selectedTab != 2)
-                        SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
-                                     onHorizontalPan: { pan($0, $1, $2, width: width) })
-                            .frame(width: width, height: geometry.size.height)
-                            .allowsHitTesting(selectedTab == 3)
-                            .accessibilityHidden(selectedTab != 3)
+                    MovingPages(motion: pageMotion, tab: selectedTab, width: width) {
+                        HStack(spacing: 0) {
+                            OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
+                                               onHorizontalPan: { pan($0, $1, $2, width: width) })
+                                .frame(width: width, height: geometry.size.height)
+                                .allowsHitTesting(selectedTab == 1)
+                                .accessibilityHidden(selectedTab != 1)
+                            FinanceDashboardView(browser: browser, presentation: presentation,
+                                                 onHorizontalPan: { pan($0, $1, $2, width: width) })
+                                .frame(width: width, height: geometry.size.height)
+                                .allowsHitTesting(selectedTab == 2)
+                                .accessibilityHidden(selectedTab != 2)
+                            SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
+                                         onHorizontalPan: { pan($0, $1, $2, width: width) })
+                                .frame(width: width, height: geometry.size.height)
+                                .allowsHitTesting(selectedTab == 3)
+                                .accessibilityHidden(selectedTab != 3)
+                        }
                     }
-                    .frame(width: width * 3, alignment: .leading)
-                    .offset(x: -CGFloat(selectedTab - 1) * width + pageTranslation)
                     .allowsHitTesting(!drawerOpen)
                     if drawerMounted {
                         ZStack(alignment: .topLeading) {
@@ -162,33 +162,33 @@ struct ContentView: View {
     private func closeAccounts() { animate { drawerOpen = false; drawerTranslation = 0 } }
 
     private func pan(_ translation: CGFloat, _ velocity: CGFloat, _ ended: Bool, width: CGFloat) {
-        if panRoute == 0 && translation != 0 { panRoute = selectedTab == 1 && translation > 0 ? 1 : 2 }
+        if panSession.route == 0 && translation != 0 { panSession.route = selectedTab == 1 && translation > 0 ? 1 : 2 }
         if ended {
             animate {
-                if panRoute == 1 {
+                if panSession.route == 1 {
                     drawerOpen = NavigationMotion.drawerShouldOpen(translation: translation, velocity: velocity,
                                                                   width: NavigationMotion.drawerWidth(width), wasOpen: false)
-                } else if panRoute == 2 {
+                } else if panSession.route == 2 {
                     selectedTab = NavigationMotion.pageTarget(current: selectedTab, translation: translation, velocity: velocity, width: width)
                 }
                 drawerTranslation = 0
-                pageTranslation = 0
+                pageMotion.offset = 0
             }
-            panRoute = 0
-        } else if panRoute == 1 {
+            panSession.route = 0
+        } else if panSession.route == 1 {
             drawerMounted = true
             drawerTranslation = max(0, translation)
         } else {
             let beyondLastPage = selectedTab == 3 && translation < 0
-            pageTranslation = beyondLastPage ? translation * 0.15 : translation
+            pageMotion.offset = beyondLastPage ? translation * 0.15 : translation
         }
     }
 
     private func tabButton(_ tab: Int, title: String, symbol: String) -> some View {
         Button {
             if selectedTab == tab && tab == 3 { settingsReset += 1 }
-            panRoute = 0
-            animate { selectedTab = tab; pageTranslation = 0; drawerOpen = false; drawerTranslation = 0 }
+            panSession.route = 0
+            animate { selectedTab = tab; pageMotion.offset = 0; drawerOpen = false; drawerTranslation = 0 }
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: symbol).font(.title3)
@@ -202,6 +202,38 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
+    }
+}
+
+@MainActor
+private final class NavigationPanSession {
+    var route = 0 // 1: drawer, 2: pages; gesture bookkeeping does not invalidate screens.
+}
+
+/// Only transform layers observe live finger movement. The screens remain stable between pan events.
+@MainActor
+private final class NavigationTranslation: ObservableObject {
+    @Published var offset: CGFloat = 0
+}
+
+@MainActor
+private struct MovingPages<Content: View>: View {
+    @ObservedObject private var motion: NavigationTranslation
+    let tab: Int
+    let width: CGFloat
+    let content: Content
+
+    init(motion: NavigationTranslation, tab: Int, width: CGFloat, @ViewBuilder content: () -> Content) {
+        self.motion = motion
+        self.tab = tab
+        self.width = width
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(width: width * 3, alignment: .leading)
+            .offset(x: -CGFloat(tab - 1) * width + motion.offset)
     }
 }
 
