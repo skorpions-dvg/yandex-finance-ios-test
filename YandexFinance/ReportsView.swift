@@ -593,10 +593,9 @@ private struct BalancesContent: View {
     let step: ReportStep
     let perAccount: Bool
 
-    private var accounts: [Account] {
-        let groups = browser.history.accountGroups ?? []
-        return (browser.history.accounts ?? []).filter { $0.contributesToBalance(groups: groups) }
-    }
+    /// The accounts of the reserve: the last figure of the forecast is then the reserve at the end of the month,
+    /// the same number as on the main screen. Money put aside is not counted.
+    private var accounts: [Account] { browser.history.reserveAccounts }
 
     var body: some View {
         let accounts = self.accounts
@@ -607,7 +606,8 @@ private struct BalancesContent: View {
         let forecast = points.filter { $0.hasData && $0.isForecast }
         if accounts.isEmpty {
             Section {
-                ContentUnavailableView("Нет счетов", systemImage: "wallet.pass", description: Text("Добавьте счета в панели «Счета»."))
+                ContentUnavailableView("Нет счетов в запасе", systemImage: "wallet.pass",
+                                       description: Text("Добавьте счета в панели «Счета» или включите их в настройке запаса."))
             }.glassRows()
         } else {
             Section {
@@ -680,7 +680,7 @@ private struct BalancesContent: View {
                     Text("Общий остаток показан там, где известны все счета. По счетам, которые заведены позже, прошлых остатков нет: режим «По счетам» показывает каждый счёт с даты, с которой он известен.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Остаток по счетам, которые учитываются в текущем остатке. Дни после сегодняшнего — прогноз: ожидаемые расходы и доходы месяца.")
+                Text("Остаток по счетам запаса, без отложенных денег. Дни после сегодняшнего — прогноз: ожидаемые расходы и доходы месяца; на конец месяца он равен запасу на экране «Операции».")
                     .font(.caption).foregroundStyle(.secondary)
             }.glassRows()
         }
