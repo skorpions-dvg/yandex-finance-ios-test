@@ -24,6 +24,7 @@ struct YandexFinanceApp: App {
 struct ContentView: View {
     @ObservedObject var browser: BankBrowser
     @State private var selectedTab = 1
+    @State private var settingsReset = 0
     @State private var presentation = FinancePresentationCache()
     @State private var pageTranslation: CGFloat = 0
     @State private var drawerOpen = false
@@ -41,6 +42,7 @@ struct ContentView: View {
             // One opaque wallpaper covers the mounted bank page without hiding its WebView.
             WallpaperBackground()
                 .opacity(browser.bankPageVisible ? 0 : 1)
+            VStack(spacing: 0) {
             GeometryReader { geometry in
                 let width = geometry.size.width
                 let drawerWidth = NavigationMotion.drawerWidth(width)
@@ -49,17 +51,17 @@ struct ContentView: View {
                     HStack(spacing: 0) {
                         OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
                                            onHorizontalPan: { pan($0, $1, $2, width: width) })
-                            .frame(width: width)
+                            .frame(width: width, height: geometry.size.height)
                             .allowsHitTesting(selectedTab == 1)
                             .accessibilityHidden(selectedTab != 1)
                         FinanceDashboardView(browser: browser, presentation: presentation,
                                              onHorizontalPan: { pan($0, $1, $2, width: width) })
-                            .frame(width: width)
+                            .frame(width: width, height: geometry.size.height)
                             .allowsHitTesting(selectedTab == 2)
                             .accessibilityHidden(selectedTab != 2)
-                        SettingsView(browser: browser, presentation: presentation,
+                        SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
                                      onHorizontalPan: { pan($0, $1, $2, width: width) })
-                            .frame(width: width)
+                            .frame(width: width, height: geometry.size.height)
                             .allowsHitTesting(selectedTab == 3)
                             .accessibilityHidden(selectedTab != 3)
                     }
@@ -69,6 +71,8 @@ struct ContentView: View {
                     if drawerMounted {
                         ZStack(alignment: .topLeading) {
                             Color.clear
+                                .frame(width: max(0, width - drawerPosition))
+                                .offset(x: drawerPosition)
                                 .contentShape(Rectangle())
                                 .onTapGesture { closeAccounts() }
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
@@ -95,7 +99,7 @@ struct ContentView: View {
                 .frame(width: width, height: geometry.size.height, alignment: .leading)
                 .clipped()
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+
                 HStack(spacing: 4) {
                     tabButton(1, title: "Операции", symbol: "list.bullet.rectangle")
                     tabButton(2, title: "Отчёты", symbol: "chart.pie")
@@ -172,6 +176,8 @@ struct ContentView: View {
 
     private func tabButton(_ tab: Int, title: String, symbol: String) -> some View {
         Button {
+            if selectedTab == tab && tab == 3 { settingsReset += 1 }
+            panRoute = 0
             animate { selectedTab = tab; pageTranslation = 0; drawerOpen = false; drawerTranslation = 0 }
         } label: {
             VStack(spacing: 4) {
@@ -181,6 +187,7 @@ struct ContentView: View {
             .foregroundStyle(selectedTab == tab ? Color.blue : Color.primary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
+            .contentShape(Rectangle())
             .background(selectedTab == tab ? Color.primary.opacity(0.08) : Color.clear, in: .capsule)
         }
         .buttonStyle(.plain)
@@ -246,6 +253,8 @@ struct OperationDetailView: View {
 struct SettingsView: View {
     @ObservedObject var browser: BankBrowser
     let presentation: FinancePresentationCache
+    var resetToken: Int
+    @State private var navigationPath = NavigationPath()
     var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var confirmStorageReset = false
@@ -259,7 +268,7 @@ struct SettingsView: View {
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let pendingCount = presentation.value("pending:\(Calendar.current.startOfDay(for: Date()))") { browser.stalePendingCount }
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             List {
                 if let storageError = browser.storageError {
                     Section("Хранилище недоступно") {
@@ -389,20 +398,20 @@ struct SettingsView: View {
                         }.listRowBackground(GlassRowBackground())
                     }
                 Section {
-                    EmptyView()
-                } footer: {
                     Text("Версия \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · сборка \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                         .font(.caption2)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
-                }.listRowBackground(GlassRowBackground())
+                }.listRowBackground(Color.clear)
             }
+            .contentMargins(.bottom, 16, for: .scrollContent)
             .appSurface()
             .gesture(HorizontalPanCapture(onPan: onHorizontalPan))
             .navigationTitle("Настройки")
         }
+        .onChange(of: resetToken) { _, _ in navigationPath = NavigationPath() }
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
                       document: exportedBackup, contentType: .json,
                       defaultFilename: "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))") { result in

@@ -141,19 +141,19 @@ struct AccountsView: View {
                 if let onClose { onClose() } else { dismiss() }
             }
             .labelStyle(.iconOnly)
-            .frame(width: 36, height: 40)
+            .frame(width: 44, height: 44)
             Text("Счета").font(.headline).lineLimit(1)
             Spacer(minLength: 0)
             Menu {
                 Button("Новый счёт", systemImage: "wallet.pass") { newAccount = true }
                 Button("Новая группа", systemImage: "folder") { newGroup = true }
-            } label: { Image(systemName: "plus").frame(width: 32, height: 40) }
+            } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
             .accessibilityLabel("Добавить")
             Button(editMode.isEditing ? "Готово" : "Изменить", systemImage: editMode.isEditing ? "checkmark" : "pencil") {
                 withAnimation { editMode = editMode.isEditing ? .inactive : .active }
             }
             .labelStyle(.iconOnly)
-            .frame(width: 32, height: 40)
+            .frame(width: 44, height: 44)
         }
         .foregroundStyle(.primary)
         .buttonStyle(.plain)

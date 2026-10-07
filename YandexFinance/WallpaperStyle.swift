@@ -8,6 +8,7 @@ struct BuiltinWallpaper: Identifiable {
     let name: String
     let colors: [Color]
     var assetName: String? = nil
+    var pattern: Int? = nil
 
     static let all: [BuiltinWallpaper] = [
         .init(id: "night", name: "Ночь", colors: [.black, Color(red: 0.08, green: 0.10, blue: 0.19)]),
@@ -21,7 +22,11 @@ struct BuiltinWallpaper: Identifiable {
         .init(id: "photo-mist", name: "Горы в тумане", colors: [], assetName: "Wallpaper-mist"),
         .init(id: "photo-sea", name: "Тихое море", colors: [], assetName: "Wallpaper-sea"),
         .init(id: "photo-dunes", name: "Дюны", colors: [], assetName: "Wallpaper-dunes"),
-        .init(id: "photo-forest", name: "Туманный лес", colors: [], assetName: "Wallpaper-forest")
+        .init(id: "photo-forest", name: "Туманный лес", colors: [], assetName: "Wallpaper-forest"),
+        .init(id: "silk", name: "Шёлк", colors: [.black, Color(red: 0.24, green: 0.18, blue: 0.30)], pattern: 0),
+        .init(id: "orbits", name: "Орбиты", colors: [Color(red: 0.03, green: 0.12, blue: 0.18), .black], pattern: 1),
+        .init(id: "paper", name: "Бумажные волны", colors: [Color(red: 0.22, green: 0.20, blue: 0.17), .black], pattern: 2),
+        .init(id: "prism", name: "Призма", colors: [Color(red: 0.10, green: 0.12, blue: 0.22), .black], pattern: 3)
     ]
 }
 
@@ -85,8 +90,7 @@ struct WallpaperBackground: View {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
                     let preset = BuiltinWallpaper.all.first { $0.id == wallpaper.selection } ?? BuiltinWallpaper.all[0]
-                    if let asset = preset.assetName { Image(asset).resizable().scaledToFill() }
-                    else { LinearGradient(colors: preset.colors, startPoint: .topLeading, endPoint: .bottomTrailing) }
+                    BuiltinWallpaperImage(preset: preset)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
@@ -101,6 +105,57 @@ struct WallpaperBackground: View {
 
 struct GlassRowBackground: View {
     var body: some View { Rectangle().fill(.thinMaterial) }
+}
+
+/// Resolution-independent artwork shared by the preview and the full-screen background.
+struct BuiltinWallpaperImage: View {
+    let preset: BuiltinWallpaper
+    var body: some View {
+        if let asset = preset.assetName { Image(asset).resizable().scaledToFill() }
+        else {
+            LinearGradient(colors: preset.colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                .overlay {
+                    if let pattern = preset.pattern {
+                        Canvas { context, size in
+                            let w = size.width, h = size.height
+                            for i in 0..<6 {
+                                let t = CGFloat(i) / 6
+                                var path = Path()
+                                switch pattern {
+                                case 1:
+                                    path.addEllipse(in: CGRect(x: w * (0.12 - t * 0.25), y: h * (0.2 - t * 0.12),
+                                                              width: w * (0.8 + t), height: h * (0.55 + t)))
+                                case 3:
+                                    path.move(to: CGPoint(x: w * (t - 0.4), y: 0))
+                                    path.addLine(to: CGPoint(x: w * (t + 0.25), y: h))
+                                    path.addLine(to: CGPoint(x: w * (t + 0.55), y: h))
+                                    path.addLine(to: CGPoint(x: w * (t - 0.1), y: 0))
+                                    path.closeSubpath()
+                                default:
+                                    path.move(to: CGPoint(x: -w * 0.2, y: h * (0.2 + t)))
+                                    path.addCurve(to: CGPoint(x: w * 1.2, y: h * (0.35 + t)),
+                                                  control1: CGPoint(x: w * 0.4, y: -h * 0.2),
+                                                  control2: CGPoint(x: w * 0.5, y: h * 1.2))
+                                    path.addLine(to: CGPoint(x: w * 1.2, y: h * (0.5 + t)))
+                                    path.addCurve(to: CGPoint(x: -w * 0.2, y: h * (0.35 + t)),
+                                                  control1: CGPoint(x: w * 0.5, y: h * 1.3),
+                                                  control2: CGPoint(x: w * 0.4, y: -h * 0.1))
+                                    path.closeSubpath()
+                                }
+                                let color: Color = pattern == 1 ? .cyan : (pattern == 2 ? .orange : .purple)
+                                if pattern == 1 {
+                                    context.stroke(path, with: .color(color.opacity(0.12)), lineWidth: max(1, w * 0.004))
+                                } else {
+                                    context.fill(path, with: .linearGradient(
+                                        Gradient(colors: [.white.opacity(0.09), color.opacity(0.16), .clear]),
+                                        startPoint: .zero, endPoint: CGPoint(x: w, y: h)))
+                                }
+                            }
+                        }.allowsHitTesting(false)
+                    }
+                }
+        }
+    }
 }
 
 struct AppSurfaceModifier: ViewModifier {
@@ -136,8 +191,7 @@ struct WallpaperSettingsView: View {
                             VStack(alignment: .leading, spacing: 8) {
                                 GeometryReader { geometry in
                                     Group {
-                                        if let asset = preset.assetName { Image(asset).resizable().scaledToFill() }
-                                        else { LinearGradient(colors: preset.colors, startPoint: .topLeading, endPoint: .bottomTrailing) }
+                                        BuiltinWallpaperImage(preset: preset)
                                     }
                                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                                 }

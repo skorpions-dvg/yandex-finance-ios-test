@@ -9,6 +9,8 @@ struct HorizontalPanCapture: UIGestureRecognizerRepresentable {
     func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
         let pan = UIPanGestureRecognizer()
         pan.maximumNumberOfTouches = 1
+        pan.delaysTouchesBegan = false
+        pan.delaysTouchesEnded = false
         pan.delegate = context.coordinator
         context.coordinator.excludesHorizontalScrollViews = excludesHorizontalScrollViews
         return pan
@@ -45,16 +47,19 @@ struct HorizontalPanCapture: UIGestureRecognizerRepresentable {
             while let current = view, current !== gesture.view {
                 if excludesHorizontalScrollViews, let scroll = current as? UIScrollView,
                    scroll.contentSize.width > scroll.bounds.width + 2 { return false }
-                if current is UISlider { return false }
+                if current is UIControl { return false }
                 view = current.superview
             }
             return true
         }
 
         func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-            // There is no native page recognizer: the only simultaneous gesture is the vertical list.
-            other.view is UIScrollView
+            // Once horizontal paging starts, vertical scrolling must not move the old page.
+            false
         }
 
+        func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            other is UIPanGestureRecognizer && other.view is UIScrollView
+        }
     }
 }
