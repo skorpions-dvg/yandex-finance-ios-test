@@ -41,8 +41,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published var autoUpdate = UserDefaults.standard.object(forKey: "autoUpdate") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(autoUpdate, forKey: "autoUpdate")
-            if autoUpdate { scheduleAutomaticUpdate() }
-            else { automaticTask?.cancel(); automaticTask = nil }
+            if autoUpdate {
+                // Switched on while the app runs: the bank page was not opened at launch, so open it now.
+                if webView.url == nil { openHistory() }
+                scheduleAutomaticUpdate()
+            } else { automaticTask?.cancel(); automaticTask = nil }
         }
     }
     var bootstrapComplete: Bool { history.statementArchiveThrough != nil || history.bootstrapCompleted == true }
@@ -58,7 +61,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        openHistory()
+        // With «Обновлять при открытии» off the bank page is not opened at launch: an unsigned page makes the bank send
+        // an SMS code nobody is waiting for. «Обновить новые операции» opens it (and the sign-in window) when asked.
+        if autoUpdate { openHistory() }
         // Decrypting and decoding the history off the main thread lets the first frame appear at once.
         Task { await loadHistory() }
     }

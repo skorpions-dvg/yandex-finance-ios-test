@@ -598,6 +598,11 @@ assert.doesNotMatch(appSwift, /TabView\(selection: \$browser.selectedTab\)/,
 assert.match(swift, /bankPageVisible = true/, 'card retry must bring the hidden bank page to the front');
 assert.match(swift, /one-time-code[\s\S]{0,300}введите код/, 'a confirmation code request must be detected, even on top of the history');
 assert.match(swift, /state == \.codeRequested \{[\s\S]{0,80}self\.requestSignIn\(\)/, 'auto update must show the bank page when a code is requested');
+assert.match(swift, /webView\.allowsBackForwardNavigationGestures = true[\s\S]{0,400}if autoUpdate \{ openHistory\(\) \}/,
+  'with the automatic update off the bank page must not be opened at launch, or the bank sends an SMS nobody waits for');
+assert.doesNotMatch(swift, /allowsBackForwardNavigationGestures = true\s+openHistory\(\)/, 'openHistory() at launch must stay conditional');
+assert.match(swift, /if autoUpdate \{[\s\S]{0,200}if webView\.url == nil \{ openHistory\(\) \}[\s\S]{0,100}scheduleAutomaticUpdate\(\)/,
+  'switching the automatic update on opens the bank page');
 assert.match(appSwift, /Button\("Обновить новые операции"\) \{ browser\.refreshNewOperations\(\) \}/, 'manual refresh must go through the sign-in check');
 assert.match(swift, /guard ready else \{\s*self\.requestSignIn\(\)/, 'a signed-out bank must be reported and shown, not ignored');
 assert.match(swift, /func requestSignIn\(\) \{[\s\S]{0,200}signInNeededMessage[\s\S]{0,120}bankPageVisible = true/, 'sign-in request shows the bank page with the hint');
