@@ -61,7 +61,7 @@ struct ContentView: View {
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
                                 .frame(width: drawerWidth, height: max(0, height - Self.barSpace - 16), alignment: .top)
                                 // Clear glass with a grey haze: the wallpaper shows through, the rows stay readable.
-                                .glassEffect(.clear.tint(Color(white: 0.45).opacity(0.3)), in: .rect(cornerRadius: 28))
+                                .glassEffect(.clear.tint(Color.black.opacity(0.45)), in: .rect(cornerRadius: 28))
                                 .clipShape(.rect(cornerRadius: 28))
                                 .padding(.horizontal, 8)
                                 .padding(.top, 4)
@@ -203,6 +203,8 @@ private struct LensTabBar: View {
                 IdleCapsule(progress: progress, segment: segment, height: bar.size.height)
                     .opacity(held ? 0 : 1)
                 TabLabels(selection: selection, select: select)
+                    // Under the drop only its magnified copy shows: the real labels are cut out there, no doubling.
+                    .mask { LabelCutout(drag: drag, held: held, segment: segment, outerHeight: bar.size.height + inset * 2) }
             }
             .contentShape(Rectangle())
             // One gesture for the whole bar: a tap selects the tab under the finger, a drag carries the lens.
@@ -232,8 +234,8 @@ private struct LensTabBar: View {
         }
         .frame(height: 50)
         .padding(inset)
-        // Frosted glass with a grey haze, so what passes under the bar is blurred and the labels stay readable.
-        .glassEffect(.regular.tint(Color(white: 0.45).opacity(0.28)), in: .capsule)
+        // Frosted glass with a dark haze, so a bright wallpaper or list under the bar does not wash out the labels.
+        .glassEffect(.regular.tint(Color.black.opacity(0.38)), in: .capsule)
         .overlay { BubbleLayer(drag: drag, held: held, inset: inset, reduceMotion: reduceMotion) }
     }
 }
@@ -291,6 +293,29 @@ private struct TabLabels: View {
     }
 }
 
+/// Everything but the drop: the mask that hides the real labels where the held drop is. Only this tiny view follows
+/// the finger, so the labels themselves are not redrawn.
+private struct LabelCutout: View {
+    @ObservedObject var drag: LensDrag
+    let held: Bool
+    let segment: CGFloat
+    let outerHeight: CGFloat
+
+    var body: some View {
+        GeometryReader { area in
+            Rectangle()
+                .overlay {
+                    Capsule()
+                        .frame(width: segment * 1.12, height: outerHeight * 1.3)
+                        .position(x: (drag.position - 0.5) * segment, y: area.size.height / 2)
+                        .opacity(held ? 1 : 0)
+                        .blendMode(.destinationOut)
+                }
+                .compositingGroup()
+        }
+    }
+}
+
 /// The held drop: clear glass over a magnified, tinted copy of the tabs, so the tab under it looks seen through a lens.
 private struct BubbleLayer: View {
     @ObservedObject var drag: LensDrag
@@ -310,7 +335,7 @@ private struct BubbleLayer: View {
             let bubbleHeight = height * 1.3
             ZStack {
                 ZStack {
-                    Capsule().fill(Color(white: 0.32).opacity(0.6))
+                    Capsule().fill(Color.black.opacity(0.15))
                         .frame(width: bubbleWidth, height: bubbleHeight)
                         .position(x: centerX, y: height / 2)
                     HStack(spacing: 0) {
