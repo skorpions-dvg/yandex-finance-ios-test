@@ -28,15 +28,49 @@ struct ExpenseCategoryImport: Codable {
     let assignments: [Assignment]
 
     static func decode(_ data: Data) throws -> Self {
-        guard data.count <= 5_000_000,
-              let plan = try? JSONDecoder().decode(Self.self, from: data),
-              plan.format == "finance-test-category-plan-v1",
-              plan.assignments.count <= 10_000,
+        guard !data.isEmpty else {
+            throw AppFailure(message: "Файл пуст. Дождитесь загрузки из iCloud и выберите его ещё раз.")
+        }
+        guard data.count <= 5_000_000 else {
+            throw AppFailure(message: "Файл разметки слишком большой.")
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw AppFailure(message: "Не удалось прочитать JSON. Выберите исходный файл разметки категорий.")
+        }
+        if object["history"] != nil {
+            throw AppFailure(message: "Выбрана резервная копия. Здесь нужен файл разметки категорий, а копия открывается через «Восстановить из копии».")
+        }
+        if object["operations"] != nil && object["format"] == nil {
+            throw AppFailure(message: "Выбран список для ручного разбора. Для импорта нужен файл разметки категорий, в названии которого есть «category-plan» или «Разметка».")
+        }
+        guard object["format"] as? String == "finance-test-category-plan-v1" else {
+            throw AppFailure(message: "Это не разметка категорий Finance Test. Выберите файл «category-plan» или «Разметка».")
+        }
+        guard let plan = try? JSONDecoder().decode(Self.self, from: data) else {
+            throw AppFailure(message: "В разметке отсутствуют нужные поля или неверно записаны данные. Нужен исходный JSON без изменений.")
+        }
+        guard plan.assignments.count <= 10_000,
               Set(plan.assignments.map(\.identity)).count == plan.assignments.count else {
-            throw AppFailure(message: "Это не файл разметки категорий Finance Test или он повреждён.")
+            throw AppFailure(message: "Разметка содержит слишком много записей или повторяющиеся операции.")
         }
         return plan
     }
+
+    #if os(iOS)
+    /// Coordinate reads with the document provider so an iCloud file is materialized before decoding.
+    static func read(from url: URL) throws -> Self {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        var coordinationError: NSError?
+        var readResult: Swift.Result<Data, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { readableURL in
+            readResult = Swift.Result { try Data(contentsOf: readableURL) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let readResult else { throw CocoaError(.fileReadUnknown) }
+        return try decode(readResult.get())
+    }
+    #endif
 
     /// Work on a copy. Any invalid destination rejects the entire plan.
     /// Explicit choices made since the export and changed operations are skipped.

@@ -145,9 +145,9 @@ struct ExpenseCategoriesView: View {
         .fileImporter(isPresented: $showCategoryImporter, allowedContentTypes: [.json]) { result in
             do {
                 let url = try result.get()
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                let plan = try ExpenseCategoryImport.decode(Data(contentsOf: url))
+                let plan: ExpenseCategoryImport
+                do { plan = try ExpenseCategoryImport.read(from: url) }
+                catch { throw AppFailure(message: "«\(url.lastPathComponent)»\n\(error.localizedDescription)") }
                 _ = try plan.preview(browser.history)
                 importedPlan = plan
             } catch { self.error = error.localizedDescription }

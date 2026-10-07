@@ -49,7 +49,15 @@ struct ExpenseCategoryImportTests {
         do {
             _ = try ExpenseCategoryImport.decode(Data("{\"format\":1,\"history\":{}}".utf8))
             preconditionFailure("Backup accepted as assignments")
-        } catch {}
+        } catch { precondition(error.localizedDescription.contains("резервная копия")) }
+        do {
+            _ = try ExpenseCategoryImport.decode(Data("{\"operations\":[]}".utf8))
+            preconditionFailure("Manual review list accepted as assignments")
+        } catch { precondition(error.localizedDescription.contains("ручного разбора")) }
+        do {
+            _ = try ExpenseCategoryImport.decode(Data())
+            preconditionFailure("Empty provider file accepted")
+        } catch { precondition(error.localizedDescription.contains("Файл пуст")) }
         print("Category import checks passed: preservation, totals, transfers, stale data, existing rules, repeat import and rejection")
     }
 
