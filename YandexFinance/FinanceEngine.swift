@@ -425,7 +425,8 @@ enum FinancialEngine {
             groups[title] = group
         }
 
-        for operation in operations {
+        let otherAccountRows = saveSidePairRows(operations)
+        for (index, operation) in operations.enumerated() {
             guard let date = BankDateParser.parse(operation.occurredAt) else {
                 invalidDateCount += 1
                 continue
@@ -434,7 +435,7 @@ enum FinancialEngine {
             operationCount += 1
             let assessment = classify(operation)
             // The Save statement repeats the deposit side of transfers the card statement already has.
-            let fromSaveStatement = isSaveSide(operation)
+            let fromSaveStatement = isSaveSide(operation) || otherAccountRows.contains(index)
             if assessment.type != .cancelled && !fromSaveStatement {
                 if operation.amountKopecks < 0 { bankDebit += -operation.amountKopecks }
                 if operation.amountKopecks > 0 { bankCredit += operation.amountKopecks }
@@ -599,8 +600,10 @@ enum FinancialEngine {
     /// available balance in the bank, so they count. Manual operations are added in a later version.
     static func accountBalance(startKopecks: Int64, since: Date, tracksBankCard: Bool, operations: [FinancialOperationInput]) -> Int64 {
         guard tracksBankCard else { return startKopecks }
-        return operations.reduce(startKopecks) { balance, operation in
-            guard !isSaveSide(operation),
+        let otherAccountRows = saveSidePairRows(operations)
+        return operations.enumerated().reduce(startKopecks) { balance, item in
+            let operation = item.element
+            guard !isSaveSide(operation), !otherAccountRows.contains(item.offset),
                   let date = BankDateParser.parse(operation.occurredAt), date >= since,
                   classify(operation).type != .cancelled else { return balance }
             return balance + operation.amountKopecks
@@ -1251,6 +1254,43 @@ enum FinancialEngine {
     /// card balance and is not counted twice.
     static func isSaveSide(_ operation: FinancialOperationInput) -> Bool {
         normalized(operation.paymentMethod).contains("сейв")
+    }
+
+    private enum TransferDestination { case save, card }
+
+    /// The bank's shared history titles a card ↔ Save row after the destination: «Счёт в Сейвах» for card → Save,
+    /// «Карта Пэй» for Save → card (or «A → B»).
+    private static func transferDestination(_ operation: FinancialOperationInput) -> TransferDestination? {
+        let title = normalized(operation.description)
+        let target = title.contains("→") ? String(title.split(separator: "→").last ?? "") : title
+        if title == "счет в сейвах" || (title.contains("→") && target.contains("сейв")) { return .save }
+        if title == "карта пэй" || (title.contains("→") && target.contains("карт") && target.contains("пэй")) { return .card }
+        return nil
+    }
+
+    /// Indices of the rows that belong to the other account of a card ↔ Save transfer listed as two rows: equal amounts
+    /// with opposite signs within two minutes. For card → Save the card keeps the debit and the credit row is the Save's;
+    /// for Save → card the card keeps the credit. Rows the scanner already tagged with their account are left to
+    /// `isSaveSide`, and a row without its pair is never dropped.
+    static func saveSidePairRows(_ operations: [FinancialOperationInput]) -> Set<Int> {
+        let candidates = operations.indices.compactMap { index -> (Int, TransferDestination, Date)? in
+            let operation = operations[index]
+            guard !isSaveSide(operation), operation.amountKopecks != 0, classify(operation).type == .internalTransfer,
+                  let destination = transferDestination(operation),
+                  let date = BankDateParser.parse(operation.occurredAt) else { return nil }
+            return (index, destination, date)
+        }
+        var result = Set<Int>()
+        for (index, destination, date) in candidates {
+            let amount = operations[index].amountKopecks
+            // The row of the account that is not the card: the Save receives on card → Save, sends on Save → card.
+            guard destination == .save ? amount > 0 : amount < 0 else { continue }
+            let paired = candidates.contains { other in
+                other.0 != index && operations[other.0].amountKopecks == -amount && abs(other.2.timeIntervalSince(date)) <= 120
+            }
+            if paired { result.insert(index) }
+        }
+        return result
     }
 
     private static func isSaveTransfer(_ operation: FinancialOperationInput) -> Bool {

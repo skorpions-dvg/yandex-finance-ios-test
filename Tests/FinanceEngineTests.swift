@@ -814,6 +814,19 @@ struct FinanceEngineTests {
         require(oldReport.netExpenseKopecks == 0 && oldReport.refundsKopecks == 0 && oldReport.incomeKopecks == 0,
                 "old Save rows change no totals")
 
+        // The same pair when the scanner could not tell the accounts apart: the title names the destination.
+        let card80 = FinancialEngine.accountBalance(startKopecks: 8_046_052, since: start, tracksBankCard: true,
+                                                    operations: [oldCard, oldSave])
+        require(card80 == 8_046_052 - 7_000_000, "card → Save without account tags: the card keeps only its debit (10 460,52 ₽)")
+        require(FinancialEngine.report([oldCard, oldSave], in: interval).movementKopecks == 7_000_000, "the untagged pair is one movement")
+        let back = op(-500_000, kind: "internal_transfer", description: "Счёт в Сейвах → Карта Пэй", date: "2026-10-07T12:00:00.100Z")
+        let backCard = op(500_000, kind: "internal_transfer", description: "Счёт в Сейвах → Карта Пэй", date: "2026-10-07T12:00:00.400Z")
+        require(FinancialEngine.accountBalance(startKopecks: 0, since: start, tracksBankCard: true, operations: [back, backCard]) == 500_000,
+                "Save → card: the card keeps the credit")
+        let lonely = op(7_000_000, kind: "refund", category: "Перевод", description: "Счёт в Сейвах", date: "2026-10-05T09:00:00Z")
+        require(FinancialEngine.accountBalance(startKopecks: 0, since: start.addingTimeInterval(-7 * 86400), tracksBankCard: true,
+                                               operations: [lonely]) == 7_000_000, "a row without its pair is never dropped")
+
         // Save interest stays income; an arrow title between own accounts is a transfer.
         var interest = op(214, kind: "interest_income", description: "Выплата процентов", date: "2026-10-07T03:00:00Z")
         interest.paymentMethod = "Счёт в Сейвах"

@@ -160,7 +160,9 @@ private struct LensTabBar: View {
     @ObservedObject var progress: TabBarProgress
     let reduceMotion: Bool
     let select: (Int) -> Void
+    /// Lens position while held or until the pages reach the chosen tab; nil follows the pages.
     @State private var dragged: CGFloat?
+    @State private var held = false
 
     private let tabs: [(title: String, symbol: String)] = [
         ("Операции", "list.bullet.rectangle"), ("Отчёты", "chart.pie"), ("Настройки", "gearshape")
@@ -170,46 +172,63 @@ private struct LensTabBar: View {
         GeometryReader { bar in
             let segment = bar.size.width / 3
             let position = dragged ?? progress.value
+            // Between two tabs the lens swells like a drop of glass and settles back on a tab.
+            let between = abs(position - position.rounded()) * 2
+            let swell: CGFloat = held ? 1.2 : 1 + 0.2 * between
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.primary.opacity(0.08))
-                    .glassEffect(.regular, in: .capsule)
+                    .fill(.ultraThinMaterial)
+                    .overlay(Capsule().fill(Color.accentColor.opacity(0.12)))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.8))
+                    .shadow(color: .black.opacity(held ? 0.25 : 0.12), radius: held ? 10 : 4, y: 2)
                     .frame(width: segment, height: bar.size.height)
-                    .scaleEffect(x: dragged == nil ? 1 : 1.18, y: dragged == nil ? 1 : 1.22)
+                    .scaleEffect(x: swell, y: 1 + (swell - 1) * 1.2)
                     .offset(x: (position - 1) * segment)
-                    .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.68), value: dragged == nil)
+                    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.7), value: held)
                 HStack(spacing: 0) {
                     ForEach(0..<3, id: \.self) { index in
-                        let tab = index + 1
-                        let active = Int(position.rounded()) == tab
-                        Button { select(tab) } label: {
-                            VStack(spacing: 4) {
-                                Image(systemName: tabs[index].symbol).font(.title3)
-                                Text(tabs[index].title).font(.caption2.weight(.medium))
-                            }
-                            .foregroundStyle(active ? Color.accentColor : Color.primary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .contentShape(Rectangle())
+                        let active = Int(position.rounded()) == index + 1
+                        VStack(spacing: 4) {
+                            Image(systemName: tabs[index].symbol).font(.title3)
+                            Text(tabs[index].title).font(.caption2.weight(.medium))
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(active ? [.isSelected] : [])
+                        .foregroundStyle(active ? Color.accentColor : Color.primary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(active ? [.isSelected, .isButton] : [.isButton])
+                        .accessibilityAction { select(index + 1) }
                     }
                 }
             }
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 6)
+            // One gesture for the whole bar: a tap selects the tab under the finger, a drag carries the lens.
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
                     .onChanged { drag in
-                        dragged = min(3, max(1, drag.location.x / max(1, segment) + 0.5))
+                        if held || abs(drag.translation.width) > 6 {
+                            held = true
+                            dragged = min(3, max(1, drag.location.x / max(1, segment) + 0.5))
+                        }
                     }
                     .onEnded { drag in
                         let tab = Int(min(3, max(1, drag.location.x / max(1, segment) + 0.5)).rounded())
-                        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.8)) { dragged = nil }
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
+                            held = false
+                            dragged = abs(progress.value - CGFloat(tab)) < 0.02 ? nil : CGFloat(tab)
+                        }
                         select(tab)
+                        // Hand the lens back to the pages even if they never report reaching the tab.
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            if !held { dragged = nil }
+                        }
                     }
             )
         }
         .frame(height: 50)
+        .onChange(of: progress.value) { _, value in
+            if !held, let target = dragged, abs(value - target) < 0.02 { dragged = nil }
+        }
     }
 }
 

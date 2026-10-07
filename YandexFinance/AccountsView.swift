@@ -180,13 +180,17 @@ struct AccountsView: View {
                     if let group = groupsByID[id] {
                         groupHeader(group)
                             .moveDisabled(!editMode.isEditing)
-                            .deleteDisabled(!editMode.isEditing)
+                            // No red minus in edit mode and no row swipe (the drawer itself closes by swiping):
+                            // a group is deleted from its context menu, an account from its form.
+                            .deleteDisabled(true)
                     }
                 case .account(let id):
                     if let account = accountsByID[id] {
                         accountRow(account).padding(.leading, 20)
                             .moveDisabled(!editMode.isEditing)
-                            .deleteDisabled(!editMode.isEditing)
+                            // No red minus in edit mode and no row swipe (the drawer itself closes by swiping):
+                            // a group is deleted from its context menu, an account from its form.
+                            .deleteDisabled(true)
                     }
                 case .ungroupedHeader:
                     HStack {
@@ -236,7 +240,8 @@ struct AccountsView: View {
     private func groupHeader(_ group: AccountGroup) -> some View {
         HStack {
             Button {
-                guard !editMode.isEditing else { return }
+                // While editing, a tap on a group opens its name; deleting stays in the long-press menu.
+                guard !editMode.isEditing else { editedGroup = group; return }
                 withAnimation {
                     if collapsed.contains(group.id) { collapsed.remove(group.id) }
                     else { collapsed.insert(group.id) }
@@ -251,9 +256,11 @@ struct AccountsView: View {
                     Text(group.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 6)
-                    Text(total(accounts.filter { $0.groupID == group.id }))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
+                    if !editMode.isEditing {
+                        Text(total(accounts.filter { $0.groupID == group.id }))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
+                    }
                 }
                 .contentShape(Rectangle())
             }
@@ -303,9 +310,12 @@ struct AccountsView: View {
                     Text(account.name).foregroundStyle(.primary)
                         .lineLimit(1).truncationMode(.tail)
                     Spacer(minLength: 6)
-                    Text(accountMoney(cachedBalance(account)))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
+                    // Amounts return after «Готово»; while editing the full name has the room.
+                    if !editMode.isEditing {
+                        Text(accountMoney(cachedBalance(account)))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
+                    }
                 }
                 .contentShape(Rectangle())
             }
