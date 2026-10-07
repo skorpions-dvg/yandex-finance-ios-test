@@ -21,7 +21,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published private(set) var storageError: String?
     @Published private(set) var storageRetryFailed = false
     private let vault = Vault()
-    private var readable = true
+    /// False until the encrypted history is read: nothing may be saved over it before that.
+    private var readable = false
+    /// True while the history is being read at launch; the screens show placeholders meanwhile.
+    @Published private(set) var loadingHistory = true
     private var cancelled = false
     private var foreground = false
     private var automaticTask: Task<Void, Never>?
@@ -55,13 +58,28 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
-        do { history = try vault.load() }
-        catch {
+        openHistory()
+        // Decrypting and decoding the history off the main thread lets the first frame appear at once.
+        Task { await loadHistory() }
+    }
+
+    private func loadHistory() async {
+        let vault = self.vault
+        let result = await Task.detached(priority: .userInitiated) { Result { try vault.load() } }.value
+        // A restore or reset done meanwhile wins over what was read at launch.
+        guard loadingHistory else { return }
+        switch result {
+        case .success(var loaded):
+            loaded.moveTransfersToOwnGroup()
+            history = loaded
+            readable = true
+        case .failure(let error):
             readable = false
             storageError = error.localizedDescription
             message = "Хранилище не открыто: \(error.localizedDescription)"
         }
-        openHistory()
+        loadingHistory = false
+        scheduleAutomaticUpdate()
     }
     func becameActive() { foreground = true; scheduleAutomaticUpdate() }
     func becameInactive() {
@@ -494,7 +512,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     func retryOpenStorage() {
         guard !busy else { return }
         do {
-            history = try vault.load()
+            var loaded = try vault.load()
+            loaded.moveTransfersToOwnGroup()
+            history = loaded
+            loadingHistory = false
             readable = true
             storageError = nil
             storageRetryFailed = false
@@ -532,9 +553,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
-            let restored = try HistoryBackup.decode(Data(contentsOf: url))
+            var restored = try HistoryBackup.decode(Data(contentsOf: url))
+            restored.moveTransfersToOwnGroup()
             try vault.save(restored)
             history = restored
+            loadingHistory = false
             readable = true
             storageError = nil
             storageRetryFailed = false
@@ -549,6 +572,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         do {
             try vault.reset()
             history = SavedHistory()
+            loadingHistory = false
             readable = true
             storageError = nil
             storageRetryFailed = false

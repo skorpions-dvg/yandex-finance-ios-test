@@ -757,7 +757,6 @@ struct SettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                 }.listRowBackground(Color.clear)
             }
-            .contentMargins(.bottom, 16, for: .scrollContent)
             .appSurface()
             .navigationTitle("Настройки")
             // Large titles lose their leading margin inside the horizontal pages; inline matches «Операции».

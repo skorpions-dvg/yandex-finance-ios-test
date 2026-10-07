@@ -909,6 +909,72 @@ struct FinanceEngineTests {
         } catch { require(false, "look backup failed: \(error)") }
     }
 
+    static func testOtherShrinks() {
+        func path(_ description: String, category: String = "Не определено", kind: String = "expense", mcc: String? = nil) -> String {
+            let p = FinancialEngine.expenseCategory(for: op(-10_000, kind: kind, category: category, description: description, mcc: mcc))
+            return p.group + "/" + p.subcategory
+        }
+        // Statement rows have no MCC and Latin titles.
+        require(path("Оплата товаров и услуг MAGNIT MM PERIMETR") == "Еда/Супермаркеты", "Magnit in Latin is a supermarket")
+        require(path("Оплата товаров и услуг YANDEX*5411*DK") == "Еда/Супермаркеты", "MCC inside a Yandex title")
+        require(path("Оплата товаров и услуг YANDEX*5399*MARKET") == "Покупки/Маркетплейсы", "Yandex Market")
+        require(path("Оплата товаров и услуг YANDEX*4121*FASTEN") == "Транспорт/Такси", "taxi by embedded MCC")
+        require(path("Оплата товаров и услуг YANDEX*4215*DOSTAVKA") == "Другое/Доставка и курьеры", "courier by embedded MCC")
+        require(path("Оплата товаров и услуг ETK55_OMSK_TPP") == "Транспорт/Общественный транспорт", "Omsk transport card")
+        require(path("Оплата СБП QR (Лемана ПРО СБП онлайн)") == "Покупки/Дом и быт", "Lemana Pro")
+        require(path("Оплата товаров и услуг LEMANAPROGPB088") == "Покупки/Дом и быт", "Lemana Pro in Latin")
+        require(path("Оплата товаров и услуг Semeynay apteka 199650") == "Обязательные/Здоровье", "pharmacy in Latin")
+        require(path("Оплата товаров и услуг DZHINSY TUT") == "Покупки/Одежда", "clothes")
+        require(path("Оплата СБП QR (Tutu_SBP4)") == "Другое/Путешествия", "tickets")
+        // What cannot be known from the title stays where it was.
+        require(path("Оплата СБП QR (Сервисы Яндекса)") == "Другое/Прочее", "Yandex services are not guessed")
+        require(path("Оплата товаров и услуг IP OZHEGOV A.L.") == "Другое/Прочее", "a sole trader is not guessed")
+        require(FinancialEngine.embeddedMCC("YANDEX*5411*DK") == "5411" && FinancialEngine.embeddedMCC("Магазин 5411") == "", "embedded MCC only between stars")
+        // A real MCC wins over the title.
+        require(path("YANDEX*5411*DK", mcc: "5812") == "Еда/Кафе и рестораны", "the card's own MCC wins")
+
+        // Transfers to people: own group; ids of the old tree stay, so earlier choices keep their category.
+        require(path("Исходящий перевод СБП, Тест Т.", category: "Перевод", kind: "transfer") == "Переводы/Переводы другим", "transfers have their own group")
+        let tree = ExpenseCategoryGroup.builtin
+        let transfers = tree.flatMap(\.categories).first { $0.name == "Переводы другим" }!
+        require(transfers.id == UUID(uuidString: "00000000-0000-4000-8000-000005000005")!, "the transfers category keeps its old id")
+        require(tree.flatMap(\.categories).first { $0.name == "Прочее" }!.id == UUID(uuidString: "00000000-0000-4000-8000-000005000007")!,
+                "«Прочее» keeps its old id")
+        require(tree.flatMap(\.categories).first { $0.name == "Комиссии" }!.id == UUID(uuidString: "00000000-0000-4000-8000-000005000006")!,
+                "«Комиссии» keeps its old id")
+        let ids = tree.flatMap { [$0.id] + $0.categories.map(\.id) }
+        require(Set(ids).count == ids.count, "built-in ids are unique")
+
+        // A manual entry saved with the old names and a tree edited before the change still find the category.
+        var history = SavedHistory()
+        let gift = ManualOperation(kind: .expense, amountKopecks: 5_000, date: Date(timeIntervalSince1970: 1_960_000_000), accountID: nil,
+                                   group: "Другое", subcategory: "Переводы другим")
+        history.manualOperations = [gift]
+        require(history.expenseCategoryID(for: gift.bankOperation) == transfers.id, "old manual entries land in the transfers category")
+        var oldTree = ExpenseTaxonomy.builtin.groups.map { $0 }
+        oldTree.removeLast()
+        oldTree[4].subcategories.insert("Переводы другим", at: 4)
+        var edited = SavedHistory()
+        edited.expenseCategories = oldTree.enumerated().map { groupIndex, group in
+            ExpenseCategoryGroup(name: group.name, isFixedCosts: group.isFixedCosts,
+                                 categories: group.subcategories.map { ExpenseCategory(name: $0, sources: [group.name + "/" + $0]) })
+        }
+        let person = bankOp("t1", -20_000, description: "Исходящий перевод СБП, Тест Т.", kind: "transfer")
+        let oldID = edited.categoryTree[4].categories[4].id
+        require(edited.expenseCategoryID(for: person) == oldID, "an edited old tree still resolves the new transfer path")
+        edited.moveTransfersToOwnGroup()
+        require(edited.categoryTree.first { $0.name == "Переводы" }?.categories.first?.id == oldID
+                && !(edited.categoryTree.first { $0.name == "Другое" }!.categories.contains { $0.id == oldID }),
+                "the edited tree moves transfers into their own group, same category")
+        require(edited.transfersGroupMoved == true, "the move is remembered")
+        edited.moveExpenseCategory(oldID, toGroup: edited.categoryTree.first { $0.name == "Другое" }!.id, at: 0)
+        edited.moveTransfersToOwnGroup()
+        require(edited.categoryTree.first { $0.name == "Другое" }!.categories.contains { $0.id == oldID }, "a move back by the user stays")
+        var untouched = SavedHistory()
+        untouched.moveTransfersToOwnGroup()
+        require(untouched.expenseCategories == nil, "the built-in tree is not materialized by the move")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1115,7 +1181,7 @@ struct FinanceEngineTests {
             (op(-1_000, kind: "expense", category: "Развлечения"), FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")),
             (op(-1_000, kind: "expense", category: "Путешествия"), FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")),
             (op(-1_000, kind: "expense", category: "Подарки"), FinanceCategoryPath(group: "Другое", subcategory: "Подарки")),
-            (op(-1_000, kind: "transfer", category: "Перевод"), FinanceCategoryPath(group: "Другое", subcategory: "Переводы другим")),
+            (op(-1_000, kind: "transfer", category: "Перевод"), FinanceCategoryPath(group: "Переводы", subcategory: "Переводы другим")),
             (op(-1_000, kind: "expense", description: "Комиссия банка"), FinanceCategoryPath(group: "Другое", subcategory: "Комиссии")),
             (op(-1_000, kind: "expense", category: "Цветы", description: "Интернет-магазин цветов"), FinanceCategoryPath(group: "Другое", subcategory: "Подарки")),
             (op(-1_000, kind: "expense", category: "Товары", description: "Покупка в интернет-магазине"), FinanceCategoryPath(group: "Другое", subcategory: "Прочее")),
@@ -1139,7 +1205,7 @@ struct FinanceEngineTests {
         require(FinancialEngine.expenseCategory(for: op(-770, kind: "expense", category: "Яндекс", description: "Яндекс.Доставка", mcc: "3990")) == FinanceCategoryPath(group: "Другое", subcategory: "Доставка и курьеры"), "Yandex courier delivery has its own subgroup")
         require(FinancialEngine.expenseCategory(for: op(-12_340, kind: "transfer", category: "Перевод", description: "ООО УК Дом-Сервис", purpose: "Лицевой счёт: 123456 Без НДС")) == FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ"), "housing management transfer with personal account is utilities")
         require(FinancialEngine.expenseCategory(for: op(-650, kind: "transfer", category: "Перевод", description: "АО Севергоргаз", purpose: "Лицевой счёт: 987654 Без НДС")) == FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ"), "city gas transfer with personal account is utilities")
-        require(FinancialEngine.expenseCategory(for: op(-880, kind: "transfer", category: "Перевод", description: "Получатель Иван", purpose: "Личный перевод")) == FinanceCategoryPath(group: "Другое", subcategory: "Переводы другим"), "ordinary external transfer must stay external transfer")
+        require(FinancialEngine.expenseCategory(for: op(-880, kind: "transfer", category: "Перевод", description: "Получатель Иван", purpose: "Личный перевод")) == FinanceCategoryPath(group: "Переводы", subcategory: "Переводы другим"), "ordinary external transfer must stay external transfer")
         require(FinancialEngine.expenseCategory(for: op(-1_100, kind: "expense", category: "АЗС", description: "АЗС Газ-Сервис")) == FinanceCategoryPath(group: "Транспорт", subcategory: "Топливо"), "fuel purchase must not be confused with gas utilities")
 
         let v344Report = FinancialEngine.report([
@@ -1191,7 +1257,7 @@ struct FinanceEngineTests {
         require(taxonomyReport.expenseLines.first?.children.map(\.title) == ["Супермаркеты", "Кафе и рестораны"], "food subcategories use stable order")
         require(taxonomyReport.expenseLines.contains { $0.title == "Транспорт" && $0.children.contains { $0.title == "Такси" } }, "transport group exists")
         require(taxonomyReport.expenseLines.contains { $0.title == "Обязательные" && $0.children.contains { $0.title == "Подписки" } }, "required group exists")
-        require(taxonomyReport.expenseLines.contains { $0.title == "Другое" && $0.children.contains { $0.title == "Переводы другим" } }, "other group includes external transfers")
+        require(taxonomyReport.expenseLines.contains { $0.title == "Переводы" && $0.children.contains { $0.title == "Переводы другим" } }, "transfers to people have their own group")
         let taxonomyGroupSum = taxonomyReport.expenseLines
             .filter { FinancialEngine.expenseGroupOrder.contains($0.title) }
             .reduce(Int64(0)) { $0 + $1.amountKopecks }
@@ -1299,6 +1365,7 @@ struct FinanceEngineTests {
         testSaveStatementSource()
         testCardToSaveTransfer()
         testOperationLooks()
+        testOtherShrinks()
 
         print("Finance engine tests passed")
     }

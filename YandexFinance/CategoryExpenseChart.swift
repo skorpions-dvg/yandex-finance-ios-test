@@ -103,6 +103,7 @@ struct CategoryExpenseChart: View {
         case "Покупки": return .purple
         case "Обязательные": return .teal
         case "Другое": return .gray
+        case "Переводы": return .indigo
         default: return .gray
         }
     }

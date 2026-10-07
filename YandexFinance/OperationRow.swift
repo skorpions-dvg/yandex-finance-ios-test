@@ -93,6 +93,7 @@ struct OperationRow: View {
         case "Транспорт": return ("car.fill", .blue)
         case "Покупки": return ("bag.fill", .purple)
         case "Обязательные": return ("house.fill", .teal)
+        case "Переводы": return ("person.2.fill", .indigo)
         default: return ("square.grid.2x2.fill", .gray)
         }
     }

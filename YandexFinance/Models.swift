@@ -108,6 +108,8 @@ struct SavedHistory: Codable {
     var categoryRules: [CategoryRule]?
     /// Category chosen for one bank operation: operation identity -> `ExpenseCategory.id`. Wins over rules.
     var categoryOverrides: [String: UUID]?
+    /// Set once the transfers to people were moved out of «Другое» in a tree the user had already edited.
+    var transfersGroupMoved: Bool?
     /// "This sender's income always goes to this category" (a name from `FinancialEngine.incomeSubcategoryOrder`).
     var incomeCategoryRules: [IncomeCategoryRule]?
     /// Income category chosen for one bank operation: operation identity -> category name. Wins over rules.
@@ -338,9 +340,19 @@ struct ExpenseCategoryGroup: Codable, Equatable, Identifiable {
     static let builtin: [ExpenseCategoryGroup] = ExpenseTaxonomy.builtin.groups.enumerated().map { groupIndex, group in
         ExpenseCategoryGroup(id: builtinID(groupIndex + 1, 0), name: group.name, isFixedCosts: group.isFixedCosts,
                              categories: group.subcategories.enumerated().map { index, name in
-                                 ExpenseCategory(id: builtinID(groupIndex + 1, index + 1), name: name, sources: [group.name + "/" + name])
+                                 let path = group.name + "/" + name
+                                 let place = legacyPlaces[path] ?? (groupIndex + 1, index + 1)
+                                 return ExpenseCategory(id: builtinID(place.0, place.1), name: name,
+                                                        sources: [path] + (legacySources[path] ?? []))
                              })
     }
+
+    /// Ids of the tree before «Переводы» left «Другое» (41.46). Choices and rules made earlier keep their category.
+    private static let legacyPlaces: [String: (Int, Int)] = [
+        "Переводы/Переводы другим": (5, 5), "Другое/Комиссии": (5, 6), "Другое/Прочее": (5, 7),
+    ]
+    /// Paths saved before that move, still found in manual entries.
+    static let legacySources: [String: [String]] = ["Переводы/Переводы другим": ["Другое/Переводы другим"]]
 
     private static func builtinID(_ group: Int, _ category: Int) -> UUID {
         UUID(uuidString: String(format: "00000000-0000-4000-8000-%06X%06X", group, category))!
@@ -384,7 +396,11 @@ struct ExpenseCategoryResolver {
                 let path = group.name + "/" + category.name
                 pathByID[category.id] = path
                 idByPath[path] = category.id
-                for source in category.sources { idBySource[source] = category.id }
+                for source in category.sources {
+                    idBySource[source] = category.id
+                    // A tree saved before 41.46 knows transfers by their old path; the guess now uses the new one.
+                    if source == "Другое/Переводы другим" { idBySource["Переводы/Переводы другим"] = category.id }
+                }
             }
         }
         for rule in history.categoryRules ?? [] where !rule.payeeKey.isEmpty { ruleByKey[rule.payeeKey] = rule.categoryID }
@@ -613,6 +629,17 @@ extension SavedHistory {
             categoryOverrides = overrides
         }
         return true
+    }
+
+    /// In a tree the user edited before 41.46, moves «Переводы другим» from «Другое» into its own group «Переводы»,
+    /// as the built-in tree now has it. Once only: a later move back by the user stays.
+    mutating func moveTransfersToOwnGroup() {
+        guard expenseCategories != nil, transfersGroupMoved != true else { return }
+        transfersGroupMoved = true
+        guard let group = categoryTree.first(where: { $0.name == "Другое" }),
+              let transfers = group.categories.first(where: { $0.sources.contains("Другое/Переводы другим") }) else { return }
+        let target = categoryTree.first(where: { $0.name == "Переводы" })?.id ?? addExpenseGroup(name: "Переводы")
+        if let target { moveExpenseCategory(transfers.id, toGroup: target, at: 0) }
     }
 
     mutating func removeCategoryRule(_ id: UUID) {

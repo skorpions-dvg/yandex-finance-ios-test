@@ -71,7 +71,9 @@ struct ExpenseTaxonomy: Equatable {
         Group(name: "Покупки", subcategories: ["Маркетплейсы", "Одежда", "Электроника", "Дом и быт"], isFixedCosts: false),
         Group(name: "Обязательные", subcategories: ["ЖКХ", "Связь и интернет", "Подписки", "Здоровье"], isFixedCosts: true),
         Group(name: "Другое", subcategories: ["Развлечения", "Путешествия", "Подарки", "Доставка и курьеры",
-                                              "Переводы другим", "Комиссии", "Прочее"], isFixedCosts: false),
+                                              "Комиссии", "Прочее"], isFixedCosts: false),
+        // Money sent to people is not «other spending»; on its own it no longer hides what was bought.
+        Group(name: "Переводы", subcategories: ["Переводы другим"], isFixedCosts: false),
     ])
 }
 
@@ -1055,6 +1057,13 @@ enum FinancialEngine {
     static let expenseGroupOrder = ExpenseTaxonomy.builtin.groupNames
     static let expenseSubcategoryOrder = ExpenseTaxonomy.builtin.subcategoryOrder
 
+    /// Four-digit category code inside an aggregator title: «YANDEX*5411*DK» → "5411".
+    static func embeddedMCC(_ title: String) -> String {
+        let parts = title.split(separator: "*")
+        guard parts.count >= 3 else { return "" }
+        return parts.dropFirst().first { $0.count == 4 && $0.allSatisfy(\.isNumber) }.map(String.init) ?? ""
+    }
+
     static func expenseCategory(for operation: FinancialOperationInput, assessment: FinancialAssessment? = nil) -> FinanceCategoryPath {
         if let chosen = operation.categoryPath.map({ $0.split(separator: "/", maxSplits: 1).map(String.init) }),
            chosen.count == 2, !chosen[0].isEmpty, !chosen[1].isEmpty {
@@ -1096,7 +1105,7 @@ enum FinancialEngine {
         }
 
         if kind == "transfer" || category.contains("перевод") {
-            return FinanceCategoryPath(group: "Другое", subcategory: "Переводы другим")
+            return FinanceCategoryPath(group: "Переводы", subcategory: "Переводы другим")
         }
 
         // Bank category is the strongest taxonomy signal. Resolve it before free-text so phrases
@@ -1157,8 +1166,9 @@ enum FinancialEngine {
             return FinanceCategoryPath(group: "Другое", subcategory: "Подарки")
         }
 
-        // High-confidence MCC fallback for common bank categories that arrive too generic.
-        switch mcc {
+        // High-confidence MCC fallback for common bank categories that arrive too generic. Statements carry no MCC,
+        // but aggregator titles do: «YANDEX*5411*DK» is a grocery purchase.
+        switch mcc.isEmpty ? embeddedMCC(operation.description) : mcc {
         case "5411", "5422", "5441", "5451", "5462", "5499":
             return FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")
         case "5812", "5813", "5814":
@@ -1183,8 +1193,40 @@ enum FinancialEngine {
             return FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")
         case "4511", "4722", "7011":
             return FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")
+        case "5399":
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Маркетплейсы")
+        case "4215":
+            return FinanceCategoryPath(group: "Другое", subcategory: "Доставка и курьеры")
+        case "5651", "5661", "5691", "5699":
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Одежда")
+        case "5200", "5211", "5251", "5712", "5719":
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Дом и быт")
         default:
             break
+        }
+
+        // Shop names as banks and statements print them, Latin transliterations included.
+        if containsAny(freeText, ["magnit", "магнит", "perekrestok", "перекресток", "pyaterochka", "пятерочк", "auchan", "ашан",
+                                  "vkusvill", "вкусвилл", "lenta ", "гипермаркет лента", "maria-ra", "мария-ра", "metro c&c"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")
+        }
+        if containsAny(freeText, ["kfc", "burger king", "вкусно и точка", "vkusno i tochka", "coffee", "шаурм", "shaurm"]) {
+            return FinanceCategoryPath(group: "Еда", subcategory: "Кафе и рестораны")
+        }
+        if containsAny(freeText, ["lemana", "лемана", "leroy", "леруа", "fix price", "фикс прайс", "ikea", "икеа"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Дом и быт")
+        }
+        if containsAny(freeText, ["apteka", "аптек"]) {
+            return FinanceCategoryPath(group: "Обязательные", subcategory: "Здоровье")
+        }
+        if containsAny(freeText, ["dzhinsy", "джинсы", "gloria jeans", "ostin", "befree", "sportmaster", "спортмастер"]) {
+            return FinanceCategoryPath(group: "Покупки", subcategory: "Одежда")
+        }
+        if containsAny(freeText, ["etk55", "omsk_tpp"]) {
+            return FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")
+        }
+        if containsAny(freeText, ["tutu", "туту.ру", "aviasales", "авиасейлс", "rzd", "ржд"]) {
+            return FinanceCategoryPath(group: "Другое", subcategory: "Путешествия")
         }
 
         // Merchant/purpose fallback. Keep generic web/mobile words narrow to avoid turning ordinary

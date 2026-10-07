@@ -50,7 +50,8 @@ struct OperationsHomeView: View {
             ScrollViewReader { proxy in
                 List {
                     periodRow.id("operations-top")
-                    summary
+                    // Placeholders for the fraction of a second the history is still being read at launch.
+                    summary.redacted(reason: browser.loadingHistory ? .placeholder : [])
                     if let operation = browser.history.manualOperations?.first(where: { $0.id == lastSavedOperationID }) {
                         Section {
                             HStack(alignment: .top) {
