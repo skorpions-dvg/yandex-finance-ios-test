@@ -111,7 +111,7 @@ struct OperationsHomeView: View {
                         } label: {
                             Image(systemName: "plus.circle.fill")
                                 .font(.title2)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(Color.accentColor)
                         }
                     }
                 }
@@ -212,8 +212,8 @@ struct OperationsHomeView: View {
             .font(.subheadline)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .foregroundStyle(selected ? .orange : .primary)
-            .background(selected ? Color.orange.opacity(0.18) : Color.secondary.opacity(0.15),
+            .foregroundStyle(selected ? Color.accentColor : Color.primary)
+            .background(selected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.15),
                         in: Capsule())
         }
         .buttonStyle(.plain)
@@ -485,7 +485,7 @@ private struct CustomDatesSheet: View {
                         dismiss()
                     } label: {
                         Image(systemName: "checkmark")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Color.accentColor)
                     }
                 }
             }

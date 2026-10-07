@@ -30,6 +30,8 @@ struct ContentView: View {
     @State private var selectedTab = 1
     @State private var settingsReset = 0
     @State private var presentation = FinancePresentationCache()
+    /// Live page position for the tab bar lens. A reference, so scrolling never re-evaluates this view or its pages.
+    @State private var tabProgress = TabBarProgress()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack(alignment: .top) {
@@ -85,20 +87,20 @@ struct ContentView: View {
                     .onChange(of: page) { _, newPage in
                         if let newPage, newPage >= 1 { selectedTab = newPage }
                     }
+                    .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.x }) { _, x in
+                        let pagesStart = drawerWidth + 16
+                        tabProgress.value = min(3, max(1, (x - pagesStart) / max(1, width) + 1))
+                    }
                     // The first layout starts at the leading edge (the accounts); open on the selected tab instead.
                     .onAppear { proxy.scrollTo(selectedTab, anchor: .leading) }
                     }
                 }
 
-                HStack(spacing: 4) {
-                    tabButton(1, title: "Операции", symbol: "list.bullet.rectangle")
-                    tabButton(2, title: "Отчёты", symbol: "chart.pie")
-                    tabButton(3, title: "Настройки", symbol: "gearshape")
-                }
-                .padding(6)
-                .glassEffect(.regular, in: .capsule)
-                .padding(.horizontal, 40)
-                .padding(.bottom, 8)
+                LensTabBar(progress: tabProgress, reduceMotion: reduceMotion, select: selectTab)
+                    .padding(6)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.horizontal, 40)
+                    .padding(.bottom, 8)
             }
             .opacity(browser.bankPageVisible ? 0 : 1)
             .allowsHitTesting(!browser.bankPageVisible)
@@ -138,24 +140,76 @@ struct ContentView: View {
 
     private func closeAccounts() { animate { page = 1 } }
 
-    private func tabButton(_ tab: Int, title: String, symbol: String) -> some View {
-        Button {
-            if selectedTab == tab && tab == 3 { settingsReset += 1 }
-            selectedTab = tab
-            animate { page = tab }
-        } label: {
-            VStack(spacing: 4) {
-                Image(systemName: symbol).font(.title3)
-                Text(title).font(.caption2.weight(.medium))
+    private func selectTab(_ tab: Int) {
+        if selectedTab == tab && tab == 3 { settingsReset += 1 }
+        selectedTab = tab
+        animate { page = tab }
+    }
+}
+
+@MainActor
+final class TabBarProgress: ObservableObject {
+    /// 1…3, fractional while the pages move.
+    @Published var value: CGFloat = 1
+}
+
+/// Bottom tabs with a glass lens like Telegram: the lens follows the pages while they scroll, can be dragged along
+/// the bar with a finger (it grows while held) and settles on the nearest tab.
+@MainActor
+private struct LensTabBar: View {
+    @ObservedObject var progress: TabBarProgress
+    let reduceMotion: Bool
+    let select: (Int) -> Void
+    @State private var dragged: CGFloat?
+
+    private let tabs: [(title: String, symbol: String)] = [
+        ("Операции", "list.bullet.rectangle"), ("Отчёты", "chart.pie"), ("Настройки", "gearshape")
+    ]
+
+    var body: some View {
+        GeometryReader { bar in
+            let segment = bar.size.width / 3
+            let position = dragged ?? progress.value
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.08))
+                    .glassEffect(.regular, in: .capsule)
+                    .frame(width: segment, height: bar.size.height)
+                    .scaleEffect(x: dragged == nil ? 1 : 1.18, y: dragged == nil ? 1 : 1.22)
+                    .offset(x: (position - 1) * segment)
+                    .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.68), value: dragged == nil)
+                HStack(spacing: 0) {
+                    ForEach(0..<3, id: \.self) { index in
+                        let tab = index + 1
+                        let active = Int(position.rounded()) == tab
+                        Button { select(tab) } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: tabs[index].symbol).font(.title3)
+                                Text(tabs[index].title).font(.caption2.weight(.medium))
+                            }
+                            .foregroundStyle(active ? Color.accentColor : Color.primary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(active ? [.isSelected] : [])
+                    }
+                }
             }
-            .foregroundStyle(selectedTab == tab ? Color.blue : Color.primary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
             .contentShape(Rectangle())
-            .background(selectedTab == tab ? Color.primary.opacity(0.08) : Color.clear, in: .capsule)
+            .gesture(
+                DragGesture(minimumDistance: 6)
+                    .onChanged { drag in
+                        dragged = min(3, max(1, drag.location.x / max(1, segment) + 0.5))
+                    }
+                    .onEnded { drag in
+                        let tab = Int(min(3, max(1, drag.location.x / max(1, segment) + 0.5)).rounded())
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.8)) { dragged = nil }
+                        select(tab)
+                    }
+            )
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selectedTab == tab ? [.isSelected] : [])
+        .frame(height: 50)
     }
 }
 
@@ -643,6 +697,44 @@ struct FinanceDashboardView: View {
         return "\(period.start.formatted(.dateTime.day().month())) — \(last.formatted(.dateTime.day().month()))"
     }
 
+    private enum ComparisonStyle { case moreIsBetter, lessIsBetter, total }
+
+    private func wholeRubles(_ kopecks: Int64) -> String {
+        (Decimal(kopecks) / 100).formatted(.currency(code: "RUB").precision(.fractionLength(0)))
+    }
+
+    private func comparisonRow(_ title: String, _ change: FinancialEngine.MonthlyChange, style: ComparisonStyle) -> some View {
+        let delta = change.delta
+        let amount = wholeRubles(abs(delta))
+        let better: Bool
+        let words: String
+        switch style {
+        case .moreIsBetter:
+            better = delta > 0; words = delta > 0 ? "▲ больше на \(amount)" : "▼ меньше на \(amount)"
+        case .lessIsBetter:
+            better = delta < 0; words = delta > 0 ? "▲ больше на \(amount)" : "▼ меньше на \(amount)"
+        case .total:
+            better = delta > 0; words = delta > 0 ? "лучше на \(amount)" : "хуже на \(amount)"
+        }
+        // Rounded to whole rubles, a few kopecks are no change.
+        let unchanged = abs(delta) < 100
+        return VStack(alignment: .trailing, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title).font(.subheadline)
+                Spacer(minLength: 0)
+                Text(wholeRubles(change.current)).font(.subheadline.weight(.semibold))
+                    .frame(width: 104, alignment: .trailing)
+                Text(wholeRubles(change.previous)).font(.subheadline).foregroundStyle(.secondary)
+                    .frame(width: 104, alignment: .trailing)
+            }
+            .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            Text(unchanged ? "без изменений" : words)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(unchanged ? Color.secondary : (better ? Color.green : Color.red))
+        }
+        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+    }
+
     private func changeRow(_ title: String, _ change: FinancialEngine.MonthlyChange) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -713,20 +805,37 @@ struct FinanceDashboardView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }.glassRows()
 
-                Section("К предыдущему месяцу") {
-                    if periods.isPartial {
-                        Text("Месяц неполный: \(periodText(periods.current)) против \(periodText(periods.previous))")
-                            .font(.caption2).foregroundStyle(.orange)
-                            .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+                Section {
+                    // Two plain columns and the change in words: «now», «before», «more/less by».
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        Text(periods.isPartial ? periodText(periods.current) : "Сейчас")
+                            .frame(width: 104, alignment: .trailing)
+                        Text(periods.isPartial ? periodText(periods.previous) : "Было")
+                            .frame(width: 104, alignment: .trailing)
                     }
-                    changeRow("Доходы", comparison.income)
-                    changeRow("Расходы", comparison.netExpense)
-                    changeRow("Разница", comparison.difference)
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 2, trailing: 20))
+                    comparisonRow("Доходы", comparison.income, style: .moreIsBetter)
+                    comparisonRow("Расходы", comparison.netExpense, style: .lessIsBetter)
+                    comparisonRow("Итог", comparison.difference, style: .total)
                     if let growth = comparison.topExpenseGrowth {
-                        changeRow("Рост: \(growth.group) › \(growth.subcategory)", growth.change)
-                    } else {
-                        LabeledContent("Рост расходов", value: "—")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Больше всего выросли").font(.caption).foregroundStyle(.secondary)
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(growth.subcategory).font(.subheadline.weight(.semibold))
+                                Text(growth.group).font(.caption).foregroundStyle(.secondary)
+                                Spacer(minLength: 6)
+                                Text("\(wholeRubles(growth.change.current)), было \(wholeRubles(growth.change.previous))")
+                                    .font(.subheadline).monospacedDigit()
+                                    .lineLimit(1).minimumScaleFactor(0.7)
+                            }
+                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                     }
+                } header: {
+                    Text("Сравнение с \(periodText(periods.previous))")
                 }.glassRows()
 
                 Section("Полнота данных") {

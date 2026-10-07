@@ -604,7 +604,7 @@ assert.match(swift, /func requestSignIn\(\) \{[\s\S]{0,200}signInNeededMessage[\
 assert.match(swift, /historyPageReady\(\) else \{ continue \}\s*self\.finishSignIn\(\)[\s\S]{0,120}self\.read\(mode: "history"/, 'after sign-in the page closes and the refresh continues');
 assert.match(appSwift, /ZStack\(alignment: \.top\) \{[\s\S]{0,200}BankWebView\(browser: browser\)/, 'bank page must stay in the window behind the tabs');
 assert.ok(!/Label\("Банк"/.test(appSwift), 'the bank page is no longer a tab');
-assert.match(appSwift, /tabButton\(3, title: "Настройки", symbol: "gearshape"\)/);
+assert.match(appSwift, /\("Настройки", "gearshape"\)/);
 assert.match(appSwift, /Месяц сканера \(не дата платежа\)/);
 (async () => {
   const card = {innerText:groupCard, getClientRects:()=>[{}], closest:()=>null};
@@ -625,7 +625,7 @@ const financeEngine = fs.readFileSync(path.join(__dirname, '../YandexFinance/Fin
 const financeTests = fs.readFileSync(path.join(__dirname, 'FinanceEngineTests.swift'), 'utf8');
 assert.match(projectV25, /FinanceEngine\.swift/);
 // Build numbers and README consistency are checked together above.
-assert.match(appSwift, /tabButton\(2, title: "Отчёты", symbol: "chart\.pie"\)/);
+assert.match(appSwift, /\("Отчёты", "chart\.pie"\)/);
 assert.match(appSwift, /Button\(action: previousMonth\)[\s\S]{0,400}Button\(action: nextMonth\)[\s\S]{0,300}\}\s*(?:\/\/[^\n]*\s*)?\.buttonStyle\(\.borderless\)/,
   'month switcher buttons share a List row and must be borderless, otherwise one tap fires both');
 assert.match(appSwift, /Банковские списания/);

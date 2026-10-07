@@ -627,14 +627,33 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   const summary = detailsIndex >= 0 ? lines.slice(0, detailsIndex) : lines;
   const combined = [description, rowText, ...details].filter(Boolean).join(' ');
   const installment = providers.includes('BNPL') && /Плат[её]ж/i.test(rowText + ' ' + (purpose || ''));
-  const refund = rawCategory === 'Возврат' || summary.includes('Возврат');
   const sourceAccount = detail('Со счёта');
   const destinationAccount = detail('Куда');
-  const ownAccountHint = /(?:сейв|карт[ау]\s+п[эе]й|сч[её]т(?:\s+в)?\s+п[эе]й|яндекс\s+п[эе]й)/i;
+  const ownAccountHint = /(?:сейв|карт[аыу]\s+п[эе]й|сч[её]т(?:\s+в)?\s+п[эе]й|яндекс\s+п[эе]й)/i;
+  // A card ↔ Save transfer is one bank card with a part per account ("Карта Пэй −70 000 ₽", "Счёт в Сейвах +70 000 ₽"),
+  // and the shared history lists each part as its own row. The account named next to this row's amount is the account
+  // the row belongs to; it is kept as the payment method so the card balance only takes the card's part.
+  // Only a card with at least two own-account parts (one per account) is such a transfer.
+  const partLine = /[+−–-]\s*\d[\d\s.,]*\s*₽$/;
+  const ownParts = lines.filter((line, i) => partLine.test(line) &&
+    ownAccountHint.test(/^[+−–-]/.test(line) ? (lines[i - 1] || '') : line)).length;
+  let componentAccount = null;
+  for (let i = 0; ownParts >= 2 && i < lines.length && !componentAccount; i++) {
+    const inline = /^(.+?)\s+([+−–-]\s*\d[\d\s.,]*\s*₽)$/.exec(lines[i]);
+    const name = inline ? inline[1] : (i > 0 && /^[+−–-]\s*\d[\d\s.,]*\s*₽$/.test(lines[i]) ? lines[i - 1] : null);
+    const value = inline ? inline[2] : lines[i];
+    if (!name || !ownAccountHint.test(name) || name.includes('→') || datePattern.test(name)) { datePattern.lastIndex = 0; continue; }
+    datePattern.lastIndex = 0;
+    try { if (amount(value) === kopecks) componentAccount = name.trim(); } catch (_) {}
+  }
+  const fromOwn = /(?:^|\s)(?:с\s+карты\s+п[эе]й|со\s+сч[её]та\s+в\s+сейвах|с\s+сч[её]та\s+в\s+сейвах)/i.test(combined);
+  const toOwn = /на\s+(?:сч[её]т\s+в\s+сейвах|карту\s+п[эе]й)/i.test(combined);
+  const refund = !componentAccount && (rawCategory === 'Возврат' || summary.includes('Возврат'));
   const arrowParts = description.split('→').map(x => x.trim()).filter(Boolean);
   const internalTransfer = (arrowParts.length === 2 && ownAccountHint.test(arrowParts[0]) && ownAccountHint.test(arrowParts[1])) ||
     (hasDetailHeading('Перевод') && !!sourceAccount && !!destinationAccount &&
       ownAccountHint.test(sourceAccount) && ownAccountHint.test(destinationAccount)) ||
+    (fromOwn && toOwn) || !!componentAccount ||
     /перевод между счетами одного клиента/i.test(combined);
   const cashback = /к[эе]шб[эе]к|cashback/i.test(combined);
   const interestIncome = kopecks > 0 && !internalTransfer && !cashback &&
@@ -651,7 +670,7 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   return {identity: JSON.stringify(identities), verifiedAt: new Date().toISOString(), occurredAt: occurred.toISOString(),
     timePrecision: dates.length ? 'source_timestamp' : 'display_minute',
     description, amountKopecks: kopecks, currency: 'RUB', status,
-    category, mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты'), providers,
+    category, mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты') || componentAccount, providers,
     kind: installment ? 'installment_payment' : refund ? 'refund' : internalTransfer ? 'internal_transfer'
       : interestIncome ? 'interest_income' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};
 }

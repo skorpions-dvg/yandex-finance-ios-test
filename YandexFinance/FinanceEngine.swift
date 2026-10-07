@@ -258,6 +258,12 @@ enum FinancialEngine {
         }
 
         let split = kind == "installment_payment" || operation.providers.contains(where: { normalized($0) == "bnpl" }) || category.contains("сплит")
+        // A move between the card and the Save account, as the bank's shared history lists it: one row per account,
+        // both titled after the Save account. It is never a purchase, a refund or income.
+        if amount != 0 && !split && kind != "interest_income" && (isSaveSide(operation) || description == "счет в сейвах" ||
+            (description.contains("→") && description.contains("сейв"))) {
+            return FinancialAssessment(type: .internalTransfer, reason: "Перевод между картой и Сейвом — перемещение между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
         if amount == 0 {
             return FinancialAssessment(type: .unknown, reason: "Нулевая сумма не создаёт доход или расход; природа операции требует проверки.", originalAmountKopecks: 0, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
@@ -428,7 +434,7 @@ enum FinancialEngine {
             operationCount += 1
             let assessment = classify(operation)
             // The Save statement repeats the deposit side of transfers the card statement already has.
-            let fromSaveStatement = operation.paymentMethod == "Сейв (выписка)"
+            let fromSaveStatement = isSaveSide(operation)
             if assessment.type != .cancelled && !fromSaveStatement {
                 if operation.amountKopecks < 0 { bankDebit += -operation.amountKopecks }
                 if operation.amountKopecks > 0 { bankCredit += operation.amountKopecks }
@@ -594,7 +600,7 @@ enum FinancialEngine {
     static func accountBalance(startKopecks: Int64, since: Date, tracksBankCard: Bool, operations: [FinancialOperationInput]) -> Int64 {
         guard tracksBankCard else { return startKopecks }
         return operations.reduce(startKopecks) { balance, operation in
-            guard operation.paymentMethod != "Сейв (выписка)",
+            guard !isSaveSide(operation),
                   let date = BankDateParser.parse(operation.occurredAt), date >= since,
                   classify(operation).type != .cancelled else { return balance }
             return balance + operation.amountKopecks
@@ -1001,7 +1007,7 @@ enum FinancialEngine {
         for operation in operations {
             guard let date = BankDateParser.parse(operation.occurredAt), date >= interval.start && date < interval.end else { continue }
             let assessment = classify(operation)
-            if assessment.type == .internalTransfer && isSaveTransfer(operation) && operation.paymentMethod != "Сейв (выписка)" {
+            if assessment.type == .internalTransfer && isSaveTransfer(operation) && !isSaveSide(operation) {
                 if operation.amountKopecks < 0 { toSave += -operation.amountKopecks }
                 if operation.amountKopecks > 0 { fromSave += operation.amountKopecks }
                 tracked += 1
@@ -1238,6 +1244,13 @@ enum FinancialEngine {
 
         // Keep broad/ambiguous bank descriptions safe rather than guessing.
         return FinanceCategoryPath(group: "Другое", subcategory: "Прочее")
+    }
+
+    /// The Save account's own row of a movement (the Save statement, or the Save part of a card ↔ Save transfer in the
+    /// bank's shared history). The card statement or the card row already has the other side, so it never moves the
+    /// card balance and is not counted twice.
+    static func isSaveSide(_ operation: FinancialOperationInput) -> Bool {
+        normalized(operation.paymentMethod).contains("сейв")
     }
 
     private static func isSaveTransfer(_ operation: FinancialOperationInput) -> Bool {

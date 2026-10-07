@@ -342,7 +342,7 @@ private struct ExpenseCategoryFormView: View {
                     }
                 }
             }
-            .tint(.orange)
+            .tint(.accentColor)
             .appSurface()
             .navigationTitle(createsGroup ? (group == nil ? "Новая группа" : "Группа") : (category == nil ? "Новая категория" : "Категория"))
             .navigationBarTitleDisplayMode(.inline)
@@ -453,7 +453,7 @@ struct OperationIncomeCategoryView: View {
                         HStack {
                             Text(name).foregroundStyle(.primary)
                             Spacer()
-                            if selected == name { Image(systemName: "checkmark").foregroundStyle(.orange) }
+                            if selected == name { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
                         }
                     }
                 }
@@ -466,7 +466,7 @@ struct OperationIncomeCategoryView: View {
                 }.glassRows()
             }
         }
-        .tint(.orange)
+        .tint(.accentColor)
         .appSurface()
         .navigationTitle("Категория дохода")
         .navigationBarTitleDisplayMode(.inline)
@@ -500,7 +500,7 @@ struct OperationExpenseCategoryView: View {
                                 Text(category.name).foregroundStyle(.primary)
                                 Spacer()
                                 if selectedID == category.id {
-                                    Image(systemName: "checkmark").foregroundStyle(.orange)
+                                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
                                 }
                             }
                         }
@@ -513,7 +513,7 @@ struct OperationExpenseCategoryView: View {
                 Text("Прошлые и будущие расходы этого получателя тоже перейдут в эту категорию")
             }.glassRows() }
         }
-        .tint(.orange)
+        .tint(.accentColor)
         .appSurface()
         .navigationTitle("Категория")
         .navigationBarTitleDisplayMode(.inline)

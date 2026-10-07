@@ -53,6 +53,33 @@ assert.equal(internal.status, 'Не указан');
 assert.equal(internal.kind, 'internal_transfer');
 assert.equal(internal.category, 'Переводы между своими счетами');
 
+// Card → Save transfer: one bank card with a part per account; the shared history lists both parts as rows.
+const cardToSaveRef = {...ref, chainId: 'demo-card-to-save', operationTimestamp: '2026-10-07T09:04:56.635Z'};
+const cardToSave = [
+  'Карта Пэй → Счёт в Сейвах',
+  'Сегодня, 15:04',
+  '70 000 ₽',
+  'Карта Пэй',
+  '−70 000 ₽',
+  'Счёт в Сейвах',
+  '+70 000 ₽',
+  'Подробнее',
+  'Перевод',
+  'С карты Пэй',
+  'Куда',
+  'На счёт в Сейвах'
+].join('\n');
+const cardPart = parse(url([cardToSaveRef]), cardToSave, 'Счёт в Сейвах −70 000 ₽', new Date(2026, 9, 7, 16));
+assert.equal(cardPart.amountKopecks, -7000000);
+assert.equal(cardPart.kind, 'internal_transfer', 'the card part is an own transfer, not a payment to others');
+assert.equal(cardPart.paymentMethod, 'Карта Пэй', 'the card part names the card');
+const savePart = parse(url([{...cardToSaveRef, chainId: 'demo-card-to-save-2'}]), cardToSave, 'Счёт в Сейвах +70 000 ₽', new Date(2026, 9, 7, 16));
+assert.equal(savePart.amountKopecks, 7000000);
+assert.equal(savePart.kind, 'internal_transfer', 'the Save part is not a refund');
+assert.equal(savePart.paymentMethod, 'Счёт в Сейвах', 'the Save part names the Save account, so it never moves the card balance');
+const plainPurchase = parse(url([ref]), purchase, 'Тестовый магазин −1 234,56 ₽');
+assert.equal(plainPurchase.paymentMethod, null, 'ordinary cards keep their own payment method');
+
 const demoInterestRef = {...ref, chainId: 'demo-savings-interest', operationTimestamp: '2026-08-14T02:15:00Z'};
 const interestCard = [
   'Выплата процентов',

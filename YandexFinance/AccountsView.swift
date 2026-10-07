@@ -247,10 +247,13 @@ struct AccountsView: View {
                         Image(systemName: collapsed.contains(group.id) ? "chevron.right" : "chevron.down")
                             .foregroundStyle(.secondary)
                     }
+                    // One line in every mode: the name shortens, the amount shrinks slightly instead of wrapping.
                     Text(group.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                    Spacer()
+                        .lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 6)
                     Text(total(accounts.filter { $0.groupID == group.id }))
-                        .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
                 }
                 .contentShape(Rectangle())
             }
@@ -298,9 +301,11 @@ struct AccountsView: View {
                         .frame(width: 28, height: 28)
                         .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
                     Text(account.name).foregroundStyle(.primary)
-                    Spacer()
+                        .lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 6)
                     Text(accountMoney(cachedBalance(account)))
-                        .foregroundStyle(.primary).multilineTextAlignment(.trailing)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
                 }
                 .contentShape(Rectangle())
             }
@@ -446,7 +451,7 @@ struct AccountFormView: View {
                     }.glassRows()
                 }
             }
-            .tint(.orange)
+            .tint(.accentColor)
             .appSurface()
             .navigationTitle(account == nil ? "Новый счёт" : "Счёт")
             .navigationBarTitleDisplayMode(.inline)
@@ -456,7 +461,7 @@ struct AccountFormView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Сохранить", systemImage: "checkmark", action: save)
-                        .tint(.orange).disabled(trimmedName.isEmpty || parsedBalance == nil)
+                        .tint(.accentColor).disabled(trimmedName.isEmpty || parsedBalance == nil)
                 }
             }
         }
@@ -602,7 +607,7 @@ struct AccountGroupFormView: View {
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Сохранить", systemImage: "checkmark", action: save)
-                            .tint(.orange).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .tint(.accentColor).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
         }

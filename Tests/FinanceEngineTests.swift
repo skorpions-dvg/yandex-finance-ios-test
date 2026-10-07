@@ -785,6 +785,54 @@ struct FinanceEngineTests {
         require(manual.count == 2 && manual.allSatisfy { !$0.appliesToAll }, "manual operations stay individual because existing setters do not create rules for them")
     }
 
+    static func testCardToSaveTransfer() {
+        // The bank's shared history lists a card → Save transfer as two rows titled after the Save account.
+        let day = BankDateParser.parse("2026-10-07T00:00:00Z")!
+        let start = day.addingTimeInterval(-86400)
+        var cardRow = op(-7_000_000, kind: "internal_transfer", category: "Переводы между своими счетами",
+                         description: "Счёт в Сейвах", date: "2026-10-07T09:04:56.635Z")
+        cardRow.paymentMethod = "Карта Пэй"
+        var saveRow = op(7_000_000, kind: "internal_transfer", category: "Переводы между своими счетами",
+                         description: "Счёт в Сейвах", date: "2026-10-07T09:04:56.874Z")
+        saveRow.paymentMethod = "Счёт в Сейвах"
+        let shop = op(-100_000, kind: "expense", description: "Магазин", mcc: "5411", date: "2026-10-07T10:00:00Z")
+        let card = FinancialEngine.accountBalance(startKopecks: 8_046_052, since: start, tracksBankCard: true,
+                                                  operations: [cardRow, saveRow, shop])
+        require(card == 8_046_052 - 7_000_000 - 100_000, "the card takes only its own part of the transfer")
+        let interval = DateInterval(start: day, duration: 86400)
+        let report = FinancialEngine.report([cardRow, saveRow, shop], in: interval)
+        require(report.incomeKopecks == 0 && report.netExpenseKopecks == 100_000 && report.refundsKopecks == 0,
+                "a card ↔ Save transfer is neither income, expense nor refund")
+        require(report.movementKopecks == 7_000_000, "the movement is counted once, not for both rows")
+
+        // Rows saved before the scanner knew the account: the old «Переводы другим» and «Возврат» guesses are gone.
+        let oldCard = op(-7_000_000, kind: "transfer", category: "Перевод", description: "Счёт в Сейвах", date: "2026-10-07T09:04:56.635Z")
+        let oldSave = op(7_000_000, kind: "refund", category: "Перевод", description: "Счёт в Сейвах", date: "2026-10-07T09:04:56.874Z")
+        require(FinancialEngine.classify(oldCard).type == .internalTransfer && FinancialEngine.classify(oldSave).type == .internalTransfer,
+                "old Save rows are own transfers, not a payment to others or a refund")
+        let oldReport = FinancialEngine.report([oldCard, oldSave], in: interval)
+        require(oldReport.netExpenseKopecks == 0 && oldReport.refundsKopecks == 0 && oldReport.incomeKopecks == 0,
+                "old Save rows change no totals")
+
+        // Save interest stays income; an arrow title between own accounts is a transfer.
+        var interest = op(214, kind: "interest_income", description: "Выплата процентов", date: "2026-10-07T03:00:00Z")
+        interest.paymentMethod = "Счёт в Сейвах"
+        require(FinancialEngine.classify(interest).type == .interestIncome, "Save interest is still income")
+        require(FinancialEngine.classify(op(-50_000, kind: "transfer", description: "Карта Пэй → Счёт в Сейвах")).type == .internalTransfer,
+                "an arrow title card → Save is an own transfer")
+
+        // The manual entry of the same transfer moves the hand-kept Save account, never the scanned card.
+        let cardAccount = Account(name: "Яндекс банк", icon: "creditcard", color: "yellow", startBalanceKopecks: 8_046_052,
+                                  startDate: start, tracksBankCard: true)
+        let saveAccount = Account(name: "Сейв", icon: "building.columns", color: "blue", startBalanceKopecks: 214, startDate: start)
+        let manual = ManualOperation(kind: .transfer, amountKopecks: 7_000_000, date: BankDateParser.parse("2026-10-07T09:06:00Z")!,
+                                     accountID: cardAccount.id, toAccountID: saveAccount.id)
+        require(cardAccount.balance(bankOperations: [cardRow, saveRow, shop], manual: [manual]) == 8_046_052 - 7_000_000 - 100_000,
+                "the card is not moved twice by the manual entry")
+        require(saveAccount.balance(bankOperations: [cardRow, saveRow, shop], manual: [manual]) == 214 + 7_000_000,
+                "the Save account receives the transfer once")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -1173,6 +1221,7 @@ struct FinanceEngineTests {
         testFixedCostGroups()
         testIncomeCategories()
         testSaveStatementSource()
+        testCardToSaveTransfer()
 
         print("Finance engine tests passed")
     }

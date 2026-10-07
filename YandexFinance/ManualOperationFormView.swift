@@ -84,7 +84,7 @@ struct ManualOperationFormView: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
-            .tint(.orange)
+            .tint(.accentColor)
             .appSurface()
             .navigationTitle(operation == nil ? "Добавить" : "Операция")
             .navigationBarTitleDisplayMode(.inline)
@@ -94,7 +94,7 @@ struct ManualOperationFormView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Сохранить", systemImage: "checkmark", action: save)
-                        .tint(.orange).disabled(!canSave || saved)
+                        .tint(.accentColor).disabled(!canSave || saved)
                 }
             }
         }
@@ -151,7 +151,7 @@ struct ManualOperationFormView: View {
                                         Text(category).foregroundStyle(.primary)
                                         Spacer()
                                         if group == name && subcategory == category {
-                                            Image(systemName: "checkmark").foregroundStyle(.orange)
+                                            Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
                                         }
                                     }
                                 }
@@ -303,7 +303,7 @@ private struct ManualOperationDateTimeView: View {
                 }
             }
             .padding()
-            .tint(.orange)
+            .tint(.accentColor)
             .appSurface()
             .navigationTitle(selectsTime ? "Время" : "Дата")
             .navigationBarTitleDisplayMode(.inline)
