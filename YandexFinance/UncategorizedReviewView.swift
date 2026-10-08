@@ -1,9 +1,5 @@
 import SwiftUI
 
-private enum QuickReviewDestination: Hashable {
-    case group(String)
-}
-
 @MainActor
 struct UncategorizedReviewView: View {
     @ObservedObject var browser: BankBrowser
@@ -49,13 +45,6 @@ struct UncategorizedReviewView: View {
         .appSurface()
         .navigationTitle("Разобрать операции")
         .navigationBarTitleDisplayMode(.inline)
-        // A value destination stays alive after its original recipient row is removed by the category choice.
-        .navigationDestination(for: QuickReviewDestination.self) { destination in
-            switch destination {
-            case .group(let id):
-                ReviewGroupOperationsView(browser: browser, presentation: presentation, review: review, groupID: id)
-            }
-        }
         .modifier(QuickReviewUndoModifier(state: review, browser: browser))
         .alert("Не удалось изменить", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) { error = nil }
@@ -64,7 +53,11 @@ struct UncategorizedReviewView: View {
 
     private func rows(_ groups: [ReviewGroup], suggestions: [String: [CategorySuggestion]]) -> some View {
         ForEach(groups) { group in
-            NavigationLink(value: QuickReviewDestination.group(group.id)) {
+            // An ordinary link with its destination, like everywhere in Settings: a link by value inside the Settings
+            // stack opened a second copy of this list instead of the group.
+            NavigationLink {
+                ReviewGroupOperationsView(browser: browser, presentation: presentation, review: review, groupID: group.id)
+            } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .top) {
                         Text(group.title).foregroundStyle(.primary)
@@ -92,15 +85,8 @@ private struct ReviewGroupOperationsView: View {
     let presentation: FinancePresentationCache
     @ObservedObject var review: QuickReviewState
     @Environment(\.dismiss) private var dismiss
-    @State private var groupID: String
+    let groupID: String
     @State private var error: String?
-
-    init(browser: BankBrowser, presentation: FinancePresentationCache, review: QuickReviewState, groupID: String) {
-        self.browser = browser
-        self.presentation = presentation
-        self.review = review
-        _groupID = State(initialValue: groupID)
-    }
 
     var body: some View {
         let groups = QuickReviewCache.groups(browser.history, presentation: presentation)
@@ -111,7 +97,7 @@ private struct ReviewGroupOperationsView: View {
                     Section("Подсказки категории") {
                         ForEach(options) { suggestion in
                             Button {
-                                apply(suggestion, to: group, groups: groups)
+                                apply(suggestion, to: group)
                             } label: { QuickReviewSuggestionLabel(suggestion: suggestion) }
                         }
                     }.glassRows()
@@ -159,16 +145,9 @@ private struct ReviewGroupOperationsView: View {
         } message: { Text(error ?? "") }
     }
 
-    private func apply(_ suggestion: CategorySuggestion, to group: ReviewGroup, groups: [ReviewGroup]) {
-        // Follow the displayed order: named payees first, then unnamed operations.
-        let ordered = groups.filter { !$0.key.isEmpty } + groups.filter { $0.key.isEmpty }
-        let index = ordered.firstIndex { $0.id == group.id }
+    /// Sets the category of the whole group and returns to the list, where the panel «Применено · Отменить» waits.
+    private func apply(_ suggestion: CategorySuggestion, to group: ReviewGroup) {
         error = review.apply(suggestion.categoryID, to: group, browser: browser)
-        guard error == nil else { return }
-        let remaining = QuickReviewCache.groups(browser.history, presentation: presentation)
-        let next = index.flatMap { position in
-            ordered.dropFirst(position + 1).first { candidate in remaining.contains { $0.id == candidate.id } }
-        }
-        if let next { groupID = next.id } else { dismiss() }
+        if error == nil { dismiss() }
     }
 }
