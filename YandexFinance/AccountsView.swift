@@ -47,6 +47,8 @@ struct AccountsView: View {
     /// The eyes just tapped, shown at once while the change is being saved (saving and redrawing the balances takes a moment).
     @State private var accountEyes: [UUID: Bool] = [:]
     @State private var groupEyes: [UUID: Bool] = [:]
+    /// The number of the latest tap on each eye: only that tap saves and clears what is shown (quick taps are merged).
+    @State private var eyeTaps: [UUID: Int] = [:]
 
     private var accounts: [Account] { browser.history.accounts ?? [] }
     private var groups: [AccountGroup] { browser.history.accountGroups ?? [] }
@@ -289,22 +291,40 @@ struct AccountsView: View {
     }
 
     private func toggleGroupBalance(_ group: AccountGroup) {
-        let include = !(groupEyes[group.id] ?? (group.includesInBalance != false))
-        groupEyes[group.id] = include
-        afterRedraw {
+        // The state now, not the one the row was drawn with: a second quick tap turns it back.
+        let saved = browser.history.accountGroups?.first(where: { $0.id == group.id })?.includesInBalance != false
+        groupEyes[group.id] = !(groupEyes[group.id] ?? saved)
+        saveEye(group.id, save: {
+            guard let include = groupEyes[group.id] else { return }
             persist { history in
                 guard let index = history.accountGroups?.firstIndex(where: { $0.id == group.id }) else { return }
                 history.accountGroups?[index].includesInBalance = include
             }
-            groupEyes[group.id] = nil
-        }
+        }, clear: { groupEyes[group.id] = nil })
     }
 
-    /// Runs the saving after the tapped icon has been drawn: the tap answers at once, the balances follow.
-    private func afterRedraw(_ work: @escaping @MainActor () -> Void) {
+    private func toggleAccountBalance(_ account: Account) {
+        let saved = browser.history.accounts?.first(where: { $0.id == account.id })?.showsBalance ?? account.showsBalance
+        accountEyes[account.id] = !(accountEyes[account.id] ?? saved)
+        saveEye(account.id, save: {
+            guard let shows = accountEyes[account.id] else { return }
+            persist { history in
+                guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
+                history.accounts?[index].showsBalance = shows
+            }
+        }, clear: { accountEyes[account.id] = nil })
+    }
+
+    /// The tapped icon is drawn at once; the latest state of the eye is saved a moment later. A newer tap on the same eye takes
+    /// over: the older one neither saves nor clears what is shown.
+    private func saveEye(_ id: UUID, save: @escaping @MainActor () -> Void, clear: @escaping @MainActor () -> Void) {
+        let tap = (eyeTaps[id] ?? 0) + 1
+        eyeTaps[id] = tap
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 120_000_000)
-            work()
+            guard eyeTaps[id] == tap else { return }
+            save()
+            clear()
         }
     }
 
@@ -347,14 +367,7 @@ struct AccountsView: View {
             if editMode.isEditing {
                 let shows = accountEyes[account.id] ?? account.showsBalance
                 Button {
-                    accountEyes[account.id] = !shows
-                    afterRedraw {
-                        persist { history in
-                            guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
-                            history.accounts?[index].showsBalance = !shows
-                        }
-                        accountEyes[account.id] = nil
-                    }
+                    toggleAccountBalance(account)
                 } label: {
                     Image(systemName: shows ? "eye" : "eye.slash")
                         .font(.caption)
