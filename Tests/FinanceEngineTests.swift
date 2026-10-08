@@ -360,6 +360,85 @@ struct FinanceEngineTests {
                 "the orphan does not leak into another account")
     }
 
+    /// Budgets (block 2): limits per group and for the month, what is spent against them, the 90 % and exceeded levels.
+    static func testBudgets() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func day(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: 10))! }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2032-%02d-%02dT10:00:00Z", month, day) }
+        let taxonomy = ExpenseTaxonomy.builtin
+        let september = day(9, 15)
+
+        // Levels: calm up to 90 %, a warning from 90 % up to the limit, exceeded above it.
+        require(BudgetEngine.level(spent: 0, limit: 10_000) == .calm, "nothing spent")
+        require(BudgetEngine.level(spent: 8_999, limit: 10_000) == .calm, "just under 90 %")
+        require(BudgetEngine.level(spent: 9_000, limit: 10_000) == .warning, "90 % is a warning")
+        require(BudgetEngine.level(spent: 10_000, limit: 10_000) == .warning, "exactly the limit is not yet exceeded")
+        require(BudgetEngine.level(spent: 10_001, limit: 10_000) == .exceeded, "one kopeck over")
+        require(BudgetEngine.level(spent: 500, limit: 0) == .calm, "no limit, nothing to exceed")
+        require(BudgetEngine.level(spent: -300, limit: 10_000) == .calm, "refunds above spending do not warn")
+        let percent = BudgetStatus(group: "Еда", limitKopecks: 10_000, spentKopecks: 9_999, isMonthOnly: false)
+        require(percent.percent == 99 && percent.remainingKopecks == 1 && percent.level == .warning, "99.99 % is 99 %, one kopeck left")
+        let over = BudgetStatus(group: nil, limitKopecks: 10_000, spentKopecks: 12_500, isMonthOnly: false)
+        require(over.percent == 125 && over.remainingKopecks == -2_500 && over.level == .exceeded, "125 %, 25 ₽ over")
+        require(BudgetStatus(group: nil, limitKopecks: 0, spentKopecks: 5, isMonthOnly: false).percent == 0, "a zero limit does not divide")
+
+        // Setting and removing
+        var history = SavedHistory()
+        require(!history.setBudget(group: "Еда", limitKopecks: 0, month: nil) && !history.setBudget(group: "Еда", limitKopecks: -5, month: nil)
+                && history.budgets == nil, "a limit that is not positive is refused and nothing changes")
+        require(history.setBudget(group: "Еда", limitKopecks: 30_000, month: nil), "a limit of every month")
+        require(history.setBudget(group: "Еда", limitKopecks: 40_000, month: nil) && history.budgets?.count == 1, "the same limit is replaced, not added")
+        require(history.setBudget(group: "Еда", limitKopecks: 50_000, month: "2032-09") && history.budgets?.count == 2, "a limit of one month is a separate entry")
+        require(history.setBudget(group: nil, limitKopecks: 100_000, month: nil), "a limit of the whole month")
+        let held = history.budgets ?? []
+        require(BudgetEngine.limit(held, group: "Еда", monthKey: "2032-09")?.limitKopecks == 50_000
+                && BudgetEngine.limit(held, group: "Еда", monthKey: "2032-09")?.isMonthOnly == true, "the limit of the month wins")
+        require(BudgetEngine.limit(held, group: "Еда", monthKey: "2032-10")?.limitKopecks == 40_000
+                && BudgetEngine.limit(held, group: "Еда", monthKey: "2032-10")?.isMonthOnly == false, "other months keep the limit of every month")
+        require(BudgetEngine.limit(held, group: "Транспорт", monthKey: "2032-09") == nil, "no limit for a group without one")
+        history.removeBudget(group: "Еда", month: "2032-09")
+        require(BudgetEngine.limit(history.budgets ?? [], group: "Еда", monthKey: "2032-09")?.limitKopecks == 40_000, "removing the month's limit brings back the general one")
+        history.removeBudget(group: "Еда", month: nil)
+        history.removeBudget(group: nil, month: nil)
+        require(history.budgets == nil, "no limits left: the field is empty again")
+        require(BudgetEngine.monthKey(september, calendar: calendar) == "2032-09" && BudgetEngine.monthKey(day(1, 31), calendar: calendar) == "2032-01", "month keys")
+
+        // Statuses over operations
+        func expense(_ amount: Int64, _ description: String, _ category: String, _ date: String) -> FinancialOperationInput {
+            op(-amount, kind: "expense", category: category, description: description, date: date)
+        }
+        let inputs: [FinancialOperationInput] = [
+            expense(30_000, "Пятёрочка", "Супермаркеты", iso(9, 3)),
+            expense(20_000, "Кофейня", "Кафе", iso(9, 4)),
+            expense(15_000, "Такси", "Такси", iso(9, 10)),
+            expense(99_000, "Прошлый месяц", "Супермаркеты", iso(8, 30)),
+            op(5_000, kind: "refund", category: "Возврат", description: "Возврат Пятёрочка", date: iso(9, 5)),
+            op(-70_000, kind: "internal_transfer", description: "Перевод между счетами одного клиента", date: iso(9, 6)),
+        ]
+        let budgets = [
+            Budget(group: nil, limitKopecks: 100_000, month: nil),
+            Budget(group: "Еда", limitKopecks: 55_000, month: nil),
+            Budget(group: "Транспорт", limitKopecks: 20_000, month: nil),
+            Budget(group: "Транспорт", limitKopecks: 16_000, month: "2032-09"),
+            Budget(group: "Другое", limitKopecks: 10_000, month: "2032-10"),
+            Budget(group: "Старая группа", limitKopecks: 7_000, month: nil),
+        ]
+        let statuses = BudgetEngine.statuses(inputs: inputs, budgets: budgets, month: september, taxonomy: taxonomy, calendar: calendar)
+        require(statuses.map(\.group) == [nil, "Еда", "Транспорт", "Старая группа"], "the month first, groups in the tree's order, unknown groups last; other months' limits are out")
+        require(statuses[0].spentKopecks == 60_000 && statuses[0].limitKopecks == 100_000 && statuses[0].level == .calm,
+                "the month: expenses net of the refund, transfers and other months out")
+        require(statuses[1].spentKopecks == 50_000 && statuses[1].percent == 90 && statuses[1].level == .warning, "a group: its purchases of the month only, 90 % warns")
+        require(statuses[2].limitKopecks == 16_000 && statuses[2].isMonthOnly && statuses[2].spentKopecks == 15_000 && statuses[2].level == .warning,
+                "the month's own limit is used")
+        require(statuses[3].spentKopecks == 0 && statuses[3].level == .calm, "a group that is not in the tree has nothing spent")
+        require(BudgetEngine.statuses(inputs: inputs, budgets: [], month: september, taxonomy: taxonomy, calendar: calendar).isEmpty, "no budgets, no statuses")
+        let october = BudgetEngine.statuses(inputs: inputs, budgets: budgets, month: day(10, 5), taxonomy: taxonomy, calendar: calendar)
+        require(Set(october.map(\.group)) == [nil, "Другое", "Еда", "Транспорт", "Старая группа"] && october.first { $0.group == "Транспорт" }?.limitKopecks == 20_000,
+                "October shows its own limit and the general ones")
+        require(october.first { $0.group == nil }?.spentKopecks == 0, "no expenses yet in October")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -2413,6 +2492,7 @@ struct FinanceEngineTests {
         testReserveAccounts()
         testReportEngine()
         testReportAccountScope()
+        testBudgets()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

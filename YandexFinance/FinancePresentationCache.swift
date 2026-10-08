@@ -15,6 +15,7 @@ final class FinancePresentationCache {
            old.incomeCategoryRules == history.incomeCategoryRules,
            old.incomeCategoryOverrides == history.incomeCategoryOverrides,
            old.operationNatures == history.operationNatures,
+           old.budgets == history.budgets,
            old.operationLooks == history.operationLooks,
            old.payeeLookRules == history.payeeLookRules,
            old.accounts == history.accounts,

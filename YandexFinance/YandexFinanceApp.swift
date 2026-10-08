@@ -702,6 +702,7 @@ struct SettingsView: View {
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
                     NavigationLink("Запас до конца месяца") { ReserveAccountsView(browser: browser) }
+                    NavigationLink("Бюджеты") { BudgetsView(browser: browser, presentation: presentation) }
                     NavigationLink("Безопасность") { SecuritySettingsView(lock: lock) }
                 }.glassRows()
                 Section {

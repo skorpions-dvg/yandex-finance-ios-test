@@ -124,6 +124,8 @@ struct SavedHistory: Codable {
     /// What the owner confirmed about incoming operations the engine left «unknown»: operation identity -> "income",
     /// "refund" or "own". It never changes an operation that is already named.
     var operationNatures: [String: String]?
+    /// Spending limits of the month (stage 46); nil until the first one is set.
+    var budgets: [Budget]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -1063,4 +1065,40 @@ enum HistoryBackup {
 struct AppFailure: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+}
+
+// MARK: - Budgets (stage 46)
+
+/// A spending limit for a month: for one group of expenses or, with `group == nil`, for all expenses of the month.
+struct Budget: Codable, Equatable, Identifiable {
+    var id = UUID()
+    /// A group name of the user's tree (`SavedHistory.categoryTree`); nil: the whole month.
+    var group: String?
+    var limitKopecks: Int64
+    /// nil: the limit of every month. «yyyy-MM»: that month only; it wins over the limit of every month.
+    var month: String?
+}
+
+extension SavedHistory {
+    /// Sets the limit of a group (nil: the whole month) for every month or for one month ("yyyy-MM").
+    /// An amount that is not positive is refused and nothing changes.
+    @discardableResult
+    mutating func setBudget(group: String?, limitKopecks: Int64, month: String?) -> Bool {
+        guard limitKopecks > 0 else { return false }
+        var all = budgets ?? []
+        if let index = all.firstIndex(where: { $0.group == group && $0.month == month }) {
+            all[index].limitKopecks = limitKopecks
+        } else {
+            all.append(Budget(group: group, limitKopecks: limitKopecks, month: month))
+        }
+        budgets = all
+        return true
+    }
+
+    /// Removes one limit; a limit of one month leaves the limit of every month in place.
+    mutating func removeBudget(group: String?, month: String?) {
+        var all = budgets ?? []
+        all.removeAll { $0.group == group && $0.month == month }
+        budgets = all.isEmpty ? nil : all
+    }
 }
