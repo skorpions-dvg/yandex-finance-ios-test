@@ -338,7 +338,9 @@ private struct StructureContent: View {
             lines.append(SeparateLine(title: "Сплит", amount: line.amountKopecks, selection: .split))
         }
         for line in report.incompleteLines {
-            lines.append(SeparateLine(title: line.title, amount: line.amountKopecks, selection: nil))
+            // «Не определено» opens the operations behind it: there each one can be named.
+            lines.append(SeparateLine(title: line.title, amount: line.amountKopecks,
+                                      selection: line.title == FinancialType.unknown.title ? .unknownIncoming : nil))
         }
         return lines
     }

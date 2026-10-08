@@ -60,7 +60,7 @@ struct OperationRow: View {
             Spacer()
             Text(displayedAmount)
                 .foregroundStyle(displayedAmountKopecks.map { $0 > 0 ? Color.green : ($0 < 0 ? Color.primary : Color.secondary) }
-                                 ?? Self.amountColor(for: operation))
+                                 ?? Self.amountColor(for: operation, input: input))
         }
     }
 
@@ -114,8 +114,8 @@ struct OperationRow: View {
         }
     }
 
-    static func amountColor(for operation: BankOperation) -> Color {
-        switch operation.financialAssessment.type {
+    static func amountColor(for operation: BankOperation, input: FinancialOperationInput? = nil) -> Color {
+        switch FinancialEngine.classify(input ?? operation.financialInput).type {
         case .income, .interestIncome, .refund: return .green
         case .pending, .cancelled, .internalTransfer, .split, .unknown: return .secondary
         default: return .primary

@@ -494,11 +494,13 @@ struct OperationDetailView: View {
                 }
                 LabeledContent("Категория банка", value: operation.category)
             } else { LabeledContent("Категория", value: operation.category) }
-            LabeledContent("Финансовый тип", value: operation.financialAssessment.type.title)
+            let assessment = FinancialEngine.classify(browser.history.financialInput(for: operation))
+            LabeledContent("Финансовый тип", value: assessment.type.title)
             if let route = FinancialEngine.saveTransferDirection(for: operation.financialInput) {
                 LabeledContent("Счета", value: route)
             }
-            Text(operation.financialAssessment.reason).font(.footnote).foregroundStyle(.secondary)
+            Text(assessment.reason).font(.footnote).foregroundStyle(.secondary)
+            natureSection
             LabeledContent("Статус", value: operation.status)
             LabeledContent("Дата UTC", value: operation.occurredAt)
             LabeledContent("Точность", value: operation.timePrecision == "source_timestamp" ? "Время банка" : "До минуты")
@@ -514,6 +516,35 @@ struct OperationDetailView: View {
             noteDraft = look.note ?? ""
         }
         .onDisappear { saveNote() }
+    }
+
+    /// «What is this incoming operation?»: shown only for a bank operation the engine could not name.
+    @ViewBuilder private var natureSection: some View {
+        if !operation.isManual, operation.amountKopecks > 0, FinancialEngine.classify(operation.financialInput).type == .unknown {
+            let current = browser.history.confirmedNature(for: operation)
+            Section {
+                ForEach(ConfirmedNature.allCases, id: \.self) { nature in
+                    Button {
+                        _ = browser.updateUserData { $0.confirmNature(nature, for: operation) }
+                    } label: {
+                        HStack {
+                            Text(nature.title).foregroundStyle(.primary)
+                            Spacer()
+                            if current == nature { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                        }
+                    }
+                }
+                if current != nil {
+                    Button("Сбросить выбор", role: .destructive) {
+                        _ = browser.updateUserData { $0.confirmNature(nil, for: operation) }
+                    }
+                }
+            } header: {
+                Text("Что это за поступление?")
+            } footer: {
+                Text("Банк не назвал это поступление. Выбор меняет только эту операцию: доход попадёт в отчёты, перемещение между своими счетами — нет.")
+            }.glassRows()
+        }
     }
 
     private func saveNote() {
@@ -853,6 +884,8 @@ enum FinanceOperationSelection: Hashable {
     case allExpenses
     case allIncome
     case payee(key: String, income: Bool, title: String)
+    /// The operations the engine could not name (the line «Не определено» of the report).
+    case unknownIncoming
 
     var title: String {
         switch self {
@@ -863,6 +896,7 @@ enum FinanceOperationSelection: Hashable {
         case .allExpenses: return "Все расходы"
         case .allIncome: return "Все доходы"
         case .payee(_, _, let title): return title
+        case .unknownIncoming: return FinancialType.unknown.title
         }
     }
 
@@ -873,6 +907,7 @@ enum FinanceOperationSelection: Hashable {
         case .refund, .split, .expenseGroup, .allExpenses: return "Расходы"
         case .movement: return "Перемещения"
         case .payee(_, let income, _): return income ? "Доходы" : "Расходы"
+        case .unknownIncoming: return "Не входит в итог"
         }
     }
 
@@ -900,6 +935,8 @@ enum FinanceOperationSelection: Hashable {
             return assessment.expenseContributionKopecks > 0
         case .allIncome:
             return assessment.incomeContributionKopecks > 0
+        case .unknownIncoming:
+            return assessment.type == .unknown
         case .payee(let key, let income, _):
             let isIncome = assessment.type == .income || assessment.type == .interestIncome
             let isExpense = assessment.type == .expense || assessment.type == .commission
@@ -909,8 +946,8 @@ enum FinanceOperationSelection: Hashable {
         }
     }
 
-    func contribution(_ operation: BankOperation) -> Int64 {
-        let assessment = operation.financialAssessment
+    func contribution(_ operation: BankOperation, input: FinancialOperationInput) -> Int64 {
+        let assessment = FinancialEngine.classify(input)
         switch self {
         case .expense, .expenseGroup, .allExpenses:
             return assessment.expenseContributionKopecks
@@ -920,7 +957,7 @@ enum FinanceOperationSelection: Hashable {
             return income ? assessment.incomeContributionKopecks : assessment.expenseContributionKopecks
         case .refund:
             return assessment.refundContributionKopecks
-        case .split, .movement:
+        case .split, .movement, .unknownIncoming:
             return abs(assessment.originalAmountKopecks)
         }
     }
@@ -956,7 +993,8 @@ struct FinanceCategoryOperationsView: View {
 
     var body: some View {
         let visibleOperations = operations
-        let visibleTotal = visibleOperations.reduce(Int64(0)) { $0 + selection.contribution($1) }
+        let resolver = ExpenseCategoryResolver(browser.history)
+        let visibleTotal = visibleOperations.reduce(Int64(0)) { $0 + selection.contribution($1, input: resolver.financialInput(for: $1)) }
         List {
             Section {
                 LabeledContent("Итого", value: selection == .refund ? "−" + rubles(visibleTotal) : rubles(visibleTotal))

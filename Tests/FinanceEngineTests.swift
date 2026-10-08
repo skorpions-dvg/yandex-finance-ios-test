@@ -89,6 +89,49 @@ struct FinanceEngineTests {
         require(category("5734", "Магазин Тест").subcategory == "Электроника", "software shops")
     }
 
+    static func testConfirmedNature() {
+        let plain = op(5_100, kind: "unclassified_income", description: "Поступление Тест", date: "2032-06-02T10:00:00Z")
+        require(FinancialEngine.classify(plain).type == .unknown, "an unproven incoming operation stays unknown by itself")
+        var asIncome = plain
+        asIncome.confirmedNature = "income"
+        let income = FinancialEngine.classify(asIncome)
+        require(income.type == .income && income.incomeContributionKopecks == 5_100, "confirmed as income: it is income")
+        var asOwn = plain
+        asOwn.confirmedNature = "own"
+        let own = FinancialEngine.classify(asOwn)
+        require(own.type == .internalTransfer && own.incomeContributionKopecks == 0 && own.expenseContributionKopecks == 0, "confirmed as own: a move, not income")
+        // it never changes what the engine already named
+        var salary = op(5_200, kind: "unclassified_income", category: "Зарплата", description: "Зарплата за месяц", date: "2032-06-02T10:00:00Z")
+        salary.confirmedNature = "own"
+        require(FinancialEngine.classify(salary).type == .income, "a named income is not turned into a transfer")
+        var purchase = op(-5_000, kind: "expense", category: "Супермаркеты", description: "Магазин Тест", date: "2032-06-02T10:00:00Z")
+        purchase.confirmedNature = "income"
+        require(FinancialEngine.classify(purchase).type == .expense, "an expense stays an expense")
+
+        // the history: only an unknown incoming bank operation takes the confirmation
+        var history = SavedHistory()
+        let unknown = bankOp("nat1", 5_100, description: "Поступление Тест", kind: "unclassified_income", date: "2032-06-02T10:00:00Z")
+        let bought = bankOp("nat2", -5_000, description: "Магазин Тест", mcc: "5411", date: "2032-06-03T10:00:00Z")
+        history.operations = [unknown, bought]
+        require(!history.confirmNature(.income, for: bought), "an expense cannot be confirmed as income")
+        require(history.operationNatures == nil, "a refused confirmation changes nothing")
+        require(history.confirmNature(.income, for: unknown) && history.confirmedNature(for: unknown) == .income, "an unknown incoming operation takes it")
+        let inputs = history.financialInputs
+        let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, end: BankDateParser.parse("2032-07-01T00:00:00Z")!)
+        require(FinancialEngine.report(inputs, in: interval, taxonomy: history.expenseTaxonomy).incomeKopecks == 5_100, "the confirmed income is in the report")
+        require(history.setIncomeCategory("Прочие доходы", for: unknown, forSender: false), "a confirmed income can be given an income category")
+        require(history.confirmNature(.own, for: unknown), "the choice can be changed")
+        let ownReport = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        require(ownReport.incomeKopecks == 0, "confirmed as own: nothing comes into the income")
+        require(history.confirmNature(nil, for: unknown) && history.operationNatures == nil && history.incomeCategoryOverrides?[unknown.identity] == nil,
+                "taking the confirmation back clears it and the income category chosen for it")
+        require(FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy).incomeKopecks == 0, "unknown again: not income")
+        history.confirmNature(.income, for: unknown)
+        let back = try! HistoryBackup.decode(HistoryBackup.encode(history))
+        require(back.operationNatures == history.operationNatures, "the confirmation survives the backup")
+        require((try! HistoryBackup.decode(HistoryBackup.encode(SavedHistory()))).operationNatures == nil, "an old backup opens")
+    }
+
     static func testReceiptArchive() {
         require(ReceiptArchive.crc32(Data("123456789".utf8)) == 0xCBF43926, "the standard CRC-32 check value")
         let photo = Data([0xFF, 0xD8, 0x00, 0x01, 0x02, 0xFF, 0xD9])
@@ -2038,6 +2081,7 @@ struct FinanceEngineTests {
         testReceiptParser()
         testReceiptArchive()
         testForecastFixes()
+        testConfirmedNature()
         testAppLockLogic()
         testAccountMovements()
         testReportSeries()

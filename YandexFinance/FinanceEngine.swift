@@ -49,6 +49,9 @@ struct FinancialOperationInput {
     var incomeCategoryName: String? = nil
     /// Statement source marker; deposit rows never move the bank card.
     var paymentMethod: String? = nil
+    /// What the owner confirmed about an incoming operation the engine could not name: "income" or "own" (a move
+    /// between own accounts). It decides only operations that would otherwise stay unknown.
+    var confirmedNature: String? = nil
 }
 
 /// The user's expense categories in display order. The built-in tree is used until the user edits it.
@@ -360,6 +363,16 @@ enum FinancialEngine {
 
         if amount > 0 && kind == "income" {
             return FinancialAssessment(type: .income, reason: "Банк явно сохранил операцию как доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
+
+        // The owner has said what this incoming operation is: the one case where the unproven fallback is overridden.
+        if amount > 0, let confirmed = operation.confirmedNature {
+            if confirmed == "income" {
+                return FinancialAssessment(type: .income, reason: "Вы подтвердили, что это доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+            }
+            if confirmed == "own" {
+                return FinancialAssessment(type: .internalTransfer, reason: "Вы подтвердили, что это перемещение между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+            }
         }
 
         // Collector uses “unclassified_income” for positive movements whose nature is not proven.

@@ -388,8 +388,9 @@ struct OperationsHomeView: View {
 
     private func dayTotal(_ operations: [BankOperation]) -> Int64 {
         presentation.value("dayTotal:\(operations.first?.identity ?? ""):\(operations.count)") {
-            operations.reduce(0) { sum, op in
-                let assessment = op.financialAssessment
+            let resolver = ExpenseCategoryResolver(browser.history)
+            return operations.reduce(0) { sum, op in
+                let assessment = FinancialEngine.classify(resolver.financialInput(for: op))
                 return sum + assessment.incomeContributionKopecks + assessment.refundContributionKopecks - assessment.expenseContributionKopecks
             }
         }

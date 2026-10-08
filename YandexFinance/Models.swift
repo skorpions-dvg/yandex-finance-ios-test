@@ -121,6 +121,9 @@ struct SavedHistory: Codable {
     /// Photos of receipts: operation identity -> names of the files in the receipts folder. The photos themselves stay
     /// on the device (they are not part of the JSON backup); a name whose file is missing is shown as unavailable.
     var receipts: [String: [String]]?
+    /// What the owner confirmed about incoming operations the engine left «unknown»: operation identity -> "income"
+    /// or "own". It never changes an operation that is already named.
+    var operationNatures: [String: String]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -421,8 +424,10 @@ struct ExpenseCategoryResolver {
     private let overrides: [String: UUID]
     private var incomeRuleByKey: [String: String] = [:]
     private let incomeOverrides: [String: String]
+    private let natures: [String: String]
 
     init(_ history: SavedHistory) {
+        natures = history.operationNatures ?? [:]
         for group in history.categoryTree {
             for category in group.categories {
                 let path = group.name + "/" + category.name
@@ -441,10 +446,17 @@ struct ExpenseCategoryResolver {
         incomeOverrides = history.incomeCategoryOverrides ?? [:]
     }
 
+    /// The engine input of an operation with what the owner confirmed about it.
+    func input(_ operation: BankOperation) -> FinancialOperationInput {
+        var input = operation.financialInput
+        if let nature = natures[operation.identity] { input.confirmedNature = nature }
+        return input
+    }
+
     /// The user's income category of a bank income or interest; nil for anything else or when nothing was chosen.
     func chosenIncomeCategory(_ operation: BankOperation) -> String? {
         guard !operation.isManual else { return nil }
-        let type = FinancialEngine.classify(operation.financialInput).type
+        let type = FinancialEngine.classify(input(operation)).type
         guard type == .income || type == .interestIncome else { return nil }
         let chosen = incomeOverrides[operation.identity] ?? incomeRuleByKey[FinancialEngine.payeeRuleKey(operation.description)]
         return chosen.flatMap { FinancialEngine.incomeSubcategoryOrder.contains($0) ? $0 : nil }
@@ -453,7 +465,7 @@ struct ExpenseCategoryResolver {
     /// The category of an expense or a fee; nil for income, refunds, transfers, split and unfinished operations.
     /// `id` is nil only when the path is outside the tree (an old manual entry of a deleted category).
     func resolve(_ operation: BankOperation) -> (id: UUID?, path: String)? {
-        let input = operation.financialInput
+        let input = self.input(operation)
         let assessment = FinancialEngine.classify(input)
         guard assessment.type == .expense || assessment.type == .commission else { return nil }
         let guess = FinancialEngine.expenseCategory(for: input, assessment: assessment)
@@ -471,7 +483,7 @@ struct ExpenseCategoryResolver {
     }
 
     func financialInput(for operation: BankOperation) -> FinancialOperationInput {
-        var input = operation.financialInput
+        var input = self.input(operation)
         input.categoryPath = resolve(operation)?.path
         input.incomeCategoryName = chosenIncomeCategory(operation)
         return input
@@ -693,7 +705,7 @@ extension SavedHistory {
     @discardableResult
     mutating func setIncomeCategory(_ category: String, for operation: BankOperation, forSender: Bool) -> Bool {
         guard FinancialEngine.incomeSubcategoryOrder.contains(category) else { return false }
-        let type = FinancialEngine.classify(operation.financialInput).type
+        let type = FinancialEngine.classify(ExpenseCategoryResolver(self).input(operation)).type
         guard type == .income || type == .interestIncome else { return false }
         if let manualID = operation.manualID {
             guard let index = manualOperations?.firstIndex(where: { $0.id == manualID }) else { return false }
@@ -881,6 +893,38 @@ extension SavedHistory {
             guard account.tracksBankCard, let firstDate, moment > firstDate else { return nil }
             return movements.lazy.filter { $0.date >= moment && $0.date < account.startDate }.reduce(account.startBalanceKopecks) { $0 - $1.delta }
         }
+    }
+}
+
+// MARK: - Confirming what an unnamed incoming operation is
+
+enum ConfirmedNature: String, CaseIterable {
+    case income
+    case own
+
+    var title: String { self == .income ? "Это доход" : "Перемещение между своими счетами" }
+}
+
+extension SavedHistory {
+    func confirmedNature(for operation: BankOperation) -> ConfirmedNature? {
+        operationNatures?[operation.identity].flatMap(ConfirmedNature.init(rawValue:))
+    }
+
+    /// The owner says what an incoming bank operation is. Only an operation the engine leaves «unknown» takes it;
+    /// `nil` takes the confirmation back (and an income category chosen for it, which makes no sense without income).
+    @discardableResult
+    mutating func confirmNature(_ nature: ConfirmedNature?, for operation: BankOperation) -> Bool {
+        guard !operation.isManual else { return false }
+        var all = operationNatures ?? [:]
+        if let nature {
+            guard operation.amountKopecks > 0, FinancialEngine.classify(operation.financialInput).type == .unknown else { return false }
+            all[operation.identity] = nature.rawValue
+        } else {
+            all[operation.identity] = nil
+            incomeCategoryOverrides?[operation.identity] = nil
+        }
+        operationNatures = all.isEmpty ? nil : all
+        return true
     }
 }
 
