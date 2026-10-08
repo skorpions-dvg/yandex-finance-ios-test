@@ -81,6 +81,8 @@ struct OperationsHomeView: View {
                     Section {
                         historyHeader
                     }
+                    // The days come a little closer under «Операции» (the row itself stays where it is).
+                    .listSectionSpacing(6)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
@@ -529,6 +531,8 @@ struct OperationsHomeView: View {
                 .foregroundStyle(.primary)
                 .textCase(nil)
             }
+            // A little less room between one day and the next header; the operations themselves are unchanged.
+            .listSectionSpacing(6)
         }
     }
 
