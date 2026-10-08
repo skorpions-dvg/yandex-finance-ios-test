@@ -7,6 +7,8 @@ struct ParsedReceipt: Equatable {
     var merchant: String?
     /// The goods of the receipt, one name each (without prices): the owner corrects them in the form.
     var items: [String] = []
+    /// The rows the phone read, top to bottom (kept in memory for the diagnostic copy in the settings, never shown in the form).
+    var readLines: [String] = []
 
     var isEmpty: Bool { totalKopecks == nil && date == nil && merchant == nil }
 }
@@ -114,7 +116,8 @@ enum ReceiptParser {
         let isoPattern = #"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)"#
         let timePattern = #"(?<!\d)([01]?\d|2[0-3])\s?:\s?([0-5]\d)(?:\s?:\s?[0-5]\d)?(?!\d)"#
         let limit = now.addingTimeInterval(86_400)
-        for (index, line) in lines.enumerated() {
+        for (index, rawLine) in lines.enumerated() {
+            let line = digitsFixed(rawLine)
             var parts: (year: Int, month: Int, day: Int)?
             if let g = matches(isoPattern, in: line).first, g.count == 3 {
                 parts = (Int(g[0]) ?? 0, Int(g[1]) ?? 0, Int(g[2]) ?? 0)
@@ -125,7 +128,7 @@ enum ReceiptParser {
             guard let parts, parts.year >= 2000 else { continue }
             var time: (Int, Int)?
             for neighbour in [index, index + 1, index - 1] where neighbour >= 0 && neighbour < lines.count {
-                if let g = matches(timePattern, in: lines[neighbour]).first, g.count == 2 {
+                if let g = matches(timePattern, in: digitsFixed(lines[neighbour])).first, g.count == 2 {
                     time = (Int(g[0]) ?? 0, Int(g[1]) ?? 0)
                     break
                 }
@@ -137,6 +140,30 @@ enum ReceiptParser {
             if let date, date <= limit { return min(date, now) }
         }
         return nil
+    }
+
+    /// A printed date and time are read with digits taken for letters («D8.10.26», «l8:37»): inside a token of digits and
+    /// separators D, O → 0, I, l → 1, S → 5, B → 8.
+    static func digitsFixed(_ line: String) -> String {
+        let pattern = #"(?<!\p{L})[\dDOoIlSB]{1,4}(?:[./:\-][\dDOoIlSB]{1,4})+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return line }
+        var result = ""
+        var cursor = line.startIndex
+        for match in regex.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+            guard let range = Range(match.range, in: line) else { continue }
+            result += line[cursor..<range.lowerBound]
+            result += line[range].map { character -> Character in
+                switch character {
+                case "D", "O", "o": return "0"
+                case "I", "l": return "1"
+                case "S": return "5"
+                case "B": return "8"
+                default: return character
+                }
+            }
+            cursor = range.upperBound
+        }
+        return result + line[cursor...]
     }
 
     private static let skippedLines = ["кассовый", "чек", "добро пожаловать", "приход", "товарный", "спасибо", "ккт", "смена", "инн",
@@ -186,7 +213,8 @@ enum ReceiptParser {
     /// quantities and codes. A best effort on a printed text that is often read badly: the owner sees the result and
     /// corrects it.
     static func items(in lines: [String]) -> [String] {
-        let endWords = ["итого", "итог", "к оплате", "безналичн", "карта №", "карта n", "скидка", "ндс", "наличн", "сдача", "всего"]
+        let endWords = ["итого", "итог", "к оплате", "безналичн", "карта", "карту", "бонус", "причин", "извин", "неудобств", "горяч",
+                        "скидка", "ндс", "наличн", "сдача", "всего"]
         let serviceWords = ["кассир", "смена", "ккт", "инн", "спасибо", "место расчет", "адрес", "тел.", "тел:", "чек", "приход", "www", "http"]
         func letters(_ line: String) -> Int { line.filter { $0.isLetter }.count }
         var start = 0
@@ -215,7 +243,8 @@ enum ReceiptParser {
     /// The name of a good on a printed line: without the sum, the quantity, the code before the name and the number after it.
     private static func itemName(_ raw: String) -> String? {
         var text = raw
-        for (pattern, replacement) in [(#"\d+[.,]\d{2}"#, " "),
+        for (pattern, replacement) in [(#"[<>‹›«»\[\]{}|~^"'`]"#, " "),
+                                       (#"\d+[.,]\d{2}"#, " "),
                                        (#"(?i)(?<![\p{L}\d])\d+\s*шт\.?"#, " "),
                                        (#"(?<![\p{L}\d])\d+\s*[xх×]\s"#, " "),
                                        (#"^\s*\d{3,}\s+"#, ""),
@@ -224,6 +253,8 @@ enum ReceiptParser {
         }
         text = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         text = text.trimmingCharacters(in: CharacterSet(charactersIn: " .,:;-–_*"))
+        // A name is short: a long one is a line of text that is not a good.
+        if text.count > 48 { text = String(text.prefix(48)).trimmingCharacters(in: .whitespaces) }
         return text.filter { $0.isLetter }.count >= 3 ? text : nil
     }
 

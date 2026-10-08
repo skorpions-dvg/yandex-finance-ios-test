@@ -574,6 +574,23 @@ struct FinanceEngineTests {
         require(history.suggestedExpenseCategory(forMerchant: "Магнит")?.group == "Еда", "the category of a known chain")
     }
 
+    /// The goods stop where the goods end, names are clean, a date read with letters for digits is still a date (46.14).
+    static func testReceiptNoise() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 20, minute: 0))!
+        let noisy = ["ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ", "ТОВАР ОДИН <РОССИЯ>", "36.99 1ШТ.", "ТОВАР «ДВА» 16г", "10.00 1ШТ.", "Карта нº ****-7443",
+                     "по техническим причинам начисление бонусов", "приносим извинения за доставленные неудобства"]
+        require(ReceiptParser.items(in: noisy) == ["ТОВАР ОДИН РОССИЯ", "ТОВАР ДВА 16г"], "the goods end at the card line; the quotes and brackets are gone")
+        require(ReceiptParser.items(in: ["ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ", String(repeating: "Очень длинное название ", count: 6), "10.00 1ШТ."]).first?.count ?? 0 <= 48,
+                "a name is short")
+        require(ReceiptParser.digitsFixed("D8.10.32 l8:37") == "08.10.32 18:37", "letters for digits inside a date and a time")
+        require(ReceiptParser.digitsFixed("BLANCHE BIERE 174.99 ЦЕНА") == "BLANCHE BIERE 174.99 ЦЕНА", "words and prices are left as they are")
+        let parsed = ReceiptParser.parseText(["Магазин Тест", "D8.10.32 l8:37", "ИТОГ 10.00"], now: now, calendar: calendar)
+        require(parsed.date == calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 18, minute: 37)), "the date read with letters")
+        require(ReceiptParser.parseText(["Магазин Тест", "ИТОГ 10.00"], now: now, calendar: calendar).date == nil, "no date, none invented")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3124,6 +3141,7 @@ struct FinanceEngineTests {
         testReceiptTotals()
         testSaveAccountAndOtherSides()
         testReceiptItems()
+        testReceiptNoise()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

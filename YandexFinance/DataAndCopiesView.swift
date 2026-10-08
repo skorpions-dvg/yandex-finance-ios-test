@@ -1,7 +1,15 @@
 import SwiftUI
+import UIKit
 
 /// «Настройки → Данные и копии»: the copies of the history and of the receipt photos, and the imports. The exporters
 /// and importers themselves stay in Settings (they need its state); this screen only starts them and shows what came of it.
+/// The text of the last receipt the phone read, kept in memory only: it can be copied from the settings to see how a bad
+/// reading went wrong.
+@MainActor
+enum ReceiptDebug {
+    static var lastText = ""
+}
+
 @MainActor
 struct DataAndCopiesView: View {
     @ObservedObject var browser: BankBrowser
@@ -39,6 +47,14 @@ struct DataAndCopiesView: View {
             } footer: {
                 Text(photos == 0 ? "Фото ещё нет: их добавляют в операции, в разделе «Чек»."
                                  : "ZIP сохраняйте рядом с JSON: iCloud Drive → Finance Test.")
+            }.glassRows()
+            Section {
+                Button("Скопировать текст последнего чека") { UIPasteboard.general.string = ReceiptDebug.lastText }
+                    .disabled(ReceiptDebug.lastText.isEmpty)
+            } header: {
+                Text("Диагностика")
+            } footer: {
+                Text("Текст, который телефон прочитал с последнего сфотографированного чека (до закрытия приложения). Нужен, чтобы разобраться, если чек прочитался плохо.")
             }.glassRows()
             Section {
                 Button("Импортировать PDF-выписки") { run(importStatements) }

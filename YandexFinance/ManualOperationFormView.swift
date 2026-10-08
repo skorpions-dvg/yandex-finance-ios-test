@@ -27,6 +27,10 @@ struct ManualOperationFormView: View {
     @State private var itemsText = ""
     /// The reading found neither a sum nor a date: the owner is told so in red.
     @State private var recognitionFailed = false
+    @State private var itemsExpanded = false
+    /// The date the form had when a receipt was read without a date on it: while it stays, the owner has not given the date
+    /// of the receipt and the operation cannot be saved.
+    @State private var dateConfirmBase: Date?
     @State private var recognizing = false
     @State private var showDateTime = false
     @State private var selectsTime = false
@@ -63,8 +67,11 @@ struct ManualOperationFormView: View {
         return NSDecimalNumber(decimal: kopecks).int64Value
     }
 
+    /// A receipt was read but its date was not: the date must be set by hand (or confirmed as it is).
+    private var dateIsPending: Bool { dateConfirmBase.map { $0 == date } ?? false }
+
     private var canSave: Bool {
-        guard parsedAmount != nil, date <= Date(),
+        guard parsedAmount != nil, date <= Date(), !dateIsPending,
               eligibleAccounts.contains(where: { $0.id == accountID }) else { return false }
         switch kind {
         case .expense:
@@ -97,14 +104,20 @@ struct ManualOperationFormView: View {
                                         .foregroundStyle(recognitionFailed ? Color.red : Color.primary)
                                 }
                                 if !recognizing && !recognitionFailed {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("Товары (можно исправить)").font(.footnote).foregroundStyle(.secondary)
-                                        TextEditor(text: $itemsText)
-                                            .frame(minHeight: 90)
-                                            .scrollContentBackground(.hidden)
-                                            .padding(6)
-                                            .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 10))
-                                        Text("Сохраняются в комментарии к операции.").font(.caption2).foregroundStyle(.secondary)
+                                    let goods = itemsText.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+                                    DisclosureGroup(isExpanded: $itemsExpanded) {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            TextEditor(text: $itemsText)
+                                                .font(.caption)
+                                                .frame(height: 140)
+                                                .scrollContentBackground(.hidden)
+                                                .padding(6)
+                                                .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 10))
+                                            Text("Одно название на строку; исправьте или удалите лишнее. Сохраняются в комментарии к операции.")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    } label: {
+                                        Text(goods == 0 ? "Товары не найдены" : "Товары: \(goods) (проверьте)").font(.footnote)
                                     }
                                 }
                             }.glassRows()
@@ -201,7 +214,14 @@ struct ManualOperationFormView: View {
                             }
                         } label: {
                             let style = groupStyle(name)
-                            Label(name, systemImage: style.icon).foregroundStyle(style.color)
+                            HStack {
+                                Label(name, systemImage: style.icon).foregroundStyle(style.color)
+                                Spacer()
+                                if group == name, let subcategory {
+                                    Text(subcategory).font(.caption).foregroundStyle(.secondary)
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                                }
+                            }
                         }
                     }
                 }.glassRows()
@@ -234,12 +254,20 @@ struct ManualOperationFormView: View {
             }.glassRows()
             Section {
                 HStack {
-                    Text("Дата и время")
+                    Text("Дата и время").foregroundStyle(dateIsPending ? Color.red : Color.primary)
                     Spacer()
                     Button(date.formatted(date: .abbreviated, time: .omitted)) { openDateTime(time: false) }
                         .buttonStyle(.borderless)
+                        .foregroundStyle(dateIsPending ? Color.red : Color.accentColor)
                     Button(date.formatted(date: .omitted, time: .shortened)) { openDateTime(time: true) }
                         .buttonStyle(.borderless)
+                        .foregroundStyle(dateIsPending ? Color.red : Color.accentColor)
+                }
+                if dateIsPending {
+                    Text("Дату и время чека не удалось прочитать: укажите их. Пока дата не указана, сохранить нельзя.")
+                        .font(.footnote).foregroundStyle(.red)
+                    Button("Сегодняшняя дата верна") { dateConfirmBase = nil }
+                        .font(.footnote)
                 }
                 TextField("Комментарий", text: $note).focused($fieldFocused)
             } footer: {
@@ -311,10 +339,13 @@ struct ManualOperationFormView: View {
         // Neither a sum nor a date: nothing useful was read, and the owner is told so instead of getting a guessed form.
         if parsed.totalKopecks == nil && parsed.date == nil {
             recognitionFailed = true
+            dateConfirmBase = nil
             recognition = "Не удалось прочитать чек. Сфотографируйте ровнее и при хорошем свете или введите данные вручную. Фото останется приложенным."
             return
         }
         recognitionFailed = false
+        dateConfirmBase = nil
+        ReceiptDebug.lastText = parsed.readLines.joined(separator: "\n")
         if !parsed.items.isEmpty { itemsText = parsed.items.joined(separator: "\n") }
         var filled: [String] = []
         if kind == .expense {
@@ -344,6 +375,9 @@ struct ManualOperationFormView: View {
         if let when = parsed.date, when <= Date(), date == dateAtStart {
             date = when
             filled.append("дата")
+        } else if parsed.date == nil, date == dateAtStart {
+            // The date of the receipt was not read: the form keeps today's date, but it is not accepted until it is set.
+            dateConfirmBase = date
         }
         var message = filled.isEmpty ? "Ничего нового не нашлось." : "Заполнено: " + filled.joined(separator: ", ") + ". Проверьте и сохраните."
         if parsed.totalKopecks == nil { message += " Сумму не удалось прочитать: введите её вручную." }

@@ -43,6 +43,7 @@ enum ReceiptRecognizer {
         var result = ReceiptParser.merge(qr: qr, text: ReceiptParser.parseText(lines))
         let corrected = ReceiptParser.items(in: nameLines)
         if !corrected.isEmpty { result.items = corrected }
+        result.readLines = lines
         return result
     }
 
