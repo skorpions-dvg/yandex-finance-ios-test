@@ -11,6 +11,7 @@ struct AccountDetailView: View {
     @State private var range: ReportSeries.AccountRange = .days30
     @State private var showsEditor = false
     @State private var editedManualOperation: ManualOperation?
+    @State private var confirmAlign = false
 
     private var activeAccount: Account {
         browser.history.accounts?.first { $0.id == account.id } ?? account
@@ -52,6 +53,10 @@ struct AccountDetailView: View {
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 8)
                 }.glassRows()
+
+                if let bank = browser.history.bankBalance(for: account) {
+                    reconciliation(account: account, ours: current, bank: bank, movements: movements)
+                }
 
                 Section("Остаток на счёте") {
                     Picker("Период", selection: $range) {
@@ -98,6 +103,12 @@ struct AccountDetailView: View {
             .appSurface()
             .navigationTitle("Счёт")
             .navigationBarTitleDisplayMode(.inline)
+            .confirmationDialog("Выровнять остаток по банку?", isPresented: $confirmAlign, titleVisibility: .visible) {
+                Button("Выровнять") { alignWithBank() }
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Начальный остаток счёта изменится так, чтобы текущий остаток совпал с банком. Операции не меняются.")
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Закрыть", systemImage: "xmark") { dismiss() }
@@ -122,6 +133,60 @@ struct AccountDetailView: View {
         OperationRow(operation: movement.operation, input: input,
                      look: browser.history.look(for: movement.operation), displayedAmountKopecks: movement.delta,
                      hasReceipt: browser.history.hasReceipt(movement.operation))
+    }
+
+    /// «Сверка с банком»: the bank's balance, the difference and what explains it.
+    @ViewBuilder
+    private func reconciliation(account: Account, ours: Int64, bank: Int64, movements: [AccountMovement]) -> some View {
+        Section("Сверка с банком") {
+            LabeledContent("В банке", value: money(bank))
+            if let read = browser.history.bankBalances?.readAt {
+                LabeledContent("Прочитано", value: read.formatted(date: .abbreviated, time: .shortened))
+            }
+            if bank == ours {
+                Label("Совпадает с банком", systemImage: "checkmark.circle").foregroundStyle(.green)
+            } else {
+                let difference = ours - bank
+                LabeledContent("Расхождение", value: (difference > 0 ? "+" : "−") + money(abs(difference)))
+                    .foregroundStyle(.orange)
+                let explanations = FinancialEngine.explainBalanceDifference(difference, rows: browser.history.reconciliationRows(account))
+                let titles = Dictionary(movements.map { ($0.operation.identity, $0) }, uniquingKeysWith: { first, _ in first })
+                if explanations.isEmpty {
+                    Text("Разница не объясняется одной-двумя операциями за 60 дней. Возможно: операция ещё не загрузилась, проценты, операция старше 60 дней или неверный начальный остаток счёта.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text(FinancialEngine.balanceExplanationIsClear(explanations) ? "Похоже, причина:" : "Возможные причины:")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(explanations.prefix(3)), id: \.identities) { explanation in
+                        Text(describe(explanation, titles: titles)).font(.caption)
+                    }
+                }
+                Button("Выровнять по банку") { confirmAlign = true }
+            }
+        }.glassRows()
+    }
+
+    private func describe(_ explanation: FinancialEngine.BalanceExplanation, titles: [String: AccountMovement]) -> String {
+        let rows = explanation.identities.compactMap { titles[$0] }
+        let names = rows.map { "«\($0.operation.description)» \(money(abs($0.delta)))" }
+        switch explanation.kind {
+        case .pending: return "Операция в обработке " + (names.first ?? "") + " — банк мог ещё не учесть её в остатке."
+        case .duplicate: return (rows.first.map { "«\($0.operation.description)»" } ?? "Операция") + " записана дважды с разницей до двух минут."
+        case .single: return "Совпадает с операцией " + (names.first ?? "") + (rows.first.map { ", \($0.date.formatted(date: .abbreviated, time: .shortened))" } ?? "") + "."
+        case .pair: return "Возможно, совпадение: " + names.joined(separator: " и ") + " вместе дают эту сумму."
+        }
+    }
+
+    /// Moves the start balance by the difference, so the balance now is the bank's; the operations stay as they are.
+    private func alignWithBank() {
+        guard let bank = browser.history.bankBalance(for: activeAccount) else { return }
+        let ours = browser.history.accountBalances(activeAccount, at: [.distantFuture])[0]
+        let difference = ours - bank
+        guard difference != 0 else { return }
+        _ = browser.updateUserData { history in
+            guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
+            history.accounts?[index].startBalanceKopecks -= difference
+        }
     }
 
     private func money(_ amount: Int64) -> String {

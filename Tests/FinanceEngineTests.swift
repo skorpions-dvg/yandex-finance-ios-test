@@ -1437,6 +1437,46 @@ struct FinanceEngineTests {
         require(short.cautiousIrregularIncomeKopecks == 0, "with fewer than two full months nothing irregular is counted")
     }
 
+    /// The reconciliation with the bank's balance: what explains a difference, and the reading of a balance (46.29).
+    static func testBalanceReconciliation() {
+        let day = Date(timeIntervalSince1970: 2_000_000_000)
+        func row(_ id: String, _ delta: Int64, _ minutes: Double = 0, pending: Bool = false, payee: String = "магазин учебный") -> FinancialEngine.ReconciliationRow {
+            FinancialEngine.ReconciliationRow(identity: id, deltaKopecks: delta, date: day.addingTimeInterval(minutes * 60), pending: pending, payee: payee)
+        }
+        require(FinancialEngine.explainBalanceDifference(0, rows: [row("a", -500)]).isEmpty, "no difference, nothing to explain")
+        // one operation «в обработке» of exactly the difference comes first
+        let rows = [row("p", -165_687, pending: true, payee: "магнит учебный"), row("s", 100_000, payee: "перевод учебный"), row("x", -1_234)]
+        let pending = FinancialEngine.explainBalanceDifference(-165_687, rows: rows)
+        require(pending.first?.kind == .pending && pending.first?.identities == ["p"] && FinancialEngine.balanceExplanationIsClear(pending),
+                "a pending operation of the difference is the clear reason")
+        // two alike operations two minutes apart: one of them is extra
+        let doubled = [row("d1", -30_000, 0, payee: "кофейня учебная"), row("d2", -30_000, 1, payee: "кофейня учебная"), row("y", -7_700)]
+        let duplicate = FinancialEngine.explainBalanceDifference(-30_000, rows: doubled)
+        require(duplicate.first?.kind == .duplicate && Set(duplicate.first?.identities ?? []) == ["d1", "d2"], "a duplicate is one extra operation")
+        // the same two operations an hour apart are two real purchases: each alone explains it, nothing stands out
+        let apart = FinancialEngine.explainBalanceDifference(-30_000, rows: [row("d1", -30_000, 0), row("d2", -30_000, 60)])
+        require(apart.allSatisfy { $0.kind == .single } && apart.count == 2 && !FinancialEngine.balanceExplanationIsClear(apart),
+                "two equal purchases an hour apart are not a duplicate, and the choice is the owner's")
+        // a pair only when nothing else fits, marked as a pair
+        let pair = FinancialEngine.explainBalanceDifference(-80_000, rows: [row("a", -50_000), row("b", -30_000), row("c", -99)])
+        require(pair.count == 1 && pair[0].kind == .pair && Set(pair[0].identities) == ["a", "b"], "two operations adding up, as a possible coincidence")
+        require(FinancialEngine.explainBalanceDifference(-9_999_999, rows: [row("a", -1_234)]).isEmpty, "nothing fits: no guess")
+        // the reading of a balance from the bank page
+        require(FinancialEngine.rublesKopecks("80 829,95 ₽") == 8_082_995 && FinancialEngine.rublesKopecks("1\u{00A0}000 ₽") == 100_000
+                && FinancialEngine.rublesKopecks("70\u{202F}000,5 ₽") == 7_000_050, "balances with spaces of any kind")
+        require(FinancialEngine.rublesKopecks("−200,00 ₽") == nil && FinancialEngine.rublesKopecks("Карта Пэй") == nil, "a signed sum or a word is not a balance")
+        // the account that follows the bank gets the bank's balance
+        var history = SavedHistory()
+        history.bankBalances = BankBalanceReading(cardKopecks: 8_082_995, saveKopecks: 7_000_000, readAt: day)
+        let card = Account(name: "Карта", icon: "creditcard", color: "yellow", startBalanceKopecks: 0, startDate: day)
+        var cardAccount = card
+        cardAccount.tracksBankCard = true
+        var save = card
+        save.tracksSave = true
+        require(history.bankBalance(for: cardAccount) == 8_082_995 && history.bankBalance(for: save) == 7_000_000 && history.bankBalance(for: card) == nil,
+                "the card and Save accounts get the bank's balances, others none")
+    }
+
     static func testMonthReserve() {
         let forecast = FinancialEngine.MonthForecast(spentKopecks: 24_913, incomeKopecks: 11_000, projectedExpenseKopecks: 129_940,
                                                      projectedExpenseLowKopecks: 117_098, projectedExpenseHighKopecks: 144_877,
@@ -3974,6 +4014,7 @@ struct FinanceEngineTests {
         testForecastRefunds()
         testForecastCompletenessAndReturns()
         testForecastLatePaymentsAndIrregularIncome()
+        testBalanceReconciliation()
         testKnownIssues52()
         testKnownIssues53()
         testKnownAccountIssues53()

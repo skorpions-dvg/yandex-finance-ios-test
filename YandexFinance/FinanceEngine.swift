@@ -744,6 +744,93 @@ enum FinancialEngine {
         }
     }
 
+    // MARK: - Balance against the bank
+
+    /// One operation of an account, as the reconciliation with the bank's balance sees it.
+    struct ReconciliationRow: Equatable {
+        let identity: String
+        /// How the operation moves our balance of the account.
+        let deltaKopecks: Int64
+        let date: Date
+        /// «В обработке»: the bank may not count it in its balance yet, or count it already while we do not.
+        let pending: Bool
+        /// The counterparty key of its title (`counterpartyKey`).
+        let payee: String
+    }
+
+    /// A likely reason why our balance differs from the bank's by exactly some operations.
+    struct BalanceExplanation: Equatable {
+        enum Kind: String { case pending, duplicate, single, pair }
+        let kind: Kind
+        let identities: [String]
+        let score: Int
+    }
+
+    /// What explains `difference` (our balance minus the bank's) among `rows` (the last two months of the account): one
+    /// operation of exactly that amount (first those «в обработке»), two alike operations two minutes apart of which one is
+    /// extra, and only when nothing of that is found two operations that add up to it, which may well be a coincidence. Best
+    /// first; empty when nothing fits or there is no difference. Nothing is guessed beyond that (after the answer of DeepSeek,
+    /// with the duplicate counted as one extra operation, and no triples: among hundreds of rows they fit by chance).
+    static func explainBalanceDifference(_ difference: Int64, rows: [ReconciliationRow]) -> [BalanceExplanation] {
+        guard difference != 0 else { return [] }
+        let target = abs(difference)
+        var found: [BalanceExplanation] = []
+        var seen = Set<String>()
+        func add(_ kind: BalanceExplanation.Kind, _ indices: [Int]) {
+            let ids = indices.map { rows[$0].identity }
+            guard seen.insert(kind.rawValue + "|" + ids.sorted().joined(separator: ",")).inserted else { return }
+            let base: Int
+            switch kind {
+            case .pending: base = 100
+            case .duplicate: base = 95
+            case .single: base = 50
+            case .pair: base = 20
+            }
+            found.append(BalanceExplanation(kind: kind, identities: ids, score: base + (4 - indices.count) * 5))
+        }
+        for (index, row) in rows.enumerated() where abs(row.deltaKopecks) == target {
+            add(row.pending ? .pending : .single, [index])
+        }
+        for first in rows.indices {
+            for second in rows.indices where second > first {
+                let a = rows[first], b = rows[second]
+                guard a.deltaKopecks == b.deltaKopecks, abs(a.deltaKopecks) == target, !a.payee.isEmpty, a.payee == b.payee,
+                      abs(a.date.timeIntervalSince(b.date)) <= 120 else { continue }
+                add(.duplicate, [first, second])
+            }
+        }
+        if found.isEmpty {
+            var byAmount: [Int64: [Int]] = [:]
+            for (index, row) in rows.enumerated() { byAmount[row.deltaKopecks, default: []].append(index) }
+            outer: for first in rows.indices {
+                for want in Set([difference - rows[first].deltaKopecks, -difference - rows[first].deltaKopecks]) {
+                    for second in byAmount[want] ?? [] where second > first {
+                        add(.pair, [first, second])
+                        if found.count >= 5 { break outer }
+                    }
+                }
+            }
+        }
+        return found.sorted { ($0.score, $1.identities.joined()) > ($1.score, $0.identities.joined()) }
+    }
+
+    /// The first explanation stands out (by 20 points or more) or is the only one.
+    static func balanceExplanationIsClear(_ explanations: [BalanceExplanation]) -> Bool {
+        guard let first = explanations.first else { return false }
+        guard explanations.count > 1 else { return true }
+        return first.score - explanations[1].score >= 20
+    }
+
+    /// «80 829,95 ₽», «1 000 ₽», with ordinary or narrow non-breaking spaces: kopecks; nil for anything else (a sign, letters).
+    static func rublesKopecks(_ text: String) -> Int64? {
+        let compact = text.replacingOccurrences(of: "₽", with: "")
+            .filter { !$0.isWhitespace && $0 != "\u{00A0}" && $0 != "\u{202F}" }
+        guard compact.range(of: #"^\d+(,\d{1,2})?$"#, options: .regularExpression) != nil,
+              let value = Decimal(string: compact.replacingOccurrences(of: ",", with: "."), locale: Locale(identifier: "en_US_POSIX"))
+        else { return nil }
+        return NSDecimalNumber(decimal: value * 100).int64Value
+    }
+
     // MARK: - Month forecast
 
     /// A payment or income that repeats with a steady period and amount.

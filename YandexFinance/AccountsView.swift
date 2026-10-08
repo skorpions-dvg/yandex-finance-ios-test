@@ -351,8 +351,14 @@ struct AccountsView: View {
                         .foregroundStyle(accountColor(account.color))
                         .frame(width: 28, height: 28)
                         .background(accountColor(account.color).opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
-                    Text(account.name).foregroundStyle(.primary)
-                        .lineLimit(1).truncationMode(.tail)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(account.name).foregroundStyle(.primary)
+                            .lineLimit(1).truncationMode(.tail)
+                        // The bank shows another balance: what it shows (the card of the account explains the difference).
+                        if !editMode.isEditing, let bank = browser.history.bankBalance(for: account), bank != cachedBalance(account) {
+                            Text("банк: \(accountMoney(bank))").font(.caption2).foregroundStyle(.orange)
+                        }
+                    }
                     Spacer(minLength: 6)
                     // Amounts return after «Готово»; while editing the full name has the room.
                     if !editMode.isEditing {

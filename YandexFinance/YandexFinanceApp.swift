@@ -793,6 +793,12 @@ struct SyncJournalView: View {
                 if let date = browser.history.lastCompletedSync {
                     Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
                 }
+                if let reading = browser.history.bankBalances {
+                    Text("Остатки банка прочитаны: \(reading.readAt.formatted(date: .abbreviated, time: .shortened))")
+                } else {
+                    Text("Остатки банка на странице пока не найдены: сверка с банком не работает.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 if pendingCount > 0 {
                     Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(pendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
                         .font(.caption).foregroundStyle(.orange)

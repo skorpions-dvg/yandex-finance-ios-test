@@ -319,6 +319,46 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         codeEntryError = "Банк пока не ответил. Попробуйте ещё раз или откройте страницу банка."
     }
 
+    /// The balances on the bank page: a «Карта Пэй» or «Счёт в Сейвах» label with one sum without a sign next to it (the sums of
+    /// operations always have «−» or «+», so a row of the history is never taken for a balance). Two different sums for one label
+    /// and no sum at all are left alone; the last reading stays until a new one is found.
+    private func readBankBalances() async {
+        let script = """
+        const labels = { card: /^карта\\s+п[эе]й$/i, save: /^(сч[её]т\\s+в\\s+сейвах|сейв)$/i };
+        const balance = /^\\d{1,3}([\\s\\u00a0\\u202f]\\d{3})*(,\\d{1,2})?\\s*₽$/;
+        const signed = /^[+−–-]\\s*\\d/;
+        const leaves = [...document.querySelectorAll('body *')].filter(el => el.children.length === 0 && el.getClientRects().length > 0);
+        const result = {};
+        for (const [key, label] of Object.entries(labels)) {
+            const sums = new Set();
+            for (const el of leaves) {
+                if (!label.test((el.textContent || '').trim())) continue;
+                let box = el;
+                for (let step = 0; step < 3 && box.parentElement; step++) {
+                    box = box.parentElement;
+                    const lines = (box.innerText || '').split('\\n').map(line => line.trim()).filter(Boolean);
+                    if (lines.length > 4) break;
+                    const found = lines.filter(line => balance.test(line));
+                    if (found.length === 1 && !lines.some(line => signed.test(line))) { sums.add(found[0]); break; }
+                }
+            }
+            if (sums.size === 1) result[key] = [...sums][0];
+        }
+        return result;
+        """
+        guard let found = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient) as? [String: Any]
+        else { return }
+        let card = (found["card"] as? String).flatMap(FinancialEngine.rublesKopecks)
+        let save = (found["save"] as? String).flatMap(FinancialEngine.rublesKopecks)
+        guard card != nil || save != nil else { return }
+        var reading = history.bankBalances ?? BankBalanceReading(readAt: Date())
+        if let card { reading.cardKopecks = card }
+        if let save { reading.saveKopecks = save }
+        reading.readAt = Date()
+        let read = reading
+        updateUserData { $0.bankBalances = read }
+    }
+
     /// An error next to the code field (not anywhere on the page: the word «ошибка» can be in any other text).
     private func codeRejected() async -> Bool {
         let script = Self.codeFieldsJS + """
@@ -658,6 +698,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         if mode == "history", boundaryReached, runClean, !resumed, (requestedDays == nil || requestedDays! >= incrementalDays(now: startedAt)) { next.lastCompletedSync = startedAt }
         next.lastSync = Date(); next.lastStopReason = batch.stopReason
         try vault.save(next); history = next
+        // The balances the page shows, for the reconciliation of the card and Save (46.29).
+        if mode == "history" { Task { @MainActor [weak self] in await self?.readBankBalances() } }
         let ending: String
         if batch.stopReason == "issue_retry_completed" { ending = "Пропущенная операция прочитана." }
         else if batch.stopReason == "issue_not_found" { ending = "Операция не найдена в сохранённом месяце. Ошибка остаётся в списке." }

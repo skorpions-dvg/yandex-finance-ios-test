@@ -126,6 +126,8 @@ struct SavedHistory: Codable {
     var operationNatures: [String: String]?
     /// Spending limits of the month (stage 46); nil until the first one is set.
     var budgets: [Budget]?
+    /// The balances the bank page showed at the last refresh where they were found (card and Save), for the reconciliation.
+    var bankBalances: BankBalanceReading?
     /// The owner's answers about regular payments that did not come on their day, by `FinancialEngine.paymentKey`.
     var paymentAnswers: [String: FinancialEngine.PaymentAnswer]?
     /// The goods of a receipt, per operation (identity): name and the final price of the line. Not the comment: the comment
@@ -864,6 +866,32 @@ extension SavedHistory {
 
 /// One operation as it moves one account: `delta` is its signed effect on that account's balance
 /// (a transfer is negative for the account it leaves and positive for the one it reaches).
+/// The balances read from the bank page: the card («Карта Пэй») and Save («Счёт в Сейвах»), when they were seen.
+struct BankBalanceReading: Codable, Equatable {
+    var cardKopecks: Int64?
+    var saveKopecks: Int64?
+    var readAt: Date
+}
+
+extension SavedHistory {
+    /// The bank's balance of an account that follows the bank (the card or Save), from the last reading.
+    func bankBalance(for account: Account) -> Int64? {
+        if account.tracksBankCard { return bankBalances?.cardKopecks }
+        if account.tracksSave == true { return bankBalances?.saveKopecks }
+        return nil
+    }
+
+    /// The operations of the last `days` days that move `account`, for the explanation of a difference with the bank.
+    func reconciliationRows(_ account: Account, days: Int = 60, now: Date = Date()) -> [FinancialEngine.ReconciliationRow] {
+        let since = now.addingTimeInterval(-Double(days) * 86_400)
+        return accountMovements(account).filter { $0.date >= since }.map { movement in
+            FinancialEngine.ReconciliationRow(identity: movement.operation.identity, deltaKopecks: movement.delta, date: movement.date,
+                                              pending: FinancialEngine.isPendingStatus(movement.operation.status),
+                                              payee: FinancialEngine.counterpartyKey(movement.operation.description))
+        }
+    }
+}
+
 struct AccountMovement: Identifiable {
     let operation: BankOperation
     let date: Date
