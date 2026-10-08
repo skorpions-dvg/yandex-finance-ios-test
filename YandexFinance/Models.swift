@@ -1101,6 +1101,12 @@ enum ReceiptLogic {
         }
     }
 
+    /// Files of photos that no operation points to (a form closed without saving, an operation deleted by an older version).
+    static func orphanFiles(all: [String], referenced: [String: [String]]?) -> [String] {
+        let used = Set((referenced ?? [:]).values.flatMap { $0 })
+        return all.filter { !used.contains($0) }.sorted()
+    }
+
     static func exportMessage(saved: Int, skipped: Int) -> String {
         if saved == 0 { return skipped > 0 ? "Не удалось прочитать \(skipped) фото. Архив не сохранён." : "Фото чеков на этом телефоне пока нет." }
         let message = "Архив сохранён: \(saved) фото."

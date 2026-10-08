@@ -101,6 +101,8 @@ enum ReceiptParser {
             // «Paid by card» holds the word «налич» itself; the totals are searched from the end: the last «ИТОГ» is the one
             // after the discounts.
             let isCard = keywords == ["безналичн"]
+            // Two or more lines of payment by card are parts of one total (two cards): the explicit total below decides.
+            if isCard, lines.filter({ $0.lowercased().contains("безналичн") && !amounts(in: $0).isEmpty }).count >= 2 { continue }
             let fromEnd = keywords.contains("итог")
             let order = fromEnd ? Array(lines.indices.reversed()) : Array(lines.indices)
             for index in order {
@@ -253,9 +255,19 @@ enum ReceiptParser {
             if endWords.contains(where: { lower.contains($0) }) { break }
             if serviceWords.contains(where: { lower.contains($0) }) { continue }
             if let name = itemName(line) {
-                if names.last == name { bands[bands.count - 1] += amounts(in: line); continue }
+                let found = amounts(in: line)
+                // A name written in two lines: the first has no sums, the second begins with a small letter and carries them.
+                if found.isEmpty, index < lines.count, let rest = itemName(lines[index]), !amounts(in: lines[index]).isEmpty,
+                   lines[index].first(where: { $0.isLetter })?.isLowercase == true {
+                    names.append(tidied(name + " " + rest))
+                    bands.append(amounts(in: lines[index]))
+                    index += 1
+                    continue
+                }
+                // The same line read twice is one good; the same name with other sums is another good (two notebooks, 60 and 100).
+                if names.last == name, bands.last == found { continue }
                 names.append(name)
-                bands.append(amounts(in: line))
+                bands.append(found)
                 if names.count >= 60 { break }
             } else if !bands.isEmpty {
                 bands[bands.count - 1] += amounts(in: line)
@@ -312,6 +324,7 @@ enum ReceiptParser {
     private static func itemName(_ raw: String) -> String? {
         var text = raw
         for (pattern, replacement) in [(#"[<>‹›«»\[\]{}|~^"'`]"#, " "),
+                                       (#"(?i)\d+[.,]\d+\s*(?:л|кг|г)\s+(?=\d+[.,]\d{2}\s+\d+[.,]\d{2})"#, " "),
                                        (#"\d+[.,]\d{2}"#, " "),
                                        (#"(?i)(?<![\p{L}\d])\d+\s*шт\.?"#, " "),
                                        (#"(?<![\p{L}\d])\d+\s*[xх×]\s"#, " "),

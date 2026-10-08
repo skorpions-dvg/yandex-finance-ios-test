@@ -698,6 +698,38 @@ struct FinanceEngineTests {
                 "nothing to compare")
     }
 
+    /// The four errors of the reading found by stage 52, and photos without an operation (46.17).
+    static func testReceiptLayoutsRepaired() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 20, minute: 0))!
+        func read(_ lines: [String]) -> ParsedReceipt { ReceiptParser.parseText(lines, now: now, calendar: calendar) }
+        // a name written in two lines
+        let wrapped = read(["ЦЕНА КОЛ-ВО СУММА", "Йогурт натуральный", "с ягодами 2 x 89.00 178.00", "ИТОГО 178.00"])
+        require(wrapped.goods == [ReceiptGood(name: "Йогурт натуральный с ягодами", kopecks: 17_800)], "a name in two lines is one good")
+        require(read(["ЦЕНА КОЛ-ВО СУММА", "Йогурт натуральный", "Хлеб белый 1 x 45.50 45.50", "ИТОГО 45.50"]).goods.map(\.name) == ["Йогурт натуральный", "Хлеб белый"],
+                "the next line with a capital letter is another good")
+        // the unit of the quantity is not part of the name
+        let fuel = read(["Колонка: 3", "ЦЕНА КОЛ-ВО СУММА", "Бензин тестовый 95 20.00 л 55.50 1110.00", "ИТОГО 1110.00"])
+        require(fuel.goods == [ReceiptGood(name: "Бензин тестовый 95", kopecks: 111_000)], "the litres are not in the name")
+        require(read(["Молоко 0.9 л 65.00", "ИТОГО 65.00"]).goods.map(\.name) == ["Молоко 0.9 л"], "a unit that belongs to the name stays")
+        // two payments by cards
+        let cards = read(["Карандаши учебные 2 x 150.00 300.00", "Блокнот учебный 1 x 300.00 300.00", "ИТОГО 600.00",
+                          "БЕЗНАЛИЧНЫМИ КАРТА А 350.00", "БЕЗНАЛИЧНЫМИ КАРТА Б 250.00"])
+        require(cards.totalKopecks == 60_000, "two payments by cards: the total is the explicit total")
+        require(cards.goods == [ReceiptGood(name: "Карандаши учебные", kopecks: 30_000), ReceiptGood(name: "Блокнот учебный", kopecks: 30_000)], "goods of a receipt with two cards")
+        // the same name with other prices
+        let notebooks = read(["Блокнот учебный 1 x 60.00 60.00", "Блокнот учебный 1 x 100.00 100.00", "ИТОГО 160.00"])
+        require(notebooks.goods == [ReceiptGood(name: "Блокнот учебный", kopecks: 6_000), ReceiptGood(name: "Блокнот учебный", kopecks: 10_000)],
+                "two notebooks with different prices are two goods")
+        require(read(["Товар один 10.00", "Товар один 10.00", "ИТОГО 10.00"]).goods.count == 1, "a line read twice is one good")
+        // photos without an operation
+        let all = ["receipt-3.jpg", "receipt-1.jpg", "receipt-2.jpg"]
+        require(ReceiptLogic.orphanFiles(all: all, referenced: ["manual:1": ["receipt-1.jpg"], "manual:2": ["receipt-2.jpg"]]) == ["receipt-3.jpg"], "the photo that no operation has")
+        require(ReceiptLogic.orphanFiles(all: all, referenced: nil) == ["receipt-1.jpg", "receipt-2.jpg", "receipt-3.jpg"], "no operations, all photos are free")
+        require(ReceiptLogic.orphanFiles(all: [], referenced: ["manual:1": ["receipt-1.jpg"]]).isEmpty, "no files, nothing to delete")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3252,6 +3284,7 @@ struct FinanceEngineTests {
         testReceiptGoods()
         testReceiptCheckReport()
         testReceiptPriceBands()
+        testReceiptLayoutsRepaired()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

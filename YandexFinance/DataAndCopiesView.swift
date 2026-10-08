@@ -16,9 +16,15 @@ struct DataAndCopiesView: View {
     @State private var notice: String?
     /// The moment of the last tap here: only a message that follows a tap is shown, not the ones of the background sync.
     @State private var tappedAt: Date?
+    @State private var confirmOrphans = false
+    /// Changes when files were deleted: the folder is not observed, so the screen is asked to count again.
+    @State private var photoRefresh = 0
 
     var body: some View {
-        let photos = ReceiptStore.allFiles.count
+        let _ = photoRefresh
+        let allPhotos = ReceiptStore.allFiles
+        let photos = allPhotos.count
+        let orphans = ReceiptLogic.orphanFiles(all: allPhotos, referenced: browser.history.receipts)
         List {
             Section {
                 Button("Сохранить копию (JSON)") { run(exportBackup) }
@@ -32,6 +38,10 @@ struct DataAndCopiesView: View {
             }.glassRows()
             Section {
                 LabeledContent("Фото на телефоне", value: String(photos))
+                if !orphans.isEmpty {
+                    LabeledContent("Привязано к операциям", value: String(photos - orphans.count))
+                    Button("Удалить фото без операции (\(orphans.count))", role: .destructive) { confirmOrphans = true }
+                }
                 Button("Сохранить архив (ZIP)") { run(exportReceipts) }
                     .disabled(photos == 0 || browser.busy)
                 Button("Восстановить фото из архива") { run(restoreReceipts) }
@@ -60,6 +70,15 @@ struct DataAndCopiesView: View {
             } footer: {
                 Text("Выписки — один или несколько PDF. Разметка категорий — JSON, его можно просмотреть перед применением.")
             }.glassRows()
+        }
+        .confirmationDialog("Удалить фото без операции?", isPresented: $confirmOrphans, titleVisibility: .visible) {
+            Button("Удалить \(orphans.count)", role: .destructive) {
+                ReceiptStore.delete(orphans)
+                photoRefresh += 1
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Эти фото не привязаны ни к одной операции. Операции и привязанные фото остаются.")
         }
         .appSurface()
         .navigationTitle("Данные и копии")

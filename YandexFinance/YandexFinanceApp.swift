@@ -677,7 +677,8 @@ struct SettingsView: View {
     }
 
     private func exportReceiptsZIP() {
-        guard let archive = ReceiptStore.exportArchive() else {
+        // Only photos that belong to an operation go into the archive (the others are listed in «Данные и копии»).
+        guard let archive = ReceiptStore.exportArchive(only: Set((browser.history.receipts ?? [:]).values.flatMap { $0 })) else {
             browser.message = "Фото чеков на этом телефоне пока нет."
             return
         }

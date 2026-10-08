@@ -440,7 +440,9 @@ struct ManualOperationFormView: View {
         guard let operation else { return }
         var photos: [String] = []
         let identity = ManualOperation.identityPrefix + operation.id.uuidString
-        if browser.updateUserData({ history in
+        // Saved at once (a failure is told at once), shown to the screens after the sheet has closed: counting the forecast and the
+        // reports again takes about a second, and the sheet used to wait for it.
+        if browser.updateUserDataAfterClosing({ history in
             history.manualOperations?.removeAll { $0.id == operation.id }
             photos = history.removeReceipts(forIdentity: identity)
         }) {

@@ -40,9 +40,9 @@ enum ReceiptStore {
     }
 
     /// All photos as one ZIP, for a backup; nil when there are none.
-    static func exportArchive() -> (data: Data, count: Int, skipped: Int)? {
+    static func exportArchive(only: Set<String>? = nil) -> (data: Data, count: Int, skipped: Int)? {
         var entries: [(name: String, data: Data)] = []
-        let names = allFiles.sorted()
+        let names = allFiles.filter { only?.contains($0) ?? true }.sorted()
         guard !names.isEmpty else { return nil }
         for name in names {
             if let data = try? Data(contentsOf: folder.appendingPathComponent(name)) { entries.append((name, data)) }
