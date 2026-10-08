@@ -36,7 +36,8 @@ final class FinancePresentationCache {
     }
 
     private static func bankLinks(_ history: SavedHistory) -> [String] {
-        (history.accounts ?? []).map { "\($0.id)|\($0.tracksBankCard)|\($0.tracksSave ?? false)" }
+        (history.accounts ?? []).filter { $0.tracksBankCard || $0.tracksSave == true }
+            .map { "\($0.id)|\($0.tracksBankCard)|\($0.tracksSave ?? false)" }
     }
 
     /// Keys of values made from the accounts: the balances of accounts, of the reserve, the pages of one account.

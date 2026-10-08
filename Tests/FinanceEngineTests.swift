@@ -1461,6 +1461,13 @@ struct FinanceEngineTests {
         let pair = FinancialEngine.explainBalanceDifference(-80_000, rows: [row("a", -50_000), row("b", -30_000), row("c", -99)])
         require(pair.count == 1 && pair[0].kind == .pair && Set(pair[0].identities) == ["a", "b"], "two operations adding up, as a possible coincidence")
         require(FinancialEngine.explainBalanceDifference(-9_999_999, rows: [row("a", -1_234)]).isEmpty, "nothing fits: no guess")
+        // the sign matters: a pending expense explains only the difference it makes (GPT stage 59, B59-4)
+        let opposite = FinancialEngine.explainBalanceDifference(165_687, rows: rows)
+        require(opposite.allSatisfy { $0.kind != .pending }, "with the opposite sign it is only a matching sum")
+        require(!FinancialEngine.explainBalanceDifference(30_000, rows: doubled).contains { $0.kind == .duplicate }, "a duplicate of expenses does not explain a plus")
+        require(!FinancialEngine.balanceExplanationIsClear(pair), "a single pair is never «the reason» (B59-5)")
+        require(FinancialEngine.rublesKopecks("1234,56 ₽") == 123_456, "a sum without a space")
+        require(FinancialEngine.rublesKopecks("92233720368547758,08 ₽") == nil && FinancialEngine.rublesKopecks("1₽2 ₽") == nil, "no overflow, one ruble sign at the end")
         // the reading of a balance from the bank page
         require(FinancialEngine.rublesKopecks("80 829,95 ₽") == 8_082_995 && FinancialEngine.rublesKopecks("1\u{00A0}000 ₽") == 100_000
                 && FinancialEngine.rublesKopecks("70\u{202F}000,5 ₽") == 7_000_050, "balances with spaces of any kind")

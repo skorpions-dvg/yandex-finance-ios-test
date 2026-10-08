@@ -788,13 +788,16 @@ enum FinancialEngine {
             }
             found.append(BalanceExplanation(kind: kind, identities: ids, score: base + (4 - indices.count) * 5))
         }
+        // «Pending» means our balance counts it and the bank's does not yet: removing it makes the two equal, so the difference
+        // is its own move. The opposite sign is only a sum that matches (B59-4, GPT stage 59).
         for (index, row) in rows.enumerated() where abs(row.deltaKopecks) == target {
-            add(row.pending ? .pending : .single, [index])
+            add(row.pending && row.deltaKopecks == difference ? .pending : .single, [index])
         }
         for first in rows.indices {
             for second in rows.indices where second > first {
                 let a = rows[first], b = rows[second]
-                guard a.deltaKopecks == b.deltaKopecks, abs(a.deltaKopecks) == target, !a.payee.isEmpty, a.payee == b.payee,
+                // One extra copy in our balance: removing it makes the two equal, so the difference is its own move.
+                guard a.deltaKopecks == b.deltaKopecks, a.deltaKopecks == difference, !a.payee.isEmpty, a.payee == b.payee,
                       abs(a.date.timeIntervalSince(b.date)) <= 120 else { continue }
                 add(.duplicate, [first, second])
             }
@@ -816,16 +819,19 @@ enum FinancialEngine {
 
     /// The first explanation stands out (by 20 points or more) or is the only one.
     static func balanceExplanationIsClear(_ explanations: [BalanceExplanation]) -> Bool {
-        guard let first = explanations.first else { return false }
+        // Two operations that add up are a possible coincidence, never «the reason», even when they are the only ones.
+        guard let first = explanations.first, first.kind != .pair else { return false }
         guard explanations.count > 1 else { return true }
         return first.score - explanations[1].score >= 20
     }
 
     /// «80 829,95 ₽», «1 000 ₽», with ordinary or narrow non-breaking spaces: kopecks; nil for anything else (a sign, letters).
     static func rublesKopecks(_ text: String) -> Int64? {
-        let compact = text.replacingOccurrences(of: "₽", with: "")
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.filter({ $0 == "₽" }).count <= 1, !trimmed.contains("₽") || trimmed.hasSuffix("₽") else { return nil }
+        let compact = trimmed.replacingOccurrences(of: "₽", with: "")
             .filter { !$0.isWhitespace && $0 != "\u{00A0}" && $0 != "\u{202F}" }
-        guard compact.range(of: #"^\d+(,\d{1,2})?$"#, options: .regularExpression) != nil,
+        guard compact.range(of: #"^\d{1,13}(,\d{1,2})?$"#, options: .regularExpression) != nil,
               let value = Decimal(string: compact.replacingOccurrences(of: ",", with: "."), locale: Locale(identifier: "en_US_POSIX"))
         else { return nil }
         return NSDecimalNumber(decimal: value * 100).int64Value

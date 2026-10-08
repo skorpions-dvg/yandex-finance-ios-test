@@ -870,7 +870,11 @@ extension SavedHistory {
 struct BankBalanceReading: Codable, Equatable {
     var cardKopecks: Int64?
     var saveKopecks: Int64?
+    /// The last time anything was read.
     var readAt: Date
+    /// When each balance itself was read (older copies have none: then `readAt`).
+    var cardReadAt: Date?
+    var saveReadAt: Date?
 }
 
 extension SavedHistory {
@@ -879,6 +883,21 @@ extension SavedHistory {
         if account.tracksBankCard { return bankBalances?.cardKopecks }
         if account.tracksSave == true { return bankBalances?.saveKopecks }
         return nil
+    }
+
+    /// When the bank's balance of `account` was read itself.
+    func bankBalanceReadAt(for account: Account) -> Date? {
+        guard let reading = bankBalances else { return nil }
+        if account.tracksBankCard { return reading.cardKopecks == nil ? nil : (reading.cardReadAt ?? reading.readAt) }
+        if account.tracksSave == true { return reading.saveKopecks == nil ? nil : (reading.saveReadAt ?? reading.readAt) }
+        return nil
+    }
+
+    /// The bank's balance was read after the operations were last saved: the two describe the same moment and may be compared
+    /// for aligning (an older one may miss operations of the bank or count ones we already have).
+    func bankBalanceIsFresh(for account: Account) -> Bool {
+        guard let read = bankBalanceReadAt(for: account) else { return false }
+        return read >= (lastSync ?? .distantPast).addingTimeInterval(-60)
     }
 
     /// The operations of the last `days` days that move `account`, for the explanation of a difference with the bank.

@@ -140,8 +140,13 @@ struct AccountDetailView: View {
     private func reconciliation(account: Account, ours: Int64, bank: Int64, movements: [AccountMovement]) -> some View {
         Section("Сверка с банком") {
             LabeledContent("В банке", value: money(bank))
-            if let read = browser.history.bankBalances?.readAt {
+            if let read = browser.history.bankBalanceReadAt(for: account) {
                 LabeledContent("Прочитано", value: read.formatted(date: .abbreviated, time: .shortened))
+            }
+            let fresh = browser.history.bankBalanceIsFresh(for: account)
+            if !fresh {
+                Text("Остаток банка прочитан раньше последнего обновления операций: сравнение может быть неверным. Обновите операции.")
+                    .font(.caption).foregroundStyle(.orange)
             }
             if bank == ours {
                 Label("Совпадает с банком", systemImage: "checkmark.circle").foregroundStyle(.green)
@@ -161,7 +166,8 @@ struct AccountDetailView: View {
                         Text(describe(explanation, titles: titles)).font(.caption)
                     }
                 }
-                Button("Выровнять по банку") { confirmAlign = true }
+                // Only with a balance read after the last saved operations: aligning with an old one would be wrong.
+                if fresh { Button("Выровнять по банку") { confirmAlign = true } }
             }
         }.glassRows()
     }
@@ -179,7 +185,7 @@ struct AccountDetailView: View {
 
     /// Moves the start balance by the difference, so the balance now is the bank's; the operations stay as they are.
     private func alignWithBank() {
-        guard let bank = browser.history.bankBalance(for: activeAccount) else { return }
+        guard let bank = browser.history.bankBalance(for: activeAccount), browser.history.bankBalanceIsFresh(for: activeAccount) else { return }
         let ours = browser.history.accountBalances(activeAccount, at: [.distantFuture])[0]
         let difference = ours - bank
         guard difference != 0 else { return }

@@ -30,6 +30,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// cancelled sign-in must not bring its window back, a new code must not get the error or the end of an older one).
     private var signInGeneration = 0
     private var submitGeneration = 0
+    /// The number of the current reading of the balances; a refresh or a scan that starts makes it stop (B59-1).
+    private var balanceReaderGeneration = 0
     @Published var busy = false
     @Published var message = ""
     @Published private(set) var statementPreview: StatementImportPreview?
@@ -128,6 +130,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             for _ in 0..<120 {
                 do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
                 guard let self, self.foreground, self.autoUpdate, !self.busy else { return }
+                // The bank's main page is open for a moment to read the balances: that is not a request to sign in.
+                if self.readingBalances { continue }
                 let state = await self.bankPageState()
                 if state == .codeRequested {
                     self.automaticTask = nil
@@ -226,7 +230,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private static let codeFieldsJS = """
     const visible = el => !!el && el.getClientRects().length > 0 && !el.disabled && !el.readOnly;
     const meta = el => [el.name, el.id, el.placeholder, el.getAttribute('aria-label')].filter(Boolean).join(' ').toLowerCase();
-    const bad = el => ['search', 'email', 'password'].includes((el.type || '').toLowerCase()) || /phone|тел|поиск|search|mail/.test(meta(el));
+    const bad = el => ['search', 'email', 'password'].includes((el.type || '').toLowerCase()) ||
+        /phone|тел|поиск|search|mail|post|zip|index|индекс|почт|promo|промо|coupon|купон/.test(meta(el));
     const inputs = [...document.querySelectorAll('input')].filter(el => visible(el) && !bad(el));
     const groupOf = el => {
         const same = inputs.filter(other => other.parentElement === el.parentElement && other.maxLength === 1);
@@ -240,7 +245,15 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     // not guessed between: the bank page itself then takes the code.
     const findCodeFields = () => {
         const marked = inputs.filter(el => (el.autocomplete || '').toLowerCase() === 'one-time-code');
-        if (marked.length) return marked[0].maxLength === 1 ? (groupOf(marked[0]) || [marked[0]]) : (marked.length === 1 ? [marked[0]] : []);
+        if (marked.length) {
+            if (marked[0].maxLength !== 1) return marked.length === 1 ? [marked[0]] : [];
+            const markedGroups = [];
+            for (const el of marked) {
+                const group = groupOf(el) || [el];
+                if (!markedGroups.some(known => known.includes(el))) markedGroups.push(group);
+            }
+            return markedGroups.length === 1 ? markedGroups[0] : [];
+        }
         const named = inputs.filter(el => el.maxLength !== 1 && /код|code|otp|pin|смс|sms/.test(meta(el)));
         if (named.length) return named.length === 1 ? named : [];
         const groups = [];
@@ -258,7 +271,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         const holder = fields[0].closest('form, [role="dialog"]');
         if (holder) return holder;
         let box = fields[0];
-        for (let step = 0; step < 3 && box.parentElement; step++) box = box.parentElement;
+        for (let step = 0; step < 3 && box.parentElement && box.parentElement !== document.body &&
+                           box.parentElement.tagName !== 'HTML'; step++) box = box.parentElement;
         return box;
     };
     """
@@ -267,6 +281,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         codeEntryError = nil
         codeEntryVisible = true
         bankPageVisible = false
+        let session = signInGeneration
         Task { @MainActor [weak self] in
             guard let self else { return }
             let script = Self.codeFieldsJS + """
@@ -275,8 +290,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             if (fields.length === 1 && fields[0].maxLength >= 4 && fields[0].maxLength <= 6) return fields[0].maxLength;
             return 4;
             """
-            if let length = try? await self.webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient) as? Int,
-               (4...6).contains(length) {
+            let answer = try? await self.webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient)
+            // A late answer of an earlier sign-in must not change the length the window of this one sends at.
+            if self.signInGeneration == session, let length = answer as? Int, (4...6).contains(length) {
                 self.codeLength = length
             }
         }
@@ -358,17 +374,21 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         codeEntryError = "Банк пока не ответил. Попробуйте ещё раз или откройте страницу банка."
     }
 
-    /// The balances on the bank page: a «Карта Пэй» or «Счёт в Сейвах» label with one sum without a sign next to it (the sums of
-    /// operations always have «−» or «+», so a row of the history is never taken for a balance). Two different sums for one label
-    /// and no sum at all are left alone; the last reading stays until a new one is found.
+    /// The balances on the bank page: a «Карта» / «Карта Пэй» or «Сейвы» / «Счёт в Сейвах» label with one sum without a sign in
+    /// its own block (the sums of operations always have «−» or «+»; a block that also names «Сплит», «Баллы» or the other account is
+    /// not taken: its sum may be theirs). The history shows no balances, the bank's main page («Главный») does: it is opened for
+    /// a moment and the history is loaded back. The reading never takes the page from a refresh or a sign-in: it does not start
+    /// while one runs, stops when one starts, and only a reading that still owns the page brings the history back.
     private func readBankBalances() async {
-        guard !readingBalances else { return }
+        guard !readingBalances, !busy, !signInRequested else { return }
         readingBalances = true
         defer { readingBalances = false }
-        if await readBalancesOnPage() { return }
-        // The history shows no balances; the bank's main page («Главный») does. Tap it, read, and go back to the history the
-        // scanner reads (whatever was found).
-        guard !busy, !signInRequested else { return }
+        balanceReaderGeneration += 1
+        let generation = balanceReaderGeneration
+        // Still this reading's page: no refresh, no scan and no sign-in started meanwhile.
+        func owns() -> Bool { balanceReaderGeneration == generation && !busy && !signInRequested }
+        if await readBalancesOnPage(owns) { return }
+        guard owns() else { return }
         let tap = """
         const leaf = [...document.querySelectorAll('body *')].find(el => el.children.length === 0 && el.getClientRects().length > 0 &&
             /^главн(ый|ая)$/i.test((el.textContent || '').trim()));
@@ -376,21 +396,25 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         if (target) target.click();
         return !!target;
         """
-        guard (try? await webView.callAsyncJavaScript(tap, arguments: [:], in: nil, contentWorld: .defaultClient) as? Bool) == true else { return }
+        let tapped = (try? await webView.callAsyncJavaScript(tap, arguments: [:], in: nil, contentWorld: .defaultClient) as? Bool) == true
+        guard tapped else { return }
         for _ in 0..<16 {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !busy, !signInRequested else { return }
-            if await readBalancesOnPage() { break }
+            guard owns() else { break }
+            if await readBalancesOnPage(owns) { break }
         }
-        guard !busy, !signInRequested else { return }
-        webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
+        // Back to the history the scanner reads. A refresh or a scan that took over loads it itself; a sign-in keeps its page.
+        if owns() { webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!)) }
     }
 
-    /// Reads the balances on the page that is open now; true when one was found and saved.
-    private func readBalancesOnPage() async -> Bool {
+    /// Reads the balances on the page that is open now; true when one was found and saved. Each account keeps the time it was
+    /// read itself: a reading of the card alone does not make an old balance of Save look fresh.
+    private func readBalancesOnPage(_ owns: () -> Bool) async -> Bool {
         let script = """
         const labels = { card: /^карта(\\s+п[эе]й)?$/i, save: /^(сч[её]т\\s+в\\s+сейвах|сейвы?)$/i };
-        const balance = /^\\d{1,3}([\\s\\u00a0\\u202f]\\d{3})*(,\\d{1,2})?\\s*₽$/;
+        // Any money label of the page: a block with two of them is shared, its sum may belong to the other one.
+        const anyLabel = /^(карта(\\s+п[эе]й)?|сч[её]т\\s+в\\s+сейвах|сейвы?|сплит|баллы(\\s+плюса)?)$/i;
+        const balance = /^\\d+([\\s\\u00a0\\u202f]\\d{3})*(,\\d{1,2})?\\s*₽$/;
         const leaves = [...document.querySelectorAll('body *')].filter(el => el.children.length === 0 && el.getClientRects().length > 0);
         const result = {};
         for (const [key, label] of Object.entries(labels)) {
@@ -401,9 +425,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 for (let step = 0; step < 3 && box.parentElement; step++) {
                     box = box.parentElement;
                     const lines = (box.innerText || '').split('\\n').map(line => line.trim()).filter(Boolean);
-                    if (lines.length > 4) break;
-                    // One sum without a sign next to the label. The sums of operations always have «−» or «+», so a row of the
-                    // history never gives one; a signed line next to a balance (the interest of Save) does not matter.
+                    if (lines.length > 4 || lines.filter(line => anyLabel.test(line)).length > 1) break;
+                    // One sum without a sign in the label's own block. The sums of operations always have «−» or «+», so a row
+                    // of the history never gives one; a signed line next to a balance (the interest of Save) does not matter.
                     const found = lines.filter(line => balance.test(line));
                     if (found.length === 1) { sums.add(found[0]); break; }
                 }
@@ -412,18 +436,19 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
         return result;
         """
-        guard let found = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient) as? [String: Any]
-        else { return false }
+        let answer = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient)
+        guard owns(), let found = answer as? [String: Any] else { return false }
         let card = (found["card"] as? String).flatMap(FinancialEngine.rublesKopecks)
         let save = (found["save"] as? String).flatMap(FinancialEngine.rublesKopecks)
         guard card != nil || save != nil else { return false }
-        var reading = history.bankBalances ?? BankBalanceReading(readAt: Date())
-        if let card { reading.cardKopecks = card }
-        if let save { reading.saveKopecks = save }
-        reading.readAt = Date()
+        let now = Date()
+        var reading = history.bankBalances ?? BankBalanceReading(readAt: now)
+        if let card { reading.cardKopecks = card; reading.cardReadAt = now }
+        if let save { reading.saveKopecks = save; reading.saveReadAt = now }
+        reading.readAt = now
         let read = reading
-        updateUserData { $0.bankBalances = read }
-        return true
+        // Saved or not: a failed save is reported by `updateUserData` and is not taken for a reading.
+        return updateUserData { $0.bankBalances = read }
     }
 
     /// An error next to the code field (not anywhere on the page: the word «ошибка» can be in any other text).
@@ -441,9 +466,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     func resendCode(request: Bool) async -> Int {
         let script = Self.codeFieldsJS + """
         // The block of the code and a little around it (the bank's «Запросить другой» sits under the field).
-        let area = codeArea(findCodeFields());
+        const area = codeArea(findCodeFields());
         if (!area) return 0;
-        if (area.parentElement && area.tagName !== 'FORM') area = area.parentElement;
         const text = area.innerText || '';
         const wait = text.match(/через\\s*(\\d+)\\s*(мин)?/i);
         const seconds = wait ? parseInt(wait[1], 10) * (wait[2] ? 60 : 1) : 0;
@@ -488,6 +512,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// says so and brings the bank page to the front instead of failing silently.
     func refreshNewOperations() {
         guard !busy, readable else { return }
+        balanceReaderGeneration += 1
         automaticTask?.cancel(); automaticTask = nil
         busy = true; cancelled = false
         message = "Открываю историю банка…"
@@ -662,6 +687,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     func read(mode: String, lookbackDays: Int? = 30, initialImport: Bool = false, retryIssue: ImportIssue? = nil, automaticRun: Bool = false) {
         guard !busy, readable else { return }
         guard webView.url?.host == "bank.yandex.ru" else { message = "Сначала завершите вход на сайте банка."; return }
+        balanceReaderGeneration += 1
         guard let resource = Bundle.main.url(forResource: "Collector", withExtension: "js"),
               let script = try? String(contentsOf: resource, encoding: .utf8) else { message = "Не найден модуль чтения."; return }
         automaticTask?.cancel(); automaticTask = nil
