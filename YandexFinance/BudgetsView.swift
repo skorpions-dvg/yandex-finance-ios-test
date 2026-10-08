@@ -53,9 +53,7 @@ struct BudgetBar: View {
             }
         }
         .frame(height: 6)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(status?.title ?? "Бюджет")
-        .accessibilityValue(status.map { Self.accessibilityValue($0) } ?? "Потрачено \(Int(max(0, fraction) * 100)) процентов")
+        .accessibilityHidden(true)
     }
 }
 

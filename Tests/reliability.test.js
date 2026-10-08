@@ -723,3 +723,16 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.match(settings, /fileImporter\(isPresented: \$showCategoryImporter, allowedContentTypes: \[\.json\]\)/);
   console.log('Stage 41.13: four Settings actions use PDF selection and JSON backup/category files.');
 }
+
+// The budget row of the home card was stretched on the phone with its title missing after ViewThatFits and accessibilityElement were put
+// around it (46.18). Its structure stays the one of 46.16 until a build with a different one has been checked on the phone.
+{
+  const home = fs.readFileSync(path.join(__dirname, '../YandexFinance/OperationsHomeView.swift'), 'utf8');
+  const row = home.match(/private func budgetLine[\s\S]*?private func reserveColor/)[0];
+  for (const banned of ['ViewThatFits', 'accessibilityElement', 'fixedSize', 'GeometryReader']) {
+    assert.ok(!row.includes(banned), `The home budget row must not use ${banned}`);
+  }
+  const budgets = fs.readFileSync(path.join(__dirname, '../YandexFinance/BudgetsView.swift'), 'utf8');
+  const bar = budgets.match(/struct BudgetBar: View[\s\S]*?\r?\n}\r?\n/)[0];
+  assert.ok(!bar.includes('accessibilityElement'), 'The budget bar must not change how accessibility elements are built around it');
+}

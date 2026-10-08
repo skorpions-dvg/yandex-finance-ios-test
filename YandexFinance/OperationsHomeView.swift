@@ -361,22 +361,22 @@ struct OperationsHomeView: View {
         return Button { showBudgets = true } label: {
             VStack(alignment: .leading, spacing: 6) {
                 if let total {
-                    // A plain row (a ViewThatFits here stretched the card and hid the title on the phone, 46.18): the texts wrap
-                    // under a large font instead of switching layouts.
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    // The layout of 46.16, which is known to draw correctly on the phone. In 46.18 this row was changed (a layout
+                    // switcher, then a combined accessibility element around the button) and the card came out stretched, with the
+                    // title missing: do not change the structure here without a build checked on the phone (reliability.test.js guards it).
+                    HStack {
                         Image(systemName: "target")
                         Text("Бюджет месяца: потрачено \(total.percent) %")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(total.caption).multilineTextAlignment(.trailing)
+                        Spacer()
+                        Text(total.caption).foregroundStyle(total.level == .calm ? Color.secondary : total.level.color)
                     }
-                    .fixedSize(horizontal: false, vertical: true)
-                    .font(.caption).foregroundStyle(.primary)
-                    BudgetBar(fraction: total.fraction, level: total.level, status: total).accessibilityHidden(true)
+                    .font(.caption).foregroundStyle(.secondary)
+                    BudgetBar(fraction: total.fraction, level: total.level)
                 }
                 ForEach(notices) { notice in
                     HStack {
                         if total == nil { Image(systemName: "target") }
-                        Text(notice.text).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                        Text(notice.text).foregroundStyle(notice.level.color)
                     }
                     .font(.caption)
                 }
@@ -392,7 +392,6 @@ struct OperationsHomeView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
         .accessibilityLabel("Бюджет месяца")
         .accessibilityValue(spoken.joined(separator: ". "))
         .accessibilityHint("Открыть бюджеты")
