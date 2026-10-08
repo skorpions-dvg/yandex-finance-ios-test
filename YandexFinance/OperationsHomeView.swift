@@ -10,6 +10,7 @@ struct OperationsHomeView: View {
     @State private var period: HistoryPeriod = .lastDays(30)
     @State private var historyExpanded: Bool? = nil
     @State private var showForecast = false
+    @State private var showBudgets = false
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var showSearch = false
     @State private var showAdd = false
@@ -137,6 +138,12 @@ struct OperationsHomeView: View {
                 }
                 .sheet(isPresented: $showSearch) {
                     SearchOperationsView(browser: browser)
+                }
+                .sheet(isPresented: $showBudgets) {
+                    NavigationStack {
+                        BudgetsView(browser: browser, presentation: presentation)
+                            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Закрыть") { showBudgets = false } } }
+                    }
                 }
                 .sheet(isPresented: $showAdd, onDismiss: {
                     if pendingSavedOperation != nil {
@@ -307,9 +314,48 @@ struct OperationsHomeView: View {
                 }
                 .buttonStyle(.plain)
             }
+            let budgets = presentation.budgetStatuses(browser.history, month: Date())
+            if !budgets.isEmpty { budgetLine(budgets) }
         }.glassRows()
     }
     
+    /// «Budget of the month»: the bar of the whole month's limit and the groups that have used up theirs.
+    private func budgetLine(_ statuses: [BudgetStatus]) -> some View {
+        let total = statuses.first { $0.group == nil }
+        let notices = BudgetEngine.notices(statuses)
+        return Button { showBudgets = true } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let total {
+                    HStack {
+                        Image(systemName: "target")
+                        Text("Бюджет месяца: потрачено \(total.percent) %")
+                        Spacer()
+                        Text(total.caption).foregroundStyle(total.level == .calm ? Color.secondary : total.level.color)
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    BudgetBar(fraction: total.fraction, level: total.level)
+                }
+                ForEach(notices) { notice in
+                    HStack {
+                        if total == nil { Image(systemName: "target") }
+                        Text(notice.text).foregroundStyle(notice.level.color)
+                    }
+                    .font(.caption)
+                }
+                if total == nil && notices.isEmpty {
+                    HStack {
+                        Image(systemName: "target")
+                        Text("Бюджеты: всё в пределах лимитов")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func reserveColor(_ reserve: Int64) -> Color {
         switch FinancialEngine.reserveStatus(reserve, bufferKopecks: Int64(reserveBufferRubles) * 100) {
         case .fine: return .green

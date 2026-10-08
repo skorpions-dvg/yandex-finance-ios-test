@@ -60,10 +60,7 @@ struct BudgetsView: View {
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let month = Date()
-        let statuses: [BudgetStatus] = presentation.value("budgets:\(BudgetEngine.monthKey(month))") {
-            BudgetEngine.statuses(inputs: presentation.inputs(browser.history), budgets: browser.history.budgets ?? [],
-                                  month: month, taxonomy: browser.history.expenseTaxonomy)
-        }
+        let statuses = presentation.budgetStatuses(browser.history, month: month)
         List {
             Section {
                 Text(month.formatted(.dateTime.month(.wide).year()).capitalized).font(.headline)

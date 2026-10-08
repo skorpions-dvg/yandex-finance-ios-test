@@ -458,6 +458,26 @@ private struct ReportSliceList: View {
     let refundsKopecks: Int64
     let filter: ReportFilter
 
+    /// The budgets of the shown month; only when the report is expenses by category for one whole month of all accounts
+    /// with nothing excluded, because only then the figures are the ones the budgets count.
+    private var budgets: [BudgetStatus] {
+        guard mode == .expenses, grouping == .categories, filter.scope.isAll, !filter.isActive,
+              interval == BudgetEngine.monthInterval(containing: interval.start) else { return [] }
+        return presentation.budgetStatuses(browser.history, month: interval.start)
+    }
+
+    private func budgetBar(_ status: BudgetStatus) -> some View {
+        VStack(spacing: 4) {
+            BudgetBar(fraction: status.fraction, level: status.level)
+            HStack {
+                Text("Бюджет: \(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
+                Spacer()
+                Text(status.caption).foregroundStyle(status.level == .calm ? Color.secondary : status.level.color)
+            }
+            .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
     static func compute(browser: BankBrowser, presentation: FinancePresentationCache, interval: DateInterval,
                         mode: ReportMode, grouping: ReportGrouping, filter: ReportFilter) -> [ReportSlice] {
         // The history may have been loaded after this view was first built: never read a cache of the old one.
@@ -483,6 +503,7 @@ private struct ReportSliceList: View {
                             Text(reportRubles(headline)).font(.headline).monospacedDigit()
                         }
                         ShareBar(fraction: 1, color: .accentColor)
+                        if mode == .expenses, let monthBudget = budgets.first(where: { $0.group == nil }) { budgetBar(monthBudget) }
                     }
                 }
                 ForEach(slices) { slice in
@@ -498,6 +519,7 @@ private struct ReportSliceList: View {
                                 Text(reportRubles(slice.amountKopecks)).monospacedDigit()
                             }
                             ShareBar(fraction: total > 0 ? Double(slice.amountKopecks) / Double(total) : 0, color: ReportPalette.color(slice.title))
+                            if let own = budgets.first(where: { $0.group == slice.title }) { budgetBar(own) }
                         }
                     }
                 }

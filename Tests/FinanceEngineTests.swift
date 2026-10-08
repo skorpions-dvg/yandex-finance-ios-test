@@ -437,6 +437,15 @@ struct FinanceEngineTests {
         require(Set(october.map(\.group)) == [nil, "Другое", "Еда", "Транспорт", "Старая группа"] && october.first { $0.group == "Транспорт" }?.limitKopecks == 20_000,
                 "October shows its own limit and the general ones")
         require(october.first { $0.group == nil }?.spentKopecks == 0, "no expenses yet in October")
+        // The lines of the main screen
+        let calmGroup = BudgetStatus(group: "Еда", limitKopecks: 10_000, spentKopecks: 1_000, isMonthOnly: false)
+        let nearGroup = BudgetStatus(group: "Транспорт", limitKopecks: 10_000, spentKopecks: 9_500, isMonthOnly: false)
+        let overGroup = BudgetStatus(group: "Жильё", limitKopecks: 10_000, spentKopecks: 12_000, isMonthOnly: false)
+        let overMonth = BudgetStatus(group: nil, limitKopecks: 10_000, spentKopecks: 20_000, isMonthOnly: false)
+        require(BudgetEngine.notices([calmGroup, overMonth]).isEmpty, "a calm group and the month's own bar make no line")
+        let lines = BudgetEngine.notices([overMonth, calmGroup, nearGroup, overGroup])
+        require(lines.map(\.level) == [.exceeded, .warning], "over the limit first, then the warning")
+        require(lines[0].text == "Превышен бюджет: Жильё" && lines[1].text == "Почти исчерпан бюджет: Транспорт", "groups named in the lines")
     }
 
     static func testRegularPayments() {

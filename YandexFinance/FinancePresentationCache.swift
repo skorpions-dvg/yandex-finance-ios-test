@@ -49,6 +49,13 @@ final class FinancePresentationCache {
         }
     }
 
+    /// The budgets of the month with what is spent against each (all accounts, as the reports count).
+    func budgetStatuses(_ history: SavedHistory, month: Date) -> [BudgetStatus] {
+        value("budgets:\(BudgetEngine.monthKey(month))") {
+            BudgetEngine.statuses(inputs: inputs(history), budgets: history.budgets ?? [], month: month, taxonomy: history.expenseTaxonomy)
+        }
+    }
+
     func forecast(_ history: SavedHistory, now: Date = Date()) -> FinancialEngine.MonthForecast {
         value("forecast:\(Calendar.current.startOfDay(for: now))") {
             FinancialEngine.monthForecast(inputs(history), now: now, taxonomy: history.expenseTaxonomy)

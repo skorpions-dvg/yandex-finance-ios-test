@@ -22,7 +22,25 @@ struct BudgetStatus: Identifiable, Equatable {
     var level: BudgetLevel { BudgetEngine.level(spent: spentKopecks, limit: limitKopecks) }
 }
 
+/// A line for the main screen: which groups have used up their limit or are about to.
+struct BudgetNotice: Identifiable, Equatable {
+    let level: BudgetLevel
+    let text: String
+    var id: String { text }
+}
+
 enum BudgetEngine {
+    /// The groups over their limit, then the groups from 90 % of it. The limit of the whole month is shown by its own bar.
+    static func notices(_ statuses: [BudgetStatus]) -> [BudgetNotice] {
+        let groups = statuses.filter { $0.group != nil }
+        var result: [BudgetNotice] = []
+        let exceeded = groups.filter { $0.level == .exceeded }.compactMap(\.group)
+        let warning = groups.filter { $0.level == .warning }.compactMap(\.group)
+        if !exceeded.isEmpty { result.append(BudgetNotice(level: .exceeded, text: "Превышен бюджет: " + exceeded.joined(separator: ", "))) }
+        if !warning.isEmpty { result.append(BudgetNotice(level: .warning, text: "Почти исчерпан бюджет: " + warning.joined(separator: ", "))) }
+        return result
+    }
+
     static func monthKey(_ date: Date, calendar: Calendar = .current) -> String {
         let parts = calendar.dateComponents([.year, .month], from: date)
         return String(format: "%04d-%02d", parts.year ?? 0, parts.month ?? 0)
