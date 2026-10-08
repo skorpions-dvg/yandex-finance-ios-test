@@ -250,12 +250,11 @@ struct OperationsHomeView: View {
                 if let icon = icon {
                     Image(systemName: icon)
                 }
-                Text(title).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text(title)
             }
             .font(.subheadline)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .frame(minHeight: 44)
             .foregroundStyle(selected ? Color.accentColor : Color.primary)
             .background(selected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.15),
                         in: Capsule())
