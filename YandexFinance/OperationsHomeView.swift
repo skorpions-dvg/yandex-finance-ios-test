@@ -334,7 +334,7 @@ struct OperationsHomeView: View {
                         .foregroundStyle(.secondary)
                         if accounts.isEmpty || browser.history.reserveAccounts.isEmpty {
                             Text("—").font(.title3.weight(.semibold))
-                            Text(accounts.isEmpty ? "добавьте счета" : "выберите счета в настройках").font(.caption).foregroundStyle(.secondary)
+                            Text(accounts.isEmpty ? "добавьте счета" : "выберите счета для запаса").font(.caption).foregroundStyle(.secondary)
                         } else {
                             let reserve = FinancialEngine.monthReserve(balanceKopecks: reserveBalance(), forecast: f)
                             Text(signedRubles(reserve))

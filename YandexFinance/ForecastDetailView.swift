@@ -81,7 +81,7 @@ struct ForecastDetailView: View {
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.futureExpenseKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))")
-                    Text("Счета: " + (accountNames.isEmpty ? "не выбраны" : accountNames.joined(separator: ", ")) + ". Отложенные деньги исключаются в настройках.")
+                    Text("Счета: " + (accountNames.isEmpty ? "не выбраны" : accountNames.joined(separator: ", ")) + ". Отложенные деньги исключаются ниже, в «Счета для запаса».")
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 // A hint, not the reserve: the smallest irregular income of the last full months that has not come yet.
@@ -92,10 +92,16 @@ struct ForecastDetailView: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
             } else {
-                Text("Выберите счета, из которых считать запас: Настройки → «Запас до конца месяца»")
+                Text("Выберите счета, из которых считать запас: «Счета для запаса» ниже.")
                     .foregroundStyle(.secondary)
             }
             bufferRow
+            // The choice of the accounts lives here, next to the reserve it changes (it used to be in Settings).
+            NavigationLink {
+                ReserveAccountsView(browser: browser)
+            } label: {
+                Label("Счета для запаса", systemImage: "wallet.pass")
+            }
         }.glassRows()
     }
 
