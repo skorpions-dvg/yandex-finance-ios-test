@@ -36,6 +36,39 @@ public enum HistoryPeriod: Hashable {
     case custom(from: Date, through: Date)
 }
 
+extension HistoryPeriod {
+    /// The text the chosen period is remembered by between launches.
+    public var storageText: String {
+        switch self {
+        case .lastDays(let days): return "days:\(days)"
+        case .allTime: return "all"
+        case .custom(let from, let through): return "custom:\(Int(from.timeIntervalSince1970)):\(Int(through.timeIntervalSince1970))"
+        }
+    }
+
+    /// The period remembered by `storageText`; nil for any text that is not one.
+    public init?(storageText text: String) {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        switch (parts[0], parts.count) {
+        case ("all", 1):
+            self = .allTime
+        case ("days", 2):
+            guard let days = Int(parts[1]), (1...3660).contains(days) else { return nil }
+            self = .lastDays(days)
+        case ("custom", 3):
+            guard let from = Int(parts[1]), let through = Int(parts[2]) else { return nil }
+            self = .custom(from: Date(timeIntervalSince1970: TimeInterval(from)), through: Date(timeIntervalSince1970: TimeInterval(through)))
+        default:
+            return nil
+        }
+    }
+
+    /// From the first day of the month of `now` through `now`.
+    public static func currentMonth(now: Date = Date(), calendar: Calendar = .current) -> HistoryPeriod {
+        .custom(from: monthStart(of: now, calendar: calendar), through: now)
+    }
+}
+
 /// Half-open interval for a history period; it always ends at the end of today (or of the last custom day).
 public func historyInterval(_ period: HistoryPeriod, now: Date = Date(), calendar: Calendar = .current) -> DateInterval {
     let endOfToday = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!

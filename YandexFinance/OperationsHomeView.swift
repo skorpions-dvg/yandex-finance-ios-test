@@ -7,7 +7,12 @@ struct OperationsHomeView: View {
     var onAccounts: () -> Void
     var onHorizontalPan: (CGFloat, CGFloat, Bool) -> Void
     
-    @State private var period: HistoryPeriod = .lastDays(30)
+    /// The chosen period is remembered between launches (and when the app is locked and rebuilt).
+    @AppStorage("homePeriod") private var storedPeriod = ""
+    private var period: HistoryPeriod {
+        get { HistoryPeriod(storageText: storedPeriod) ?? .lastDays(30) }
+        nonmutating set { storedPeriod = newValue.storageText }
+    }
     @State private var historyExpanded: Bool? = nil
     @State private var showForecast = false
     @State private var showBudgets = false
@@ -159,7 +164,7 @@ struct OperationsHomeView: View {
                     ManualOperationFormView(browser: browser, operation: operation)
                 }
                 .sheet(isPresented: $showCustomDates) {
-                    CustomDatesSheet(period: $period,
+                    CustomDatesSheet(period: Binding(get: { period }, set: { period = $0 }),
                                      from: $customFrom,
                                      through: $customThrough)
                 }
@@ -187,7 +192,7 @@ struct OperationsHomeView: View {
                         capsuleButton(title: "Период",
                                       icon: "calendar",
                                       selected: periodIsCustom,
-                                      action: { showCustomDates = true })
+                                      action: { openCustomDates() })
                         capsuleButton(title: "Сегодня",
                                       selected: period == .lastDays(1),
                                       action: { period = .lastDays(1) })
@@ -205,8 +210,8 @@ struct OperationsHomeView: View {
                                       action: { period = .allTime })
                     }
                 }
-                if periodIsCustom {
-                    Text("\(customFrom.formatted(.dateTime.day().month().year())) — \(customThrough.formatted(.dateTime.day().month().year()))")
+                if case .custom(let from, let through) = period {
+                    Text("\(from.formatted(.dateTime.day().month().year())) — \(through.formatted(.dateTime.day().month().year()))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -214,6 +219,18 @@ struct OperationsHomeView: View {
         }.glassRows()
     }
     
+    /// The sheet starts from the dates in use, or from today.
+    private func openCustomDates() {
+        if case .custom(let from, let through) = period {
+            customFrom = from
+            customThrough = through
+        } else {
+            customFrom = Date()
+            customThrough = Date()
+        }
+        showCustomDates = true
+    }
+
     private var periodIsCustom: Bool {
         if case .custom = period { return true }
         return false
@@ -532,6 +549,14 @@ private struct CustomDatesSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Button {
+                    if case .custom(let first, let last) = HistoryPeriod.currentMonth() {
+                        from = first
+                        through = last
+                    }
+                } label: {
+                    Label("Текущий месяц (с 1 числа)", systemImage: "calendar")
+                }
                 DatePicker("С", selection: $from, displayedComponents: .date)
                 DatePicker("По", selection: $through, displayedComponents: .date)
             }
@@ -548,8 +573,13 @@ private struct CustomDatesSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        period = .custom(from: from, through: through)
+                        // The sheet closes first; the screen behind it recounts the operations right after.
+                        let chosen = HistoryPeriod.custom(from: from, through: through)
                         dismiss()
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 350_000_000)
+                            period = chosen
+                        }
                     } label: {
                         Image(systemName: "checkmark")
                             .foregroundStyle(Color.accentColor)

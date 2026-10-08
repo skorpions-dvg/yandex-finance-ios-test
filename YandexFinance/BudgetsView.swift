@@ -210,7 +210,7 @@ struct BudgetFormView: View {
         let key = monthKey
         let chosen = group
         let thisMonthOnly = monthOnly
-        let ok = browser.updateUserData { history in
+        let ok = browser.updateUserDataAfterClosing { history in
             if thisMonthOnly {
                 history.setBudget(group: chosen, limitKopecks: kopecks, month: key)
             } else {
@@ -226,7 +226,7 @@ struct BudgetFormView: View {
         let chosen = group
         let key = monthKey
         let monthly = existing?.isMonthOnly ?? false
-        let ok = browser.updateUserData { $0.removeBudget(group: chosen, month: monthly ? key : nil) }
+        let ok = browser.updateUserDataAfterClosing { $0.removeBudget(group: chosen, month: monthly ? key : nil) }
         if ok { dismiss() } else { error = browser.message }
     }
 }

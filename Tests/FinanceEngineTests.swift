@@ -448,6 +448,27 @@ struct FinanceEngineTests {
         require(lines[0].text == "Превышен бюджет: Жильё" && lines[1].text == "Почти исчерпан бюджет: Транспорт", "groups named in the lines")
     }
 
+    /// The period of the main screen is remembered between launches.
+    static func testHistoryPeriodStorage() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ month: Int, _ day: Int, _ hour: Int = 0) -> Date {
+            calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: hour))!
+        }
+        for period in [HistoryPeriod.lastDays(1), .lastDays(30), .lastDays(365), .allTime, .custom(from: date(9, 1), through: date(9, 8, 15))] {
+            require(HistoryPeriod(storageText: period.storageText) == period, "remembered and restored: \(period.storageText)")
+        }
+        require(HistoryPeriod(storageText: "") == nil && HistoryPeriod(storageText: "days:0") == nil && HistoryPeriod(storageText: "days:-5") == nil
+                && HistoryPeriod(storageText: "days:99999") == nil && HistoryPeriod(storageText: "custom:1") == nil
+                && HistoryPeriod(storageText: "custom:a:b") == nil && HistoryPeriod(storageText: "all:1") == nil
+                && HistoryPeriod(storageText: "month") == nil, "text that is not a period restores nothing")
+        let month = HistoryPeriod.currentMonth(now: date(9, 17, 13), calendar: calendar)
+        require(month == .custom(from: date(9, 1), through: date(9, 17, 13)), "the current month runs from the 1st through today")
+        require(historyInterval(month, now: date(9, 17, 13), calendar: calendar) == DateInterval(start: date(9, 1), end: date(9, 18)),
+                "the 1st and today are both inside")
+        require(HistoryPeriod.currentMonth(now: date(9, 1), calendar: calendar) == .custom(from: date(9, 1), through: date(9, 1)), "on the 1st it is one day")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -2502,6 +2523,7 @@ struct FinanceEngineTests {
         testReportEngine()
         testReportAccountScope()
         testBudgets()
+        testHistoryPeriodStorage()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

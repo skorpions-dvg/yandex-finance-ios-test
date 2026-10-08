@@ -17,7 +17,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published private(set) var statementPreview: StatementImportPreview?
     private var statementPreviewBase: Data?
     @Published var host = "bank.yandex.ru"
-    @Published var history = SavedHistory()
+    @Published var history = SavedHistory() { didSet { historyRevision &+= 1 } }
+    /// Counts every replacement of `history`; `updateUserDataAfterClosing` uses it to see whether anything else changed it.
+    private var historyRevision = 0
     @Published private(set) var storageError: String?
     @Published private(set) var storageRetryFailed = false
     private let vault = Vault()
@@ -548,6 +550,28 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             message = "Не удалось сохранить: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Like `updateUserData`, but the screens see the change a moment later. The file is written at once, so a failure is
+    /// reported at once; the redraw of the whole app waits until the sheet that asked for the change has finished closing.
+    @discardableResult
+    func updateUserDataAfterClosing(_ change: @escaping (inout SavedHistory) -> Void) -> Bool {
+        guard readable else { message = "Хранилище недоступно, изменения не сохранены."; return false }
+        var next = history
+        change(&next)
+        do {
+            try vault.save(next)
+        } catch {
+            message = "Не удалось сохранить: \(error.localizedDescription)"
+            return false
+        }
+        let revision = historyRevision
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self else { return }
+            if self.historyRevision == revision { self.history = next } else { _ = self.updateUserData(change) }
+        }
+        return true
     }
 
     func backupData() throws -> Data { try HistoryBackup.encode(history) }

@@ -15,7 +15,6 @@ final class FinancePresentationCache {
            old.incomeCategoryRules == history.incomeCategoryRules,
            old.incomeCategoryOverrides == history.incomeCategoryOverrides,
            old.operationNatures == history.operationNatures,
-           old.budgets == history.budgets,
            old.operationLooks == history.operationLooks,
            old.payeeLookRules == history.payeeLookRules,
            old.accounts == history.accounts,
@@ -51,7 +50,9 @@ final class FinancePresentationCache {
 
     /// The budgets of the month with what is spent against each (all accounts, as the reports count).
     func budgetStatuses(_ history: SavedHistory, month: Date) -> [BudgetStatus] {
-        value("budgets:\(BudgetEngine.monthKey(month))") {
+        // The limits are in the key, not in `prepare`: changing a limit must not throw away the forecast and the reports.
+        let limits = (history.budgets ?? []).map { "\($0.group ?? "-")|\($0.month ?? "*")|\($0.limitKopecks)" }.joined(separator: ";")
+        return value("budgets:\(BudgetEngine.monthKey(month)):\(limits)") {
             BudgetEngine.statuses(inputs: inputs(history), budgets: history.budgets ?? [], month: month, taxonomy: history.expenseTaxonomy)
         }
     }
