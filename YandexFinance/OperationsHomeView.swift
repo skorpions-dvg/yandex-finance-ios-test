@@ -16,6 +16,8 @@ struct OperationsHomeView: View {
     @State private var historyExpanded: Bool? = nil
     @State private var showForecast = false
     @State private var showBudgets = false
+    /// «Доходы» / «Расходы» tapped: the report of the chosen period.
+    @State private var periodReport: ReportMode?
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var showSearch = false
     @State private var showAdd = false
@@ -144,6 +146,9 @@ struct OperationsHomeView: View {
                 .sheet(isPresented: $showSearch) {
                     SearchOperationsView(browser: browser)
                 }
+                .sheet(item: $periodReport) { mode in
+                    PeriodReportView(browser: browser, presentation: presentation, interval: interval, mode: mode)
+                }
                 .sheet(isPresented: $showBudgets) {
                     NavigationStack {
                         BudgetsView(browser: browser, presentation: presentation)
@@ -261,6 +266,7 @@ struct OperationsHomeView: View {
     private var summary: some View {
         Section {
             HStack {
+                Button { periodReport = .income } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Image(systemName: "arrow.down.circle")
@@ -273,7 +279,11 @@ struct OperationsHomeView: View {
                         .foregroundStyle(.green)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
                 
+                Button { periodReport = .expenses } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Image(systemName: "arrow.up.circle")
@@ -286,6 +296,9 @@ struct OperationsHomeView: View {
                         .foregroundStyle(.primary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             let accounts = browser.history.accounts ?? []
             let f = presentation.forecast(browser.history)
@@ -493,16 +506,27 @@ struct OperationsHomeView: View {
                     .listRowSeparatorTint(Color.primary.opacity(0.22))
                 }
             } header: {
+                let total = dayTotal(group.operations)
                 HStack {
-                    Text(group.day.formatted(.dateTime.weekday(.wide).day().month(.wide).year()))
+                    Text(dayTitle(group.day))
                     Spacer()
-                    Text(signedRubles(dayTotal(group.operations)))
+                    Text(signedRubles(total)).foregroundStyle(total > 0 ? Color.green : Color.primary).monospacedDigit()
                 }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
                 .textCase(nil)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
         }
+    }
+
+    /// «Среда, 7 октября»; the year only for a day of another year.
+    private func dayTitle(_ day: Date) -> String {
+        let sameYear = Calendar.current.component(.year, from: day) == Calendar.current.component(.year, from: Date())
+        let text = sameYear ? day.formatted(.dateTime.weekday(.wide).day().month(.wide))
+                            : day.formatted(.dateTime.weekday(.wide).day().month(.wide).year())
+        return text.prefix(1).uppercased() + text.dropFirst()
     }
 
     private func historyOperationRow(_ operation: BankOperation) -> some View {
@@ -559,7 +583,7 @@ private struct CustomDatesSheet: View {
                     Label {
                         Text("Текущий месяц (с 1 числа)").foregroundStyle(.primary)
                     } icon: {
-                        Image(systemName: "calendar").foregroundStyle(Color.accentColor)
+                        Image(systemName: "calendar").foregroundStyle(.primary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())

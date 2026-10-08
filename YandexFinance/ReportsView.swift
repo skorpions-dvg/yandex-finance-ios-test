@@ -292,6 +292,35 @@ struct ReportsView: View {
 
 // MARK: - Structure
 
+/// «Доходы» or «Расходы» of the main screen, opened as the structure report of the period chosen there: the same ring and
+/// groups as «Отчёты → Структура», the rows lead to the operations.
+struct PeriodReportView: View {
+    @ObservedObject var browser: BankBrowser
+    let presentation: FinancePresentationCache
+    let interval: DateInterval
+    let mode: ReportMode
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("\(interval.start.formatted(.dateTime.day().month().year())) — \(interval.end.addingTimeInterval(-1).formatted(.dateTime.day().month().year()))")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }.glassRows()
+                StructureContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
+                                 grouping: .categories, showsChart: true, buckets: [], filter: .none)
+            }
+            .appSurface()
+            .navigationTitle(mode == .expenses ? "Расходы" : "Доходы")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Закрыть") { dismiss() } }
+            }
+        }
+    }
+}
+
 /// The ring and the list of groups of the shown total.
 private struct StructureContent: View {
     @ObservedObject var browser: BankBrowser

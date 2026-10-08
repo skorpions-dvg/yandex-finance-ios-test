@@ -16,13 +16,21 @@ final class FinancePresentationCache {
            old.incomeCategoryOverrides == history.incomeCategoryOverrides,
            old.operationNatures == history.operationNatures,
            old.operationLooks == history.operationLooks,
-           old.payeeLookRules == history.payeeLookRules,
-           old.accounts == history.accounts,
-           old.accountGroups == history.accountGroups {
+           old.payeeLookRules == history.payeeLookRules {
+            if old.accounts == history.accounts && old.accountGroups == history.accountGroups { return }
+            // Only the accounts or their groups changed (hiding an account, a new name, another order): what is built from
+            // them is dropped, the forecast, the reports and the review of categories stay (the forecast takes ~1 s).
+            snapshot = history
+            values = values.filter { !Self.dependsOnAccounts($0.key) }
             return
         }
         snapshot = history
         values.removeAll(keepingCapacity: true)
+    }
+
+    /// Keys of values made from the accounts: the balances of accounts, of the reserve, the pages of one account.
+    private static func dependsOnAccounts(_ key: String) -> Bool {
+        key.hasPrefix("account") || key.hasPrefix("balance") || key.hasPrefix("reserveBalance")
     }
 
     func value<T>(_ key: String, compute: () -> T) -> T {

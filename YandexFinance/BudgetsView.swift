@@ -72,7 +72,7 @@ struct BudgetsView: View {
                     ContentUnavailableView("Бюджетов пока нет", systemImage: "target",
                                            description: Text("Задайте лимит на весь месяц или на группу расходов, например «Еда»."))
                     Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
-                        Label { Text("Добавить бюджет").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(Color.accentColor) }
+                        Label { Text("Добавить бюджет").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(.primary) }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
                     }
@@ -84,7 +84,7 @@ struct BudgetsView: View {
                 } else {
                     Section {
                         Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
-                            Label { Text("Задать лимит на весь месяц").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(Color.accentColor) }
+                            Label { Text("Задать лимит на весь месяц").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(.primary) }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                         }
