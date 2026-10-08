@@ -237,7 +237,7 @@ struct AccountsView: View {
     }
 
     private func cachedBalance(_ account: Account) -> Int64 {
-        presentation.value("account:\(account.id)") { accountBalance(account, history: browser.history) }
+        presentation.accountBalance(account, history: browser.history)
     }
 
     private func total(_ accounts: [Account]) -> String {
@@ -303,7 +303,7 @@ struct AccountsView: View {
     /// Runs the saving after the tapped icon has been drawn: the tap answers at once, the balances follow.
     private func afterRedraw(_ work: @escaping @MainActor () -> Void) {
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 30_000_000)
+            try? await Task.sleep(nanoseconds: 120_000_000)
             work()
         }
     }

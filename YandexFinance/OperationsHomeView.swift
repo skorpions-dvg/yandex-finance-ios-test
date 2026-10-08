@@ -558,16 +558,14 @@ struct OperationsHomeView: View {
 
     /// The balance of the accounts the reserve counts (money put aside is not in it).
     private func reserveBalance() -> Int64 {
-        presentation.value("reserveBalance") { browser.history.reserveBalanceKopecks }
+        // From the balances of the accounts kept by the cache: the eye or the reserve setting only adds up known numbers.
+        browser.history.reserveAccounts.reduce(0) { $0 + presentation.accountBalance($1, history: browser.history) }
     }
 
     /// Accounts and groups selected for the main screen's current balance.
     private func currentBalance(_ accounts: [Account]) -> Int64 {
-        presentation.value("balance") {
-            let bankInputs = browser.history.operations.map(\.financialInput)
-            return accounts.filter { $0.contributesToBalance(groups: browser.history.accountGroups ?? []) }.reduce(0) { total, account in
-                total + account.balance(bankOperations: bankInputs, manual: browser.history.manualOperations ?? [])
-            }
+        accounts.filter { $0.contributesToBalance(groups: browser.history.accountGroups ?? []) }.reduce(0) { total, account in
+            total + presentation.accountBalance(account, history: browser.history)
         }
     }
 

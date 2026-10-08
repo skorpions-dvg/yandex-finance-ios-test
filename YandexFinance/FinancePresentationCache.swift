@@ -44,6 +44,18 @@ final class FinancePresentationCache {
         value("inputs") { history.financialInputs }
     }
 
+    /// The bank rows as inputs, for the balances of the accounts.
+    func bankInputs(_ history: SavedHistory) -> [FinancialOperationInput] {
+        value("bankInputs") { history.operations.map(\.financialInput) }
+    }
+
+    /// The balance of one account. The key holds only what the balance depends on (not whether the account is shown, its name or
+    /// order), and it is not dropped when only the accounts change: hiding an account with the eye only adds up known numbers.
+    func accountBalance(_ account: Account, history: SavedHistory) -> Int64 {
+        let key = "acctbal:\(account.id):\(account.startBalanceKopecks):\(account.startDate.timeIntervalSince1970):\(account.tracksBankCard):\(account.tracksSave ?? false)"
+        return value(key) { account.balance(bankOperations: bankInputs(history), manual: history.manualOperations ?? []) }
+    }
+
     /// The inputs of the chosen accounts; every input under «all accounts».
     func inputs(_ history: SavedHistory, scope: ReportAccountScope) -> [FinancialOperationInput] {
         guard !scope.isAll else { return inputs(history) }
