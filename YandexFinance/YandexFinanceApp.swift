@@ -121,6 +121,13 @@ struct ContentView: View {
                         let tab = Int(value.rounded())
                         if tabSelection.active != tab { tabSelection.active = tab }
                     }
+                    // The pager must come to rest exactly on a page. If a quick tap left it between two pages, put it on
+                    // the nearest one (the tab bar and the page then agree again).
+                    .onScrollPhaseChange { _, phase in
+                        guard phase == .idle, page != 0 else { return }
+                        let position = tabProgress.value
+                        if abs(position - position.rounded()) > 0.002 { proxy.scrollTo(Int(position.rounded()), anchor: .leading) }
+                    }
                     // The first layout starts at the leading edge (the accounts); open on the selected tab instead.
                     .onAppear { proxy.scrollTo(selectedTab, anchor: .leading) }
                     }

@@ -73,7 +73,10 @@ struct BudgetsView: View {
                                            description: Text("Задайте лимит на весь месяц или на группу расходов, например «Еда»."))
                     Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
                         Label { Text("Добавить бюджет").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(Color.accentColor) }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }.glassRows()
             } else {
                 if let total = statuses.first(where: { $0.group == nil }) {
@@ -82,7 +85,10 @@ struct BudgetsView: View {
                     Section {
                         Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
                             Label { Text("Задать лимит на весь месяц").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(Color.accentColor) }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }.glassRows()
                 }
                 let groups = statuses.filter { $0.group != nil }

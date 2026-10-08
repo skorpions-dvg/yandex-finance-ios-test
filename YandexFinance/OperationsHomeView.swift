@@ -561,7 +561,11 @@ private struct CustomDatesSheet: View {
                     } icon: {
                         Image(systemName: "calendar").foregroundStyle(Color.accentColor)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
+                // A plain button keeps the colours of its label: the standard style paints the whole row blue.
+                .buttonStyle(.plain)
                 DatePicker("С", selection: $from, displayedComponents: .date)
                 DatePicker("По", selection: $through, displayedComponents: .date)
             }
