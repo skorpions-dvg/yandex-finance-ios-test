@@ -13,7 +13,8 @@
 6. Сборка и IPA:
    - `powershell -NoProfile -ExecutionPolicy Bypass -File .local\ci.ps1 -Action run -Branch stage-NN` — запускает GitHub Actions и ждёт результат (5–15 минут, очередь macOS бывает долгой; «job was not acquired by Runner» — сбой GitHub, просто запустить ещё раз);
    - при ошибке там же будут последние строки лога — исправь и повтори;
-   - при успехе: `... ci.ps1 -Action ipa -RunId <id>` скачивает `FinanceTest-<версия>.ipa` и сам кладёт его в **iCloud Drive → «Finance Test»** (iCloud для Windows синхронизирует папку в «Файлы» на iPhone; там всегда только последняя сборка). Ссылки на файлы Windows не давай — напиши: «IPA <версия> в iCloud Drive → Finance Test». Если скрипт пишет, что iCloud Drive не запущен, скажи об этом пользователю.
+   - **IPA в iCloud Drive → «Finance Test» всегда кладёт Claude (последняя сборка ведущего). Твои сборки (GPT) туда не кладём: скачивай с ключом `-NoICloud` (`ci.ps1 -Action ipa -RunId <id> -NoICloud`), файл остаётся в `%TEMP%\finance-ipa`; пользователю напиши версию и путь. Так владелец всегда видит в iCloud сборку Claude и не путает версии.**
+   - (для Claude) при успехе: `... ci.ps1 -Action ipa -RunId <id>` скачивает `FinanceTest-<версия>.ipa` и сам кладёт его в **iCloud Drive → «Finance Test»** (iCloud для Windows синхронизирует папку в «Файлы» на iPhone; там всегда только последняя сборка). Ссылки на файлы Windows не давай — напиши: «IPA <версия> в iCloud Drive → Finance Test». Если скрипт пишет, что iCloud Drive не запущен, скажи об этом пользователю.
 7. Не утверждай, что что-то собралось или тесты прошли, если ты этого не запускал. Показывай реальный вывод команд.
 8. Как только сборка зелёная и IPA в iCloud — **сразу** сообщи пользователю одной строкой: «IPA <версия> в iCloud Drive → Finance Test, проверить: …». Не копи несколько версий молча.
 
