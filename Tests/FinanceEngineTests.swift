@@ -591,6 +591,85 @@ struct FinanceEngineTests {
         require(ReceiptParser.parseText(["Магазин Тест", "ИТОГ 10.00"], now: now, calendar: calendar).date == nil, "no date, none invented")
     }
 
+    /// Goods with prices, goods lines of the editor, the time of a receipt, the data kept with an operation (46.15).
+    static func testReceiptGoods() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 20, minute: 0))!
+        let table = ["ЦЕНА ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ", "ТОВАР ОДИН шарик:10", "36.99 29.99 1ШТ. 29.99", "ТОВАР ДВА большой", "279.99 279.99 2ШТ. 559.98",
+                     "Хлеб белый 45.50", "Карта № ****-0000", "ИТОГ 635.47"]
+        let goods = ReceiptParser.itemEntries(in: table)
+        require(goods == [ReceiptGood(name: "ТОВАР ОДИН шарик", kopecks: 2_999), ReceiptGood(name: "ТОВАР ДВА большой", kopecks: 55_998),
+                          ReceiptGood(name: "Хлеб белый", kopecks: 4_550)],
+                "the final price of a line is the last sum: on the line of the good or on the line of figures after it")
+        require(ReceiptParser.itemEntries(in: ["Молоко 2 x 65.00 130.00", "ИТОГО 130.00"]) == [ReceiptGood(name: "Молоко", kopecks: 13_000)], "the sum of the line, not the unit price")
+        require(ReceiptParser.itemEntries(in: ["ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ", "ТОВАР без цены", "ИТОГ 1.00"]) == [ReceiptGood(name: "ТОВАР без цены", kopecks: nil)],
+                "a good whose price was not read has none")
+        // misread capitals inside words
+        require(ReceiptParser.tidied("СаХЕРИЗЯ КОлбасКА хВа RITTER SPORT 16г(Россия) Сахарная") == "Сахеризя Колбаска Хва RITTER SPORT 16г(Россия) Сахарная",
+                "capitals among small letters become one capital; words in capitals and numbers are kept")
+        // the editor lines
+        require(ReceiptGood(name: "Молоко", kopecks: 6_500).line == "Молоко — 65,00 ₽" && ReceiptGood(name: "Хлеб", kopecks: 5).line == "Хлеб — 0,05 ₽"
+                && ReceiptGood(name: "Соль").line == "Соль", "the line of a good")
+        require(ReceiptGood(line: "Молоко — 65,00 ₽") == ReceiptGood(name: "Молоко", kopecks: 6_500), "the line is read back")
+        require(ReceiptGood(line: "Молоко - особое — 1 299.5") == ReceiptGood(name: "Молоко - особое", kopecks: 129_950), "the last « — » separates the price")
+        require(ReceiptGood(line: "Просто название") == ReceiptGood(name: "Просто название"), "a line without a price is a name")
+        require(ReceiptGood(line: "Товар — много") == ReceiptGood(name: "Товар — много"), "a tail that is not a price stays in the name")
+        require(ReceiptGood.kopecks("65") == 6_500 && ReceiptGood.kopecks("65,5") == 6_550 && ReceiptGood.kopecks("65,555") == nil && ReceiptGood.kopecks("") == nil
+                && ReceiptGood.kopecks("-5") == nil && ReceiptGood.kopecks("1 2 3") == 12_300, "prices of the editor")
+        // the time of a receipt
+        let day = ["Магазин Тест", "08.10.32", "ИТОГ 10.00"]
+        let noTime = ReceiptParser.parseText(day, now: now, calendar: calendar)
+        require(noTime.date != nil && noTime.dateHasTime == false, "a date without a time says so")
+        require(ReceiptParser.parseText(["Магазин Тест", "08.10.32 09:05", "ИТОГ 10.00"], now: now, calendar: calendar).dateHasTime, "a date with a time")
+        require(ReceiptParser.parseText(["Магазин Тест", "ИТОГ 10.00"], now: now, calendar: calendar).dateHasTime, "no date at all is not a missing time")
+        let qr = ParsedReceipt(totalKopecks: 100, date: calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 9, minute: 5)), merchant: nil)
+        require(ReceiptParser.merge(qr: qr, text: noTime).dateHasTime, "the time of the QR code is exact")
+        // what is kept with an operation
+        var history = SavedHistory()
+        history.setReceiptGoods([ReceiptGood(name: "Хлеб", kopecks: 4_500)], forIdentity: "manual:1")
+        history.setReceiptScan(ReceiptScan(scannedAt: now, readLines: ["ИТОГ 45.00"], totalKopecks: 4_500, date: nil, merchant: nil,
+                                           goods: [], dateHasTime: true), forIdentity: "manual:1")
+        history.addReceipt("receipt-00000000-0000-0000-0000-000000000001.jpg", toIdentity: "manual:1")
+        require(history.receiptGoods(forIdentity: "manual:1").count == 1 && history.receiptScans?.count == 1, "goods and the reading are kept")
+        history.setReceiptGoods([], forIdentity: "manual:1")
+        require(history.receiptGoods == nil, "no goods, no field")
+        history.setReceiptGoods([ReceiptGood(name: "Хлеб")], forIdentity: "manual:1")
+        _ = history.removeReceipts(forIdentity: "manual:1")
+        require(history.receiptGoods == nil && history.receiptScans == nil && history.receipts == nil, "everything of a receipt goes with it")
+        let decoded = try? JSONDecoder().decode(SavedHistory.self, from: try! JSONEncoder().encode(SavedHistory()))
+        require(decoded?.receiptGoods == nil && decoded?.receiptScans == nil && decoded?.collectedReceiptIdentities == nil, "old data opens")
+    }
+
+    /// The report of a receipt for the check of the reading (46.15).
+    static func testReceiptCheckReport() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let saved = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 18, minute: 37))!
+        let goods = [ReceiptGood(name: "Хлеб", kopecks: 4_500)]
+        var read = ParsedReceipt(totalKopecks: 4_500, date: saved, merchant: "Тест", goods: goods, readLines: ["ИТОГ 45.00"])
+        var verdict = ReceiptCheckReport.verdict(read: read, amountKopecks: -4_500, date: saved, goods: goods, calendar: calendar)
+        require(verdict.totalMatches && verdict.dateMatches && verdict.goods.hasPrefix("не менялись"), "everything read right")
+        read.totalKopecks = 5_000
+        read.date = saved.addingTimeInterval(600)
+        read.goods = [ReceiptGood(name: "Хлеб", kopecks: 4_400)]
+        verdict = ReceiptCheckReport.verdict(read: read, amountKopecks: 4_500, date: saved, goods: goods, calendar: calendar)
+        require(!verdict.totalMatches && verdict.total.contains("НЕ совпала") && !verdict.dateMatches && verdict.goods.hasPrefix("исправлены"), "a wrong reading is told")
+        read.dateHasTime = false
+        read.date = saved.addingTimeInterval(3600)
+        require(ReceiptCheckReport.verdict(read: read, amountKopecks: 4_500, date: saved, goods: goods, calendar: calendar).date.hasPrefix("день совпал"), "a date without a time is judged by the day")
+        let nothing = ParsedReceipt()
+        verdict = ReceiptCheckReport.verdict(read: nothing, amountKopecks: 4_500, date: saved, goods: [], calendar: calendar)
+        require(verdict.total == "не прочитана" && verdict.date == "не прочитана" && verdict.goods == "товаров нет", "nothing read")
+        require(ReceiptCheckReport.verdict(read: nothing, amountKopecks: 4_500, date: saved, goods: goods, calendar: calendar).goods.hasPrefix("не найдены телефоном"),
+                "goods typed by the owner")
+        let text = ReceiptCheckReport.text(number: 3, read: ParsedReceipt(totalKopecks: 4_500, date: saved, merchant: "Тест", goods: goods, readLines: ["ИТОГ 45.00", "Хлеб 45.00"]),
+                                           source: "прочитано при добавлении", title: "Магазин Тест", category: "Еда/Супермаркеты", amountKopecks: -4_500,
+                                           date: saved, goods: goods, calendar: calendar)
+        require(text.contains("Чек № 3") && text.contains("Сумма: 45,00 ₽") && text.contains("08.10.2032 18:37") && text.contains("  Хлеб — 45,00 ₽")
+                && text.contains("ИТОГ 45.00") && text.contains("Еда/Супермаркеты"), "the text holds the saved values, the extracted ones and the raw text")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3142,6 +3221,8 @@ struct FinanceEngineTests {
         testSaveAccountAndOtherSides()
         testReceiptItems()
         testReceiptNoise()
+        testReceiptGoods()
+        testReceiptCheckReport()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

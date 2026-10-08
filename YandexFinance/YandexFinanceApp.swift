@@ -472,6 +472,7 @@ struct OperationDetailView: View {
                 Text("Своё название и иконка").font(.caption2)
             }
             ReceiptSection(browser: browser, identity: operation.identity)
+            ReceiptGoodsSection(browser: browser, identity: operation.identity)
             if let components = operation.components {
                 Section("Составляющие") {
                     ForEach(Array(components.enumerated()), id: \.offset) { _, component in
@@ -654,6 +655,8 @@ struct SettingsView: View {
     @State private var exportedType: UTType = .json
     @State private var exportedName = ""
     @State private var exportedNotice: String?
+    /// Operations whose receipts are in the collection that is being saved; they are marked as collected once it is saved.
+    @State private var pendingCollected: [String] = []
     @State private var showReceiptsImporter = false
     @State private var showBackupImporter = false
     @State private var showCategoryImporter = false
@@ -687,6 +690,22 @@ struct SettingsView: View {
         exportedNotice = ReceiptLogic.exportMessage(saved: archive.count, skipped: archive.skipped)
         exportedBackup = BackupDocument(data: archive.data)
     }
+    /// «Собрать чеки для проверки»: the photos with the text read from them, for the check of the reading.
+    private func collectReceiptChecks() {
+        let history = browser.history
+        Task {
+            guard let collection = await ReceiptDiagnostics.collect(history: history) else {
+                browser.message = "Новых чеков для проверки нет."
+                return
+            }
+            pendingCollected = collection.identities
+            exportedType = .zip
+            exportedName = "FinanceTest-checks-\(Date().formatted(.iso8601.year().month().day()))"
+            exportedNotice = "Собрано чеков: \(collection.count). Пришлите файл и напишите «проверь диагностику чека»."
+            exportedBackup = BackupDocument(data: collection.data)
+        }
+    }
+
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let pendingCount = presentation.value("pending:\(Calendar.current.startOfDay(for: Date()))") { browser.stalePendingCount }
@@ -782,6 +801,7 @@ struct SettingsView: View {
                 Section {
                     NavigationLink {
                         DataAndCopiesView(browser: browser, exportBackup: exportBackupJSON, exportReceipts: exportReceiptsZIP,
+                                          collectReceipts: collectReceiptChecks,
                                           restoreBackup: { showBackupImporter = true }, restoreReceipts: { showReceiptsImporter = true },
                                           importStatements: { browser.syncSixMonthsHistory() }, importCategories: { showCategoryImporter = true })
                     } label: {
@@ -836,8 +856,16 @@ struct SettingsView: View {
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
                       document: exportedBackup, contentType: exportedType,
                       defaultFilename: exportedName) { result in
+            let collected = pendingCollected
+            pendingCollected = []
             switch result {
-            case .success: browser.message = exportedNotice ?? "Резервная копия сохранена."
+            case .success:
+                browser.message = exportedNotice ?? "Резервная копия сохранена."
+                if !collected.isEmpty {
+                    _ = browser.updateUserData { history in
+                        history.collectedReceiptIdentities = Array(Set(history.collectedReceiptIdentities ?? []).union(collected)).sorted()
+                    }
+                }
             case .failure: browser.message = "Не удалось сохранить файл копии."
             }
             exportedNotice = nil

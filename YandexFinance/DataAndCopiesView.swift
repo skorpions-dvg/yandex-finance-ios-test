@@ -3,18 +3,12 @@ import UIKit
 
 /// «Настройки → Данные и копии»: the copies of the history and of the receipt photos, and the imports. The exporters
 /// and importers themselves stay in Settings (they need its state); this screen only starts them and shows what came of it.
-/// The text of the last receipt the phone read, kept in memory only: it can be copied from the settings to see how a bad
-/// reading went wrong.
-@MainActor
-enum ReceiptDebug {
-    static var lastText = ""
-}
-
 @MainActor
 struct DataAndCopiesView: View {
     @ObservedObject var browser: BankBrowser
     let exportBackup: () -> Void
     let exportReceipts: () -> Void
+    let collectReceipts: () -> Void
     let restoreBackup: () -> Void
     let restoreReceipts: () -> Void
     let importStatements: () -> Void
@@ -49,12 +43,12 @@ struct DataAndCopiesView: View {
                                  : "ZIP сохраняйте рядом с JSON: iCloud Drive → Finance Test.")
             }.glassRows()
             Section {
-                Button("Скопировать текст последнего чека") { UIPasteboard.general.string = ReceiptDebug.lastText }
-                    .disabled(ReceiptDebug.lastText.isEmpty)
+                Button("Собрать чеки для проверки") { run(collectReceipts) }
+                    .disabled(photos == 0 || browser.busy)
             } header: {
-                Text("Диагностика")
+                Text("Улучшение чтения чеков")
             } footer: {
-                Text("Текст, который телефон прочитал с последнего сфотографированного чека (до закрытия приложения). Нужен, чтобы разобраться, если чек прочитался плохо.")
+                Text("Один файл (ZIP) с фото чеков, текстом, который прочитал телефон, и тем, что сохранено в операциях. В файле только чеки, которых ещё не было в прошлых сборах. Пришлите его и напишите «проверь диагностику чека»: по нему чтение станет точнее.")
             }.glassRows()
             Section {
                 Button("Импортировать PDF-выписки") { run(importStatements) }

@@ -126,6 +126,14 @@ struct SavedHistory: Codable {
     var operationNatures: [String: String]?
     /// Spending limits of the month (stage 46); nil until the first one is set.
     var budgets: [Budget]?
+    /// The goods of a receipt, per operation (identity): name and the final price of the line. Not the comment: the comment
+    /// stays the owner's own words.
+    var receiptGoods: [String: [ReceiptGood]]?
+    /// What the phone read from the receipt when the operation was added (the raw text and what the reading made of it): the
+    /// material for improving the reading.
+    var receiptScans: [String: ReceiptScan]?
+    /// Operations whose receipts were already put into a collection for the check of the reading.
+    var collectedReceiptIdentities: [String]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -996,11 +1004,79 @@ extension SavedHistory {
     /// Forgets all photos of an operation (it was deleted) and returns their file names so the files can be removed.
     @discardableResult
     mutating func removeReceipts(forIdentity identity: String) -> [String] {
+        setReceiptGoods([], forIdentity: identity)
+        setReceiptScan(nil, forIdentity: identity)
         guard var all = receipts, let files = all[identity] else { return [] }
         all[identity] = nil
         receipts = all.isEmpty ? nil : all
         return files
     }
+
+    func receiptGoods(forIdentity identity: String) -> [ReceiptGood] { receiptGoods?[identity] ?? [] }
+
+    mutating func setReceiptGoods(_ goods: [ReceiptGood], forIdentity identity: String) {
+        var all = receiptGoods ?? [:]
+        all[identity] = goods.isEmpty ? nil : goods
+        receiptGoods = all.isEmpty ? nil : all
+    }
+
+    mutating func setReceiptScan(_ scan: ReceiptScan?, forIdentity identity: String) {
+        var all = receiptScans ?? [:]
+        all[identity] = scan
+        receiptScans = all.isEmpty ? nil : all
+    }
+}
+
+/// A good of a receipt: its name and the final price of its line (after the discount of the line), if it was read.
+struct ReceiptGood: Codable, Equatable {
+    var name: String
+    var kopecks: Int64?
+
+    init(name: String, kopecks: Int64? = nil) {
+        self.name = name
+        self.kopecks = kopecks
+    }
+
+    /// «Молоко — 65,00 ₽» as the owner sees and edits it.
+    var line: String { kopecks.map { name + " — " + Self.rubles($0) } ?? name }
+
+    static func rubles(_ kopecks: Int64) -> String {
+        let cents = Int(kopecks % 100)
+        return "\(kopecks / 100),\(cents < 10 ? "0" : "")\(cents) ₽"
+    }
+
+    /// A line of the editor: the name, and after « — » the price. A line without a readable price is a name only.
+    init(line raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = text.range(of: " — ", options: .backwards),
+           let price = Self.kopecks(String(text[range.upperBound...])) {
+            self.init(name: String(text[..<range.lowerBound]).trimmingCharacters(in: .whitespaces), kopecks: price)
+        } else {
+            self.init(name: text, kopecks: nil)
+        }
+    }
+
+    /// «65,00 ₽», «1 299.50», «65» → kopecks.
+    static func kopecks(_ text: String) -> Int64? {
+        let clean = text.replacingOccurrences(of: "₽", with: "").filter { !$0.isWhitespace }.replacingOccurrences(of: ",", with: ".")
+        let parts = clean.split(separator: ".", omittingEmptySubsequences: false)
+        guard !clean.isEmpty, parts.count <= 2, parts[0].count <= 9, parts.allSatisfy({ $0.allSatisfy(\.isNumber) }), !parts[0].isEmpty,
+              parts.count == 1 || (1...2).contains(parts[1].count), let rubles = Int64(parts[0]) else { return nil }
+        let cents = parts.count == 2 ? (Int64(parts[1]) ?? 0) * (parts[1].count == 1 ? 10 : 1) : 0
+        return rubles * 100 + cents
+    }
+}
+
+/// What the phone read from a receipt when it was added.
+struct ReceiptScan: Codable, Equatable {
+    var scannedAt: Date
+    var readLines: [String]
+    var totalKopecks: Int64?
+    var date: Date?
+    var merchant: String?
+    var goods: [ReceiptGood]
+    /// False when the date was read but not the time.
+    var dateHasTime: Bool
 }
 
 /// Receipt photos are files in the app's own folder; these rules are the only place that decides how they look.

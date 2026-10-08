@@ -12,11 +12,16 @@ struct SearchOperationsView: View {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }
         return zip(browser.history.allOperations, browser.history.financialInputs)
-            .filter { FinancialEngine.operationMatches($0.1, query: text) || matchesLook($0.0, text) }
+            .filter { FinancialEngine.operationMatches($0.1, query: text) || matchesLook($0.0, text) || matchesGoods($0.0, text) }
             .map { $0.0 }
             .map { ($0, BankDateParser.parse($0.occurredAt) ?? .distantPast) }
             .sorted { $0.1 > $1.1 }
             .map(\.0)
+    }
+
+    /// A good of the receipt of the operation contains the query.
+    private func matchesGoods(_ operation: BankOperation, _ text: String) -> Bool {
+        browser.history.receiptGoods(forIdentity: operation.identity).contains { $0.name.localizedCaseInsensitiveContains(text) }
     }
 
     /// The user's own title or comment contains the query.

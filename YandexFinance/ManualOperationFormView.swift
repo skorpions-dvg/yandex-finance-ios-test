@@ -28,6 +28,8 @@ struct ManualOperationFormView: View {
     /// The reading found neither a sum nor a date: the owner is told so in red.
     @State private var recognitionFailed = false
     @State private var itemsExpanded = false
+    /// What the phone read from the receipt of this form: kept with the operation when it is saved.
+    @State private var lastScan: ReceiptScan?
     /// The date the form had when a receipt was read without a date on it: while it stays, the owner has not given the date
     /// of the receipt and the operation cannot be saved.
     @State private var dateConfirmBase: Date?
@@ -113,7 +115,7 @@ struct ManualOperationFormView: View {
                                                 .scrollContentBackground(.hidden)
                                                 .padding(6)
                                                 .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 10))
-                                            Text("Одно название на строку; исправьте или удалите лишнее. Сохраняются в комментарии к операции.")
+                                                                                        Text("Одно название на строку, цена после « — »; исправьте или удалите лишнее. Товары сохраняются в операции, в блоке «Товары» под чеком.")
                                                 .font(.caption2).foregroundStyle(.secondary)
                                         }
                                     } label: {
@@ -126,6 +128,7 @@ struct ManualOperationFormView: View {
                     fields
                     if operation != nil {
                         ReceiptSection(browser: browser, identity: ManualOperation.identityPrefix + operationID.uuidString)
+                        ReceiptGoodsSection(browser: browser, identity: ManualOperation.identityPrefix + operationID.uuidString)
                     }
                 }
                 if operation != nil {
@@ -264,9 +267,9 @@ struct ManualOperationFormView: View {
                         .foregroundStyle(dateIsPending ? Color.red : Color.accentColor)
                 }
                 if dateIsPending {
-                    Text("Дату и время чека не удалось прочитать: укажите их. Пока дата не указана, сохранить нельзя.")
+                    Text("Дату или время чека не удалось прочитать: укажите их. Пока они не указаны, сохранить нельзя.")
                         .font(.footnote).foregroundStyle(.red)
-                    Button("Сегодняшняя дата верна") { dateConfirmBase = nil }
+                    Button("Дата и время верны") { dateConfirmBase = nil }
                         .font(.footnote)
                 }
                 TextField("Комментарий", text: $note).focused($fieldFocused)
@@ -336,6 +339,8 @@ struct ManualOperationFormView: View {
 
     /// `dateAtStart`: the date of the form when the reading began; a date the user changed meanwhile is not overwritten.
     private func apply(_ parsed: ParsedReceipt, dateAtStart: Date) {
+        lastScan = ReceiptScan(scannedAt: Date(), readLines: parsed.readLines, totalKopecks: parsed.totalKopecks, date: parsed.date,
+                               merchant: parsed.merchant, goods: parsed.goods, dateHasTime: parsed.dateHasTime)
         // Neither a sum nor a date: nothing useful was read, and the owner is told so instead of getting a guessed form.
         if parsed.totalKopecks == nil && parsed.date == nil {
             recognitionFailed = true
@@ -345,8 +350,7 @@ struct ManualOperationFormView: View {
         }
         recognitionFailed = false
         dateConfirmBase = nil
-        ReceiptDebug.lastText = parsed.readLines.joined(separator: "\n")
-        if !parsed.items.isEmpty { itemsText = parsed.items.joined(separator: "\n") }
+        if !parsed.goods.isEmpty { itemsText = parsed.goods.map(\.line).joined(separator: "\n") }
         var filled: [String] = []
         if kind == .expense {
             if let total = parsed.totalKopecks, amountText.filter({ !$0.isWhitespace }).isEmpty {
@@ -362,7 +366,7 @@ struct ManualOperationFormView: View {
             // The category: by the shop (the rule of the owner, the latest purchase there, the words of its name) and, if
             // that tells nothing, by the words of the goods.
             if group == nil, let guess = browser.history.suggestedExpenseCategory(forMerchant: parsed.merchant ?? "",
-                                                                                  text: parsed.items.joined(separator: " ")) {
+                                                                                  text: parsed.goods.map(\.name).joined(separator: " ")) {
                 group = guess.group
                 subcategory = guess.subcategory
                 filled.append("категория")
@@ -375,12 +379,15 @@ struct ManualOperationFormView: View {
         if let when = parsed.date, when <= Date(), date == dateAtStart {
             date = when
             filled.append("дата")
+            if !parsed.dateHasTime { dateConfirmBase = date }
         } else if parsed.date == nil, date == dateAtStart {
             // The date of the receipt was not read: the form keeps today's date, but it is not accepted until it is set.
             dateConfirmBase = date
         }
         var message = filled.isEmpty ? "Ничего нового не нашлось." : "Заполнено: " + filled.joined(separator: ", ") + ". Проверьте и сохраните."
         if parsed.totalKopecks == nil { message += " Сумму не удалось прочитать: введите её вручную." }
+        if parsed.date == nil { message += " Дату чека не удалось прочитать: укажите её." }
+        else if !parsed.dateHasTime { message += " Время чека не прочиталось: укажите его." }
         recognition = message
     }
 
@@ -398,7 +405,9 @@ struct ManualOperationFormView: View {
                                     group: kind == .expense ? group : nil,
                                     subcategory: kind == .transfer ? nil : subcategory, note: note)
         let photos = pendingReceipts
-        let goods = itemsText.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let goods = itemsText.split(separator: "\n").map { ReceiptGood(line: String($0)) }.filter { !$0.name.isEmpty }
+        let scan = lastScan
+        let isNew = operation == nil
         let identity = ManualOperation.identityPrefix + operationToSave.id.uuidString
         let success = browser.updateUserData { history in
             var operations = history.manualOperations ?? []
@@ -406,7 +415,11 @@ struct ManualOperationFormView: View {
             else { operations.append(operationToSave) }
             history.manualOperations = operations
             for name in photos { history.addReceipt(name, toIdentity: identity) }
-            if !goods.isEmpty { history.setNote("Товары: " + goods.joined(separator: ", "), for: operationToSave.bankOperation) }
+            // Only a new operation takes its goods from this form; for an existing one they are edited under the receipt.
+            if isNew {
+                history.setReceiptGoods(goods, forIdentity: identity)
+                if let scan, !photos.isEmpty { history.setReceiptScan(scan, forIdentity: identity) }
+            }
         }
         if success {
             pendingReceipts = []

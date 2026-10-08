@@ -146,7 +146,7 @@ struct ReceiptSection: View {
     var body: some View {
         let files = self.files
         Section {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 // The whole row is the button, and the choices come out of the dots: the popover is fastened to them, and the
                 // title of the row is not part of it (a menu on the whole row cut the title off while it closed).
                 Button { showSources = true } label: {
@@ -154,10 +154,10 @@ struct ReceiptSection: View {
                         Label("Добавить чек", systemImage: "doc.badge.plus")
                         Spacer()
                         Image(systemName: "ellipsis").foregroundStyle(.secondary)
-                            .frame(width: 44, height: 44)
+                            .frame(width: 44, height: 30)
                             .popover(isPresented: $showSources, arrowEdge: .top) { sourceChoices }
                     }
-                    .frame(minHeight: 44)
+                    .frame(minHeight: 30)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -173,7 +173,8 @@ struct ReceiptSection: View {
                     }
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 0)
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
             .fullScreenCover(item: $screen) { screen in
                 switch screen {
                 case .scanner:
@@ -340,6 +341,69 @@ private struct ReceiptViewer: View {
                     dismiss()
                 }
                 Button("Отмена", role: .cancel) { }
+            }
+        }
+    }
+}
+
+
+/// The goods of a receipt under its photos: the names with the final price of each line; the owner can correct them.
+struct ReceiptGoodsSection: View {
+    @ObservedObject var browser: BankBrowser
+    let identity: String
+    @State private var editing = false
+    @State private var text = ""
+
+    var body: some View {
+        let goods = browser.history.receiptGoods(forIdentity: identity)
+        if !goods.isEmpty {
+            Section("Товары") {
+                ForEach(Array(goods.enumerated()), id: \.offset) { _, good in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(good.name).font(.subheadline).lineLimit(3)
+                        Spacer(minLength: 8)
+                        if let kopecks = good.kopecks { Text(ReceiptGood.rubles(kopecks)).font(.subheadline).monospacedDigit().foregroundStyle(.secondary) }
+                    }
+                }
+                let priced = goods.compactMap(\.kopecks)
+                if !priced.isEmpty {
+                    HStack {
+                        Text("Сумма товаров").font(.footnote)
+                        Spacer()
+                        Text(ReceiptGood.rubles(priced.reduce(0, +))).font(.footnote).monospacedDigit()
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                Button("Править список") {
+                    text = goods.map(\.line).joined(separator: "\n")
+                    editing = true
+                }
+                .font(.footnote)
+            }
+            .glassRows()
+            .sheet(isPresented: $editing) {
+                NavigationStack {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextEditor(text: $text)
+                            .padding(8)
+                            .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 12))
+                        Text("Одно название на строку, цена после « — ». Пустой список удаляет товары.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .padding(16)
+                    .navigationTitle("Товары")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) { Button("Отмена") { editing = false } }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Сохранить") {
+                                let edited = text.split(separator: "\n").map { ReceiptGood(line: String($0)) }.filter { !$0.name.isEmpty }
+                                if browser.updateUserData({ $0.setReceiptGoods(edited, forIdentity: identity) }) { editing = false }
+                            }
+                        }
+                    }
+                }
+                .presentationDetents([.medium, .large])
             }
         }
     }

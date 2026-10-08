@@ -5,10 +5,12 @@ struct ParsedReceipt: Equatable {
     var totalKopecks: Int64?
     var date: Date?
     var merchant: String?
-    /// The goods of the receipt, one name each (without prices): the owner corrects them in the form.
-    var items: [String] = []
-    /// The rows the phone read, top to bottom (kept in memory for the diagnostic copy in the settings, never shown in the form).
+    /// The goods of the receipt with the final price of each line: the owner corrects them in the form.
+    var goods: [ReceiptGood] = []
+    /// The rows the phone read, top to bottom: kept with the operation for the check of the reading, never shown in the form.
     var readLines: [String] = []
+    /// False when a date was read but no time with it (then the date is a guess for the time of day).
+    var dateHasTime = true
 
     var isEmpty: Bool { totalKopecks == nil && date == nil && merchant == nil }
 }
@@ -78,13 +80,15 @@ enum ReceiptParser {
 
     /// The lines of a receipt from top to bottom, as they were read.
     static func parseText(_ lines: [String], now: Date = Date(), calendar: Calendar = .current) -> ParsedReceipt {
-        ParsedReceipt(totalKopecks: total(in: lines), date: date(in: lines, now: now, calendar: calendar), merchant: merchant(in: lines),
-                      items: items(in: lines))
+        let found = dateAndTime(in: lines, now: now, calendar: calendar)
+        return ParsedReceipt(totalKopecks: total(in: lines), date: found?.date, merchant: merchant(in: lines), goods: itemEntries(in: lines),
+                             dateHasTime: found?.hasTime ?? true)
     }
 
     /// The QR code is exact for the sum and the date; the text gives what it lacks and the shop.
     static func merge(qr: ParsedReceipt?, text: ParsedReceipt) -> ParsedReceipt {
-        ParsedReceipt(totalKopecks: qr?.totalKopecks ?? text.totalKopecks, date: qr?.date ?? text.date, merchant: text.merchant, items: text.items)
+        ParsedReceipt(totalKopecks: qr?.totalKopecks ?? text.totalKopecks, date: qr?.date ?? text.date, merchant: text.merchant, goods: text.goods,
+                      dateHasTime: qr?.date != nil ? true : text.dateHasTime)
     }
 
     /// What is looked for, in order: the sum to pay, what was paid by card (it is what the bank charges), the total.
@@ -112,6 +116,11 @@ enum ReceiptParser {
 
     /// The first valid date; its time is on the same line or next to it. A date from the future is not a receipt date.
     static func date(in lines: [String], now: Date, calendar: Calendar) -> Date? {
+        dateAndTime(in: lines, now: now, calendar: calendar)?.date
+    }
+
+    /// The date of the receipt and whether a time was read with it.
+    static func dateAndTime(in lines: [String], now: Date, calendar: Calendar) -> (date: Date, hasTime: Bool)? {
         let datePattern = #"(?<!\d)(\d{1,2})\s?[./-]\s?(\d{1,2})\s?[./-]\s?(\d{4}|\d{2})(?!\d)"#
         let isoPattern = #"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)"#
         let timePattern = #"(?<!\d)([01]?\d|2[0-3])\s?:\s?([0-5]\d)(?:\s?:\s?[0-5]\d)?(?!\d)"#
@@ -137,7 +146,7 @@ enum ReceiptParser {
             var date = makeDate(year: parts.year, month: parts.month, day: parts.day, hour: time?.0 ?? 12, minute: time?.1 ?? 0, calendar: calendar)
             // Without a time on a receipt of today the moment of reading is the better guess.
             if !hasTime, let day = date, calendar.isDate(day, inSameDayAs: now) { date = now }
-            if let date, date <= limit { return min(date, now) }
+            if let date, date <= limit { return (min(date, now), hasTime) }
         }
         return nil
     }
@@ -212,7 +221,10 @@ enum ReceiptParser {
     /// The goods of a receipt: the lines between the head of the table and the first line of totals, without prices,
     /// quantities and codes. A best effort on a printed text that is often read badly: the owner sees the result and
     /// corrects it.
-    static func items(in lines: [String]) -> [String] {
+    static func items(in lines: [String]) -> [String] { itemEntries(in: lines).map(\.name) }
+
+    /// The goods with the final price of the line: the last sum on the line of the good or on the line of figures after it.
+    static func itemEntries(in lines: [String]) -> [ReceiptGood] {
         let endWords = ["итого", "итог", "к оплате", "безналичн", "карта", "карту", "бонус", "причин", "извин", "неудобств", "горяч",
                         "скидка", "ндс", "наличн", "сдача", "всего"]
         let serviceWords = ["кассир", "смена", "ккт", "инн", "спасибо", "место расчет", "адрес", "тел.", "тел:", "чек", "приход", "www", "http"]
@@ -228,16 +240,32 @@ enum ReceiptParser {
         } else {
             return []
         }
-        var result: [String] = []
-        for line in lines.dropFirst(start) {
+        var result: [ReceiptGood] = []
+        var index = start
+        while index < lines.count {
+            let line = lines[index]
             let lower = line.lowercased()
+            index += 1
             if endWords.contains(where: { lower.contains($0) }) { break }
             if serviceWords.contains(where: { lower.contains($0) }) { continue }
-            guard let name = itemName(line), result.last != name else { continue }
-            result.append(name)
+            guard let name = itemName(line), result.last?.name != name else { continue }
+            var price = amounts(in: line).last
+            if price == nil, index < lines.count, letters(lines[index]) < 3 { price = amounts(in: lines[index]).last }
+            result.append(ReceiptGood(name: name, kopecks: price))
             if result.count >= 60 { break }
         }
         return result
+    }
+
+    /// A word with capitals among small letters is a misread («КОлбасКА»): it becomes «Колбаска». Words in capitals only and
+    /// words that do not begin with a letter stay as they are.
+    static func tidied(_ name: String) -> String {
+        name.split(separator: " ", omittingEmptySubsequences: true).map { word -> String in
+            let letters = word.filter { $0.isLetter }
+            guard word.first?.isLetter == true, letters.contains(where: { $0.isLowercase }),
+                  letters.dropFirst().contains(where: { $0.isUppercase }) else { return String(word) }
+            return word.prefix(1).uppercased() + word.dropFirst().lowercased()
+        }.joined(separator: " ")
     }
 
     /// The name of a good on a printed line: without the sum, the quantity, the code before the name and the number after it.
@@ -255,7 +283,7 @@ enum ReceiptParser {
         text = text.trimmingCharacters(in: CharacterSet(charactersIn: " .,:;-–_*"))
         // A name is short: a long one is a line of text that is not a good.
         if text.count > 48 { text = String(text.prefix(48)).trimmingCharacters(in: .whitespaces) }
-        return text.filter { $0.isLetter }.count >= 3 ? text : nil
+        return text.filter { $0.isLetter }.count >= 3 ? tidied(text) : nil
     }
 
     // MARK: Category guess by words
@@ -333,5 +361,81 @@ extension SavedHistory {
         guard let id = manualOperations?.last(where: { $0.accountID != nil })?.accountID,
               (accounts ?? []).contains(where: { $0.id == id && !$0.followsBank }) else { return nil }
         return id
+    }
+}
+
+/// The text of one receipt in the collection for the check of the reading: what the phone read, what the reading made of it
+/// and what the owner saved, with a verdict for each of the three. Pure text, tested on the PC.
+enum ReceiptCheckReport {
+    struct Verdict: Equatable {
+        var total: String
+        var date: String
+        var goods: String
+        var totalMatches: Bool
+        var dateMatches: Bool
+    }
+
+    static func verdict(read: ParsedReceipt, amountKopecks: Int64, date: Date?, goods: [ReceiptGood], calendar: Calendar = .current) -> Verdict {
+        let amount = abs(amountKopecks)
+        var verdict = Verdict(total: "", date: "", goods: "", totalMatches: false, dateMatches: false)
+        if let total = read.totalKopecks {
+            verdict.totalMatches = total == amount
+            verdict.total = total == amount ? "совпала" : "НЕ совпала: прочитано \(ReceiptGood.rubles(total)), в операции \(ReceiptGood.rubles(amount))"
+        } else {
+            verdict.total = "не прочитана"
+        }
+        if let found = read.date, let saved = date {
+            if read.dateHasTime {
+                verdict.dateMatches = abs(found.timeIntervalSince(saved)) <= 120
+                verdict.date = verdict.dateMatches ? "совпала" : "НЕ совпала: прочитано \(stamp(found, calendar)), в операции \(stamp(saved, calendar))"
+            } else {
+                verdict.dateMatches = calendar.isDate(found, inSameDayAs: saved)
+                verdict.date = verdict.dateMatches ? "день совпал, время не прочиталось" : "НЕ совпала: прочитан день \(stamp(found, calendar)), в операции \(stamp(saved, calendar))"
+            }
+        } else {
+            verdict.date = read.date == nil ? "не прочитана" : "в операции нет даты"
+        }
+        let readLines = read.goods.map(\.line)
+        let savedLines = goods.map(\.line)
+        if readLines.isEmpty && savedLines.isEmpty { verdict.goods = "товаров нет" }
+        else if readLines.isEmpty { verdict.goods = "не найдены телефоном, введены вами: \(savedLines.count)" }
+        else if savedLines.isEmpty { verdict.goods = "прочитано \(readLines.count), вы удалили все" }
+        else if readLines == savedLines { verdict.goods = "не менялись (\(readLines.count))" }
+        else { verdict.goods = "исправлены вами: прочитано \(readLines.count), сохранено \(savedLines.count)" }
+        return verdict
+    }
+
+    private static func stamp(_ date: Date, _ calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "dd.MM.yyyy HH:mm"
+        return formatter.string(from: date)
+    }
+
+    static func text(number: Int, read: ParsedReceipt, source: String, title: String, category: String?, amountKopecks: Int64,
+                     date: Date?, goods: [ReceiptGood], calendar: Calendar = .current) -> String {
+        let judged = Self.verdict(read: read, amountKopecks: amountKopecks, date: date, goods: goods, calendar: calendar)
+        var lines: [String] = ["Чек № \(number)", "Источник текста: \(source)", ""]
+        lines.append("== Сохранено в операции ==")
+        lines.append("Название: \(title)")
+        lines.append("Сумма: \(ReceiptGood.rubles(abs(amountKopecks)))")
+        lines.append("Дата: \(date.map { stamp($0, calendar) } ?? "—")")
+        lines.append("Категория: \(category ?? "—")")
+        lines.append("Товары (\(goods.count)):")
+        lines += goods.map { "  " + $0.line }
+        lines += ["", "== Что извлёк разбор из текста =="]
+        lines.append("Сумма: \(read.totalKopecks.map { ReceiptGood.rubles($0) } ?? "не прочитана")")
+        lines.append("Дата: \(read.date.map { stamp($0, calendar) + (read.dateHasTime ? "" : " (время не прочиталось)") } ?? "не прочитана")")
+        lines.append("Магазин: \(read.merchant ?? "не определён")")
+        lines.append("Товары (\(read.goods.count)):")
+        lines += read.goods.map { "  " + $0.line }
+        lines += ["", "== Сравнение =="]
+        lines.append("Сумма: \(judged.total)")
+        lines.append("Дата: \(judged.date)")
+        lines.append("Товары: \(judged.goods)")
+        lines += ["", "== Прочитанный телефоном текст, строки сверху вниз =="]
+        lines += read.readLines.isEmpty ? ["(текст не сохранён)"] : read.readLines
+        return lines.joined(separator: "\n")
     }
 }
