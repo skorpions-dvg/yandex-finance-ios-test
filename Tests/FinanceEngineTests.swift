@@ -1190,6 +1190,240 @@ struct FinanceEngineTests {
         require(manual.count == 2 && manual.allSatisfy { !$0.appliesToAll }, "manual operations stay individual because existing setters do not create rules for them")
     }
 
+    static func testCategorySuggestions() {
+        var history = SavedHistory()
+        func category(_ group: String, _ name: String) -> UUID {
+            history.categoryTree.first { $0.name == group }!.categories.first { $0.name == name }!.id
+        }
+        let food = category("Еда", "Супермаркеты")
+        let cafe = category("Еда", "Кафе и рестораны")
+        let clothes = category("Покупки", "Одежда")
+        let target = bankOp("suggest-target", -100, description: "СозвездиеТест кафе север")
+        let group = ReviewGroup(id: "suggest-group", key: FinancialEngine.payeeRuleKey(target.description),
+                                kind: .expense, operations: [target])
+        let old = bankOp("suggest-old", -200, description: target.description, date: "2032-05-02T10:00:00Z")
+        let newer = bankOp("suggest-new", -300, description: target.description, date: "2032-06-01T10:00:00Z")
+        let similar1 = bankOp("suggest-similar-1", -400, description: "ООО СозвездиеТест юг")
+        let similar2 = bankOp("suggest-similar-2", -500, description: "СозвездиеТест восток")
+        history.operations = [target, old, newer, similar1, similar2]
+        history.categoryOverrides = [target.identity: UncategorizedReview.otherExpenseID, old.identity: food,
+                                     newer.identity: clothes, similar1.identity: food, similar2.identity: food]
+        let suggestions = CategorySuggestions.suggest(for: group, history: history)
+        require(suggestions.map(\.reason) == [.history, .words, .similarPayees], "suggestions rank history, words, then similar payees")
+        require(suggestions.map(\.categoryID) == [clothes, cafe, food], "history frequency tie chooses the freshest category")
+        require(suggestions.map(\.count) == [1, 0, 2] && suggestions.count <= 3,
+                "suggestion counts reflect evidence and there are at most three")
+        let repeated = bankOp("suggest-repeat", -600, description: target.description, date: "2032-04-01T10:00:00Z")
+        history.operations.append(repeated)
+        history.categoryOverrides?[repeated.identity] = food
+        let frequent = CategorySuggestions.suggest(for: group, history: history)
+        require(frequent.first?.categoryID == food && frequent.first?.count == 2, "history frequency outranks freshness")
+        require(frequent.count == 2 && Set(frequent.map(\.categoryID)).count == frequent.count, "repeated category keeps its strongest reason only")
+
+        let conflict = bankOp("suggest-conflict", -100, description: "СозвездиеТест запад")
+        history.operations = [target, similar1, similar2, conflict]
+        history.categoryOverrides?[conflict.identity] = clothes
+        require(CategorySuggestions.suggest(for: group, history: history).map(\.reason) == [.words], "two of three similar purchases is below 80 percent")
+        let similar3 = bankOp("suggest-similar-3", -100, description: "СозвездиеТест центр")
+        let similar4 = bankOp("suggest-similar-4", -100, description: "СозвездиеТест берег")
+        history.operations += [similar3, similar4]
+        history.categoryOverrides?[similar3.identity] = food
+        history.categoryOverrides?[similar4.identity] = food
+        require(CategorySuggestions.suggest(for: group, history: history).last?.count == 4, "exactly 80 percent qualifies as a similar-payee suggestion")
+        history.operations = [target, similar1]
+        require(CategorySuggestions.suggest(for: group, history: history).map(\.reason) == [.words], "one similar operation is not sufficient")
+
+        let unnamed = ReviewGroup(id: "suggest-empty", key: "", kind: .expense, operations: [target])
+        history.operations = [target, old, newer, similar1, similar2]
+        require(CategorySuggestions.suggest(for: unnamed, history: history).map(\.reason) == [.words], "empty payee key permits words only")
+        let income = ReviewGroup(id: "suggest-income", key: group.key, kind: .income, operations: [target])
+        require(CategorySuggestions.suggest(for: income, history: history).isEmpty, "income groups get no expense suggestions")
+        let unknown = bankOp("suggest-unknown", -100, description: "АбстракцияТест север")
+        let other = bankOp("suggest-other", -200, description: unknown.description)
+        let unknownGroup = ReviewGroup(id: "suggest-unknown-group", key: FinancialEngine.payeeRuleKey(unknown.description),
+                                       kind: .expense, operations: [unknown])
+        history.operations = [unknown, other]
+        history.categoryOverrides = [other.identity: UncategorizedReview.otherExpenseID]
+        require(CategorySuggestions.suggest(for: unknownGroup, history: history).isEmpty, "Misc is never evidence or a suggestion")
+        require(history.renameExpenseCategory(UncategorizedReview.otherExpenseID, to: "РазобратьТест"), "suggestion fixture renames Misc")
+        require(CategorySuggestions.suggest(for: unknownGroup, history: history).isEmpty, "Misc stays excluded after renaming")
+        history.expenseCategories = history.categoryTree.map { value in
+            var changed = value
+            changed.categories.removeAll { $0.id == cafe }
+            return changed
+        }
+        require(CategorySuggestions.suggest(for: unnamed, history: history).isEmpty, "word suggestion must exist in the user's tree")
+    }
+
+    static func testSuggestionsInBatch() {
+        var history = SavedHistory()
+        let food = history.categoryTree.first { $0.name == "Еда" }!.categories.first { $0.name == "Супермаркеты" }!.id
+        let first = bankOp("batch-a1", -100, description: "ПолучательТест север")
+        let second = bankOp("batch-a2", -200, description: "ПолучательТест север")
+        let third = bankOp("batch-b1", -300, description: "АбстракцияТест юг")
+        history.operations = [first, second, third]
+        history.categoryOverrides = [first.identity: food, second.identity: UncategorizedReview.otherExpenseID,
+                                     third.identity: UncategorizedReview.otherExpenseID]
+        let groups = UncategorizedReview.groups(history)
+        require(groups.count == 2, "two payees are left to sort")
+        let batch = CategorySuggestions.suggestions(for: groups, history: history)
+        for group in groups {
+            require(batch[group.id] == CategorySuggestions.suggest(for: group, history: history), "the batch gives what one group gives")
+        }
+        let known = groups.first { $0.key == FinancialEngine.payeeRuleKey(second.description) }!
+        require(batch[known.id]?.first?.categoryID == food && batch[known.id]?.first?.reason == .history, "the earlier choice for the same payee is suggested")
+        require(CategorySuggestions.suggestions(for: [], history: history).isEmpty, "no groups, no suggestions")
+    }
+
+    static func testRuleCandidates() {
+        var history = SavedHistory()
+        let food = history.categoryTree[0].categories[0].id
+        let otherCategory = history.categoryTree[0].categories[1].id
+        let operations = (1...4).map { bankOp("candidate-\($0)", -100, description: "ПолучательТест север") }
+        history.operations = operations
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: operations.prefix(3).map { ($0.identity, food) })
+        let candidates = CategorySuggestions.ruleCandidates(history)
+        require(candidates.count == 1 && candidates[0].categoryID == food && candidates[0].operationCount == 4,
+                "exactly three identical manual category choices offer a rule covering all bank expenses")
+        history.categoryOverrides?[operations[3].identity] = otherCategory
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "a conflicting manual category blocks a rule")
+        history.categoryOverrides?[operations[3].identity] = nil
+        require(history.setExpenseCategory(food, for: operations[3], forPayee: true), "candidate fixture adds a rule")
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "an existing payee rule is not offered again")
+        history.categoryRules = nil
+        history.categoryOverrides?[operations[2].identity] = nil
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "two manual choices are not enough")
+        history.operations = (1...3).map { bankOp("candidate-empty-\($0)", -100, description: "12345") }
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: history.operations.map { ($0.identity, food) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "empty keys never produce rule candidates")
+        history.operations = (1...3).map { bankOp("manual:candidate-\($0)", -100, description: "ПолучательТест север") }
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: history.operations.map { ($0.identity, food) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "manual operations cannot count towards bank payee rules")
+        history.operations = operations
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: operations.map { ($0.identity, UUID()) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "deleted or conflicting category ids are not offered")
+        history.operations = (1...3).map { bankOp("candidate-income-\($0)", 100, description: "ПолучательТест север", kind: "income") }
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: history.operations.map { ($0.identity, food) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "income cannot become an expense rule candidate")
+    }
+
+    static func testExpenseReviewEdits() {
+        let a = bankOp("quick-review-a", -10_000, description: "ОрбитаТест север")
+        let b = bankOp("quick-review-b", -20_000, description: a.description)
+        var history = SavedHistory()
+        history.operations = [a, b]
+        history.categoryOverrides = [a.identity: UncategorizedReview.otherExpenseID, b.identity: UncategorizedReview.otherExpenseID]
+        let group = UncategorizedReview.groups(history)[0]
+        let selected = history.categoryTree[0].categories[0].id
+        let previous = ExpenseReviewUndo(history)
+        let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, duration: 30 * 86400)
+        let before = FinancialEngine.report(history.financialInputs, in: interval)
+        require(ExpenseReviewEdits.apply(selected, to: group, history: &history), "quick review applies a category using the existing setters")
+        require(history.expenseCategoryID(for: a) == selected && history.expenseCategoryID(for: b) == selected,
+                "quick review resolves all group rows, even those with individual Misc overrides")
+        require(UncategorizedReview.groups(history).isEmpty && previous.changed(in: history), "quick-reviewed payee leaves the list and can be undone")
+        let after = FinancialEngine.report(history.financialInputs, in: interval)
+        require(before.grossExpenseKopecks == after.grossExpenseKopecks && before.incomeKopecks == after.incomeKopecks,
+                "quick category review preserves financial totals")
+        let synced = bankOp("quick-review-synced", -500, description: "ДругойПолучательТест")
+        history.operations.append(synced)
+        history.incomeCategoryOverrides = ["new-income": "Зарплата и выплаты"]
+        previous.restore(in: &history)
+        require(history.categoryRules == previous.rules && history.categoryOverrides == previous.overrides,
+                "undo restores exactly the previous expense category fields, including nil rules")
+        require(history.operations == [a, b, synced] && history.incomeCategoryOverrides?["new-income"] == "Зарплата и выплаты",
+                "undo leaves newly synced operations and other history fields intact")
+        require(history.expenseCategoryID(for: a) == UncategorizedReview.otherExpenseID && UncategorizedReview.groups(history).count == 2,
+                "undo returns reviewed expenses to Misc")
+        let unnamed = bankOp("quick-review-empty", -100, description: "12345")
+        let unnamed2 = bankOp("quick-review-empty-2", -100, description: "12345")
+        history = SavedHistory()
+        history.operations = [unnamed, unnamed2]
+        require(ExpenseReviewEdits.apply(selected, to: UncategorizedReview.groups(history)[0], history: &history), "empty-key quick review is individual")
+        require(history.categoryOverrides?.count == 1 && (history.categoryRules ?? []).isEmpty && UncategorizedReview.groups(history).count == 1,
+                "empty-key review does not create a payee rule or affect its unnamed neighbour")
+        let savedOverrides = history.categoryOverrides
+        let badGroup = ReviewGroup(id: "quick-invalid", key: "", kind: .expense,
+                                   operations: [unnamed2, bankOp("quick-income", 100, description: "ПоступлениеТест", kind: "income")])
+        require(!ExpenseReviewEdits.apply(selected, to: badGroup, history: &history) && history.categoryOverrides == savedOverrides,
+                "a rejected batch makes no partial category edits")
+    }
+
+    static func testManualExpenseReviewUndo() {
+        let day = BankDateParser.parse("2032-06-02T10:00:00Z")!
+        let manual = ManualOperation(kind: .expense, amountKopecks: 10_000, date: day, accountID: UUID(),
+                                     group: "Другое", subcategory: "Прочее", note: "КафеТест ручная покупка")
+        let neighbour = ManualOperation(kind: .expense, amountKopecks: 5_000, date: day, accountID: nil,
+                                        group: "Другое", subcategory: "Прочее", note: manual.note)
+        var history = SavedHistory()
+        history.manualOperations = [manual, neighbour]
+        let bank = bankOp("manual-review-bank", -700, description: "МагазинТест банковский", mcc: "5411")
+        history.operations = [bank]
+        let cafe = history.categoryTree.first { $0.name == "Еда" }!.categories.first { $0.name == "Кафе и рестораны" }!.id
+        history.categoryRules = [CategoryRule(payeeKey: FinancialEngine.payeeRuleKey(bank.description),
+                                               title: bank.description, categoryID: cafe)]
+        history.categoryOverrides = [bank.identity: cafe]
+        let group = UncategorizedReview.groups(history).first { $0.operations[0].manualID == manual.id }!
+        let options = CategorySuggestions.suggest(for: group, history: history)
+        require(!group.appliesToAll && options.first?.categoryID == cafe, "manual expense receives a word suggestion and stays individual")
+        let previous = ExpenseReviewUndo(history, operation: manual.bankOperation)
+        require(previous.manualCategory?.operationID == manual.id && previous.manualCategory?.categoryID == UncategorizedReview.otherExpenseID,
+                "manual undo captures only the record id and former category")
+        let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, duration: 30 * 86400)
+        let before = FinancialEngine.report(history.financialInputs, in: interval)
+        require(ExpenseReviewEdits.apply(cafe, to: group, history: &history) && previous.changed(in: history),
+                "manual quick review applies its suggestion and offers undo")
+        require(history.manualOperations?[0].subcategory == "Кафе и рестораны" && history.manualOperations?[1] == neighbour,
+                "manual quick review changes only the selected expense, even for the same payee")
+        require(history.categoryRules == previous.rules && history.categoryOverrides == previous.overrides,
+                "manual quick review does not create a bank rule or an override")
+        let after = FinancialEngine.report(history.financialInputs, in: interval)
+        require(before.grossExpenseKopecks == after.grossExpenseKopecks && before.incomeKopecks == after.incomeKopecks,
+                "manual quick review preserves income and expense totals")
+
+        // Other edits and bank sync may arrive during the undo window.
+        history.manualOperations?[0].amountKopecks = 31_400
+        history.manualOperations?[0].date = day.addingTimeInterval(3600)
+        history.manualOperations?[0].accountID = UUID()
+        history.manualOperations?[0].note = "КафеТест новый комментарий"
+        require(history.setExpenseCategory(cafe, for: neighbour.bankOperation, forPayee: false), "manual undo fixture edits a neighbouring expense")
+        let addedIncome = ManualOperation(kind: .income, amountKopecks: 8_000, date: day, accountID: nil,
+                                         group: nil, subcategory: "Зарплата и выплаты", note: "ПоступлениеТест")
+        history.manualOperations?.append(addedIncome)
+        let synced = bankOp("manual-review-synced", -900, description: "ПолучательТест новый")
+        history.operations.append(synced)
+        history.incomeCategoryOverrides = ["manual-review-income": "Зарплата и выплаты"]
+        var expected = history.manualOperations!
+        expected[0].group = "Другое"
+        expected[0].subcategory = "Прочее"
+        let beforeUndo = FinancialEngine.report(history.financialInputs, in: interval)
+        require(previous.restore(in: &history), "manual undo restores the former category through the existing setter")
+        require(history.manualOperations == expected,
+                "manual undo preserves the current amount, date, account, comment, neighbouring category and added entry")
+        require(history.operations == [bank, synced] && history.incomeCategoryOverrides?["manual-review-income"] == "Зарплата и выплаты",
+                "manual undo preserves newly synced bank data and income choices")
+        let undone = FinancialEngine.report(history.financialInputs, in: interval)
+        require(beforeUndo.grossExpenseKopecks == undone.grossExpenseKopecks && beforeUndo.incomeKopecks == undone.incomeKopecks,
+                "manual undo changes no financial totals")
+
+        var removed = history
+        removed.manualOperations?.removeAll { $0.id == manual.id }
+        removed.categoryOverrides?["later-choice"] = cafe
+        let remaining = removed.manualOperations
+        let laterOverrides = removed.categoryOverrides
+        require(!previous.restore(in: &removed) && removed.manualOperations == remaining && removed.categoryOverrides == laterOverrides,
+                "manual undo never recreates a deleted record or partially restores category settings")
+        var changedKind = history
+        changedKind.manualOperations?[0].kind = .income
+        let currentEntries = changedKind.manualOperations
+        require(!previous.restore(in: &changedKind) && changedKind.manualOperations == currentEntries,
+                "manual undo cannot change an operation's newly edited financial type")
+        require(history.renameExpenseCategory(UncategorizedReview.otherExpenseID, to: "РазобратьТест"), "manual undo fixture renames the old category")
+        require(history.setExpenseCategory(cafe, for: history.manualOperations![0].bankOperation, forPayee: false), "manual undo fixture selects another category")
+        require(previous.restore(in: &history) && history.manualOperations?[0].subcategory == "РазобратьТест",
+                "manual undo uses the stable category id and respects a category rename")
+    }
+
     static func testCardToSaveTransfer() {
         // The bank's shared history lists a card → Save transfer as two rows titled after the Save account.
         let day = BankDateParser.parse("2026-10-07T00:00:00Z")!
@@ -2083,6 +2317,11 @@ struct FinanceEngineTests {
         testBackdatedManualOperation()
         testExpenseCategories()
         testUncategorizedReview()
+        testCategorySuggestions()
+        testRuleCandidates()
+        testSuggestionsInBatch()
+        testExpenseReviewEdits()
+        testManualExpenseReviewUndo()
         testFixedCostGroups()
         testIncomeCategories()
         testSaveStatementSource()
