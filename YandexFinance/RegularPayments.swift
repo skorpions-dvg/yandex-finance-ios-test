@@ -18,9 +18,12 @@ enum RegularPayments {
         let today = calendar.startOfDay(for: now)
         let unit: Calendar.Component = pattern.intervalDays == 30 ? .month : (pattern.intervalDays == 365 ? .year : .day)
         let count = unit == .day ? max(1, pattern.intervalDays) : 1
-        var next = calendar.date(byAdding: unit, value: count, to: pattern.lastDate)!
+        // Counted from the last payment, as the forecast does: the 31st stays the 31st after a short month.
+        var periods = 1
+        var next = calendar.date(byAdding: unit, value: count * periods, to: pattern.lastDate)!
         while next < today {
-            next = calendar.date(byAdding: unit, value: count, to: next)!
+            periods += 1
+            next = calendar.date(byAdding: unit, value: count * periods, to: pattern.lastDate)!
         }
         return next
     }

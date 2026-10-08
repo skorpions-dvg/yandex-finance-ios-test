@@ -30,6 +30,65 @@ struct FinanceEngineTests {
         require(!AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(86_400), afterSeconds: -1), "only at launch: a day away does not lock")
     }
 
+    static func testForecastFixes() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ month: Int, _ day: Int, _ hour: Int = 10) -> Date {
+            calendar.date(from: DateComponents(year: 2024, month: month, day: day, hour: hour))!
+        }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2024-%02d-%02dT10:00:00Z", month, day) }
+        var history: [FinancialOperationInput] = []
+        for month in 1...6 {
+            history.append(op(100_000, kind: "income", category: "Зарплата", description: "ООО Ромашка", date: iso(month, 5)))
+            history.append(op(-20_000, kind: "expense", category: "ЖКХ", description: "УК Жилищник", date: iso(month, 15)))
+            // amounts that differ a lot, so the shop is not mistaken for a recurring payment
+            history.append(op(-9_000, kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 3)))
+            history.append(op(-21_000, kind: "expense", category: "Супермаркеты", description: "Пятёрочка", date: iso(month, 18)))
+        }
+
+        // An operation dated after today does not change today's forecast
+        let todayPurchase = op(-60_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(7, 9))
+        let alone = FinancialEngine.monthForecast(history + [todayPurchase], now: at(7, 10), calendar: calendar)
+        let withFuture = FinancialEngine.monthForecast(history + [todayPurchase, op(-5_000, kind: "expense", category: "Электроника", description: "DNS", date: iso(7, 20))],
+                                                       now: at(7, 10), calendar: calendar)
+        require(alone.oneOffKopecks == 60_000 && withFuture.oneOffKopecks == 60_000, "a purchase today stays one-off whatever is dated later")
+        require(alone.projectedExpenseKopecks == withFuture.projectedExpenseKopecks, "a future-dated operation does not move the forecast")
+
+        // Nameless titles are not a recurring payment
+        let numbers = (0..<4).map { week in
+            op(-1_000, kind: "expense", category: "Прочее", description: "12345", date: iso(6, 3 + week * 7))
+        }
+        require(FinancialEngine.recurringPatterns(numbers, now: at(7, 1), calendar: calendar).isEmpty, "four weekly operations named by digits are not one payee")
+
+        // A payment of the 31st keeps its day after February
+        let rent = [op(-30_000, kind: "expense", category: "ЖКХ", description: "Аренда Тест", date: "2023-11-30T10:00:00Z"),
+                    op(-30_000, kind: "expense", category: "ЖКХ", description: "Аренда Тест", date: "2023-12-31T10:00:00Z"),
+                    op(-30_000, kind: "expense", category: "ЖКХ", description: "Аренда Тест", date: iso(1, 31))]
+        let march = FinancialEngine.monthForecast(rent, now: at(3, 5), calendar: calendar)
+        require(march.upcoming.map(\.date) == [at(3, 31)], "the rent of the 31st is expected on the 31st of March, not the 29th")
+
+        // The first day of a month without history: one purchase is not multiplied by thirty
+        let first = FinancialEngine.monthForecast([op(-10_000, kind: "expense", category: "Супермаркеты", description: "Магазин Тест", date: iso(7, 1))],
+                                                  now: at(7, 1), calendar: calendar)
+        require(first.projectedExpenseKopecks == 10_000 + 10_000 * 30 / 7, "at least a week of pace without history (got \(first.projectedExpenseKopecks))")
+
+        // A salary that is late is counted neither in the reserve nor in the projected income
+        let late = FinancialEngine.monthForecast(history, now: at(7, 20), calendar: calendar)
+        require(late.upcoming.contains { $0.isIncome && $0.overdue }, "the salary of the 5th has not come by the 20th")
+        require(late.expectedIncomeLeftKopecks == 0 && late.projectedIncomeKopecks == late.incomeKopecks, "an overdue income is counted nowhere")
+
+        // MCC: a cut code does not hide the one in the title; the gaps of the table
+        func category(_ mcc: String?, _ title: String) -> FinanceCategoryPath {
+            FinancialEngine.expenseCategory(for: op(-1_000, kind: "expense", category: "Тест", description: title, mcc: mcc, date: iso(7, 1)))
+        }
+        require(category("54", "YANDEX*5411*DK").subcategory == "Супермаркеты", "a cut code falls back to the code in the title")
+        require(category("5411", "Магазин Тест").subcategory == "Супермаркеты", "a full code is used")
+        require(category("8011", "Клиника Тест").subcategory == "Здоровье", "doctors are health")
+        require(category("8062", "Больница Тест").subcategory == "Здоровье", "hospitals are health")
+        require(category("5732", "Магазин Тест").subcategory == "Электроника", "electronics shops")
+        require(category("5734", "Магазин Тест").subcategory == "Электроника", "software shops")
+    }
+
     static func testReceiptArchive() {
         require(ReceiptArchive.crc32(Data("123456789".utf8)) == 0xCBF43926, "the standard CRC-32 check value")
         let photo = Data([0xFF, 0xD8, 0x00, 0x01, 0x02, 0xFF, 0xD9])
@@ -182,8 +241,8 @@ struct FinanceEngineTests {
                 "monthly payment on the 31st clamps to the end of February")
         require(RegularPayments.nextDate(of: pattern(30, date(2032, 1, 31)), now: date(2032, 2, 1), calendar: calendar) == date(2032, 2, 29),
                 "monthly payment respects leap February")
-        require(RegularPayments.nextDate(of: pattern(30, date(2031, 1, 31)), now: date(2031, 3, 1), calendar: calendar) == date(2031, 3, 28),
-                "monthly date uses the same consecutive calendar steps as the forecast")
+        require(RegularPayments.nextDate(of: pattern(30, date(2031, 1, 31)), now: date(2031, 3, 1), calendar: calendar) == date(2031, 3, 31),
+                "a payment of the 31st is on the 31st again in March, as in the forecast")
         require(RegularPayments.nextDate(of: pattern(365, date(2031, 3, 1)), now: date(2031, 3, 2), calendar: calendar) == date(2032, 3, 1),
                 "annual date advances a calendar year across leap February")
         require(RegularPayments.nextDate(of: pattern(365, date(2032, 2, 29)), now: date(2034, 1, 1), calendar: calendar) == date(2034, 2, 28),
@@ -1978,6 +2037,7 @@ struct FinanceEngineTests {
         testReceipts()
         testReceiptParser()
         testReceiptArchive()
+        testForecastFixes()
         testAppLockLogic()
         testAccountMovements()
         testReportSeries()

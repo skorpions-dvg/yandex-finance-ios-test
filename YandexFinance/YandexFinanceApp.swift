@@ -619,6 +619,27 @@ struct SettingsView: View {
     @State private var importedCategoryPlan: ExpenseCategoryImport?
     @State private var categoryImportError: String?
     @State private var pendingRestore: URL?
+
+    private func exportBackupJSON() {
+        do {
+            let data = try browser.backupData()
+            exportedType = .json
+            exportedName = "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))"
+            exportedBackup = BackupDocument(data: data)
+        } catch {
+            browser.message = "Не удалось подготовить копию: \(error.localizedDescription)"
+        }
+    }
+
+    private func exportReceiptsZIP() {
+        guard let archive = ReceiptStore.exportArchive() else {
+            browser.message = "Фото чеков на этом телефоне пока нет."
+            return
+        }
+        exportedType = .zip
+        exportedName = "FinanceTest-receipts-\(Date().formatted(.iso8601.year().month().day()))"
+        exportedBackup = BackupDocument(data: archive.data)
+    }
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let pendingCount = presentation.value("pending:\(Calendar.current.startOfDay(for: Date()))") { browser.stalePendingCount }
@@ -711,67 +732,17 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("Журнал проверок") }.glassRows()
                 Section {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button("Экспортировать резервную копию (JSON)") {
-                            do {
-                                let data = try browser.backupData()
-                                exportedType = .json
-                                exportedName = "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))"
-                                exportedBackup = BackupDocument(data: data)
-                            } catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
+                    NavigationLink {
+                        DataAndCopiesView(browser: browser, exportBackup: exportBackupJSON, exportReceipts: exportReceiptsZIP,
+                                          restoreBackup: { showBackupImporter = true }, restoreReceipts: { showReceiptsImporter = true },
+                                          importStatements: { browser.syncSixMonthsHistory() }, importCategories: { showCategoryImporter = true })
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Данные и копии")
+                            Text("Копии, фото чеков, импорт").font(.caption2).foregroundStyle(.secondary)
                         }
-                        .disabled(!browser.storageAvailable || browser.busy)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                        Text("Операции, счета и правила в JSON.").font(.caption2).foregroundStyle(.secondary)
                     }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button("Сохранить архив фото чеков (ZIP)") {
-                            if let archive = ReceiptStore.exportArchive() {
-                                exportedType = .zip
-                                exportedName = "FinanceTest-receipts-\(Date().formatted(.iso8601.year().month().day()))"
-                                exportedBackup = BackupDocument(data: archive.data)
-                            } else {
-                                browser.message = "Фото чеков на этом телефоне пока нет."
-                            }
-                        }
-                        .disabled(browser.busy)
-                        .lineLimit(1).minimumScaleFactor(0.8)
-                        Text("Фото чеков одним файлом ZIP: в JSON они не входят.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button("Восстановить фото из архива") { showReceiptsImporter = true }
-                            .disabled(browser.busy)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                        Text("Вернуть фото чеков из ZIP, сделанного приложением.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button("Восстановить из копии (JSON)") { showBackupImporter = true }
-                            .disabled(browser.busy)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                        Text("Восстановить данные из JSON.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button("Импортировать PDF-выписки") { browser.syncSixMonthsHistory() }
-                            .disabled(!browser.storageAvailable || browser.busy)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                        Text("Одна или несколько выписок.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Button("Импортировать разметку категорий") { showCategoryImporter = true }
-                            .disabled(!browser.storageAvailable || browser.busy)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                        Text("Категории из JSON с просмотром.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                } header: { Text("Файлы и данные") }
-                .font(.subheadline)
-                .environment(\.defaultMinListRowHeight, 40)
-                .glassRows()
+                }.glassRows()
                     if let issues = browser.history.unresolvedIssues, !issues.isEmpty {
                         Section("Не удалось прочитать") {
                             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in

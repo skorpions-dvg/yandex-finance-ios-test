@@ -806,11 +806,13 @@ enum FinancialEngine {
 
     private static let recurringPeriods: [(days: Int, tolerance: Int)] = [(7, 1), (14, 2), (30, 4), (365, 15)]
 
-    private static func step(_ date: Date, by intervalDays: Int, calendar: Calendar) -> Date {
+    /// The date `n` periods after `date`: months and years are counted from the same start, so a payment of the 31st is
+    /// on the 28th or 29th only in February and on the 31st again in March.
+    private static func step(_ date: Date, by intervalDays: Int, times n: Int = 1, calendar: Calendar) -> Date {
         switch intervalDays {
-        case 30: return calendar.date(byAdding: .month, value: 1, to: date)!
-        case 365: return calendar.date(byAdding: .year, value: 1, to: date)!
-        default: return calendar.date(byAdding: .day, value: intervalDays, to: date)!
+        case 30: return calendar.date(byAdding: .month, value: n, to: date)!
+        case 365: return calendar.date(byAdding: .year, value: n, to: date)!
+        default: return calendar.date(byAdding: .day, value: intervalDays * n, to: date)!
         }
     }
 
@@ -834,7 +836,8 @@ enum FinancialEngine {
     /// with amounts within 15% of their median (two thirds of the time), and seen recently enough to still be active.
     static func recurringPatterns(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> [RecurringPattern] {
         let horizon = calendar.date(byAdding: .day, value: -400, to: now)!
-        let items = datedAmounts(operations).filter { $0.date >= horizon && $0.date <= now }
+        // A title that cannot be a payee key (only digits, a date) never makes a "recurring payment" of its own.
+        let items = datedAmounts(operations).filter { $0.date >= horizon && $0.date <= now && !payeeRuleKey($0.title).isEmpty }
         let groups = Dictionary(grouping: items) { "\($0.isIncome)|\($0.key)" }
         func days(_ from: Date, _ to: Date) -> Int {
             calendar.dateComponents([.day], from: calendar.startOfDay(for: from), to: calendar.startOfDay(for: to)).day ?? 0
@@ -859,8 +862,10 @@ enum FinancialEngine {
 
     /// Month forecast = what already happened + recurring payments still expected + variable spending for the rest
     /// of the month. The variable baseline is the median of up to six full months without recurring items and
-    /// one-off purchases; the current month only moves it by a pace factor clamped to 0.6–1.6 and softened during
-    /// the first week. The low and high values use the quartiles of the same months; recurring items stay exact.
+    /// one-off purchases; the daily rate of the rest of the month is that usual rate blended with this month's own, the
+    /// month weighing more with every day (30 days of history count as much as the days gone). The low and high values
+    /// use the quartiles of the same months; recurring items stay exact. Without usable history the pace of this month
+    /// is taken over at least seven days.
     /// A purchase is one-off when its payee does not show up in another month, it is not an obligation (group
     /// "Обязательные" or another group marked as fixed costs), it is above 3% of the usual monthly variable spending, and it is more than twice the median
     /// purchase of its category, or, for a category with fewer than three purchases in the history, more than 5% of
@@ -878,7 +883,8 @@ enum FinancialEngine {
         let remaining = max(0, daysInMonth - elapsed)
 
         let patterns = recurringPatterns(operations, now: now, calendar: calendar)
-        let allItems = datedAmounts(operations)
+        // Operations dated after today (a pending one, a scheduled one) do not take part in today's forecast.
+        let allItems = datedAmounts(operations).filter { $0.date < endOfToday }
         let recurringKeys = Set(patterns.map { "\($0.isIncome)|\(counterpartyKey($0.title))" })
         let recurringItems = allItems.filter { recurringKeys.contains("\($0.isIncome)|\($0.key)") }
         func sum(_ items: [DatedAmount], income: Bool, in interval: DateInterval) -> Int64 {
@@ -956,7 +962,8 @@ enum FinancialEngine {
         func tail(_ base: Int64) -> Int64 {
             if base <= 0 {
                 // No usable history: fall back to the plain daily pace of this month.
-                return max(0, variableSoFar) * Int64(remaining) / Int64(elapsed)
+                // At least a week of pace: one purchase on the first day must not be multiplied by the days left.
+                return max(0, variableSoFar) * Int64(remaining) / Int64(max(elapsed, 7))
             }
             let usual = Double(base) / Double(daysInMonth)
             let current = Double(max(0, variableSoFar)) / Double(elapsed)
@@ -966,18 +973,21 @@ enum FinancialEngine {
 
         var upcoming: [UpcomingPayment] = []
         for pattern in patterns {
-            var next = step(pattern.lastDate, by: pattern.intervalDays, calendar: calendar)
+            var count = 1
+            var next = step(pattern.lastDate, by: pattern.intervalDays, times: count, calendar: calendar)
             while next < monthEnd {
                 if next >= monthStartDate {
                     upcoming.append(UpcomingPayment(title: pattern.title, amountKopecks: pattern.typicalAmountKopecks, date: next,
                                                     isIncome: pattern.isIncome, overdue: next < startOfToday))
                 }
-                next = step(next, by: pattern.intervalDays, calendar: calendar)
+                count += 1
+                next = step(pattern.lastDate, by: pattern.intervalDays, times: count, calendar: calendar)
             }
         }
         upcoming.sort { $0.date < $1.date }
         let upcomingExpense = upcoming.filter { !$0.isIncome }.reduce(0) { $0 + $1.amountKopecks }
-        let upcomingIncome = upcoming.filter(\.isIncome).reduce(0) { $0 + $1.amountKopecks }
+        // An income whose usual day has passed without it arriving is counted nowhere (the reserve already ignores it).
+        let upcomingIncome = upcoming.filter { $0.isIncome && !$0.overdue }.reduce(0) { $0 + $1.amountKopecks }
 
         let known = soFar.netExpenseKopecks + upcomingExpense
         let estimates = [tail(quantile(variableExpenses, 0.25)), tail(baseline), tail(quantile(variableExpenses, 0.75))].map { known + $0 }
@@ -1200,7 +1210,8 @@ enum FinancialEngine {
 
         // High-confidence MCC fallback for common bank categories that arrive too generic. Statements carry no MCC,
         // but aggregator titles do: «YANDEX*5411*DK» is a grocery purchase.
-        switch mcc.isEmpty ? embeddedMCC(operation.description) : mcc {
+        // A code of four digits is used; anything else (a cut «54») falls back to the code inside the title.
+        switch mcc.count == 4 ? mcc : embeddedMCC(operation.description) {
         case "5411", "5422", "5441", "5451", "5462", "5499":
             return FinanceCategoryPath(group: "Еда", subcategory: "Супермаркеты")
         case "5812", "5813", "5814":
@@ -1211,7 +1222,7 @@ enum FinancialEngine {
             return FinanceCategoryPath(group: "Транспорт", subcategory: "Общественный транспорт")
         case "5541", "5542":
             return FinanceCategoryPath(group: "Транспорт", subcategory: "Топливо")
-        case "4812":
+        case "4812", "5732", "5734":
             return FinanceCategoryPath(group: "Покупки", subcategory: "Электроника")
         case "4814", "4816":
             return FinanceCategoryPath(group: "Обязательные", subcategory: "Связь и интернет")
@@ -1219,7 +1230,7 @@ enum FinancialEngine {
             return FinanceCategoryPath(group: "Обязательные", subcategory: "Подписки")
         case "4900":
             return FinanceCategoryPath(group: "Обязательные", subcategory: "ЖКХ")
-        case "5912":
+        case "5912", "8011", "8021", "8031", "8041", "8042", "8043", "8049", "8050", "8062", "8071", "8099":
             return FinanceCategoryPath(group: "Обязательные", subcategory: "Здоровье")
         case "5815", "5816", "7832":
             return FinanceCategoryPath(group: "Другое", subcategory: "Развлечения")

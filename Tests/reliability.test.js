@@ -205,7 +205,7 @@ assert.throws(() => parse(url([ref]), withCashback, ''), /найдено сум�
 assert.ok(!/var\s+byID\s*=\s*Dictionary\(uniqueKeysWithValues:/.test(swift), 'Duplicate IDs must not crash Dictionary initialization');
 const inactiveBody = swift.match(/func becameInactive\(\) \{([\s\S]*?)\n    \}/)?.[1] || '';
 assert.ok(!/if\s+busy\s*\{\s*cancel\(\)/.test(inactiveBody) && !/self\.cancel\(\)/.test(inactiveBody), '.inactive must not cancel an active import');
-assert.ok(appSwift.includes('Импортировать PDF-выписки'), 'Manual statement import button must exist');
+assert.ok(fs.readFileSync(path.join(__dirname, '../YandexFinance/DataAndCopiesView.swift'), 'utf8').includes('Импортировать PDF-выписки'), 'Manual statement import button must exist');
 assert.ok(source.includes("stopReason === 'running' && (opened >= maxOpened"), 'Limit must not overwrite a more specific stop reason');
 assert.ok(!source.includes('enoughMonthChoices'), 'Picker-size heuristic must not mark full history complete');
 assert.ok(source.includes('window.__financeCheckpointQueue.push({sequence: ++checkpointSequence, operation})'), 'Parsed operations must enter the checkpoint queue');
@@ -709,10 +709,11 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
 // Stage 41.13: Settings must distinguish saving a JSON backup from opening PDFs.
 {
   const settings = appSwift.slice(appSwift.indexOf('struct SettingsView:'), appSwift.indexOf('enum FinanceOperationSelection:'));
-  for (const label of ['Экспортировать резервную копию (JSON)', 'Восстановить из копии (JSON)', 'Импортировать PDF-выписки', 'Импортировать разметку категорий']) {
-    assert.ok(settings.includes('Button("' + label + '"'), 'Settings action: ' + label);
+  const dataView = fs.readFileSync(path.join(__dirname, '../YandexFinance/DataAndCopiesView.swift'), 'utf8');
+  for (const label of ['Сохранить копию (JSON)', 'Восстановить из копии (JSON)', 'Импортировать PDF-выписки', 'Импортировать разметку категорий']) {
+    assert.ok(dataView.includes('Button("' + label + '"'), 'Data screen action: ' + label);
   }
-  assert.match(settings, /Button\("Импортировать PDF-выписки"\)\s*\{ browser\.syncSixMonthsHistory\(\) \}/);
+  assert.match(settings, /importStatements: \{ browser\.syncSixMonthsHistory\(\) \}/);
   assert.match(swift, /UIDocumentPickerViewController\(forOpeningContentTypes: \[\.pdf\], asCopy: true\)/);
   assert.match(swift, /picker\.allowsMultipleSelection = true/);
   assert.match(settings, /document: exportedBackup, contentType: exportedType/);
