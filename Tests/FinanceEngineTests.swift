@@ -2605,7 +2605,373 @@ struct FinanceEngineTests {
         require(status.remainingKopecks >= 0, "known issue50: a large limit with net refunds must not crash calculating remaining")
     }
 
+    // MARK: - Stage 51: deterministic synthetic history, never the owner's backup
+
+    struct Audit51Random {
+        var state: UInt64
+        mutating func number(_ lower: Int, _ upper: Int) -> Int {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return lower + Int((state >> 16) % UInt64(upper - lower + 1))
+        }
+    }
+
+    struct Audit51Scenario {
+        let id: String
+        let title: String
+        var months = 12
+        var year = 2023
+        var seed: UInt64 = 0x51A7
+        var salaryDays = [5, 20]
+        var salaryKopecks: Int64 = 10_000_000
+        var salaryJitterDays = 0
+        var noSalaryMonth: Int? = nil // zero-based
+        var rentDay = 1
+        var rentKopecks: Int64 = 1_800_000
+        var subscriptionDay = 28
+        var subscriptionKopecks: Int64 = 49_900
+        var utilitiesDay = 15
+        var utilitiesKopecks: Int64 = 280_000
+        var annualMonth = 7
+        var annualKopecks: Int64 = 120_000
+        var growthPercentPerMonth = 0
+        var monthlyScalePercent = [100]
+        var largePurchaseMonth: Int? = nil
+        var largePurchaseDay = 16
+        var largePurchaseKopecks: Int64 = 9_000_000
+        var firstDay = 1
+        var sparseMonths = 0
+        var refundPercent = 0
+        var earlierPurchaseRefundKopecks: Int64 = 0
+        var cashDepositKopecks: Int64 = 300_000
+        var saveTransferKopecks: Int64 = 1_200_000
+        var saveReturnKopecks: Int64 = 300_000
+        var interestKopecks: Int64 = 12_000
+    }
+
+    static func audit51Calendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    static func audit51Scenarios() -> [Audit51Scenario] {
+        let stable = Audit51Scenario(id: "stable", title: "Стабильные доходы и расходы")
+        var late = Audit51Scenario(id: "late-salary", title: "Поздняя зарплата")
+        late.salaryDays = [28]; late.salaryJitterDays = 2
+        var growing = Audit51Scenario(id: "growing", title: "Рост расходов каждый месяц")
+        growing.growthPercentPerMonth = 8
+        var purchase = Audit51Scenario(id: "large-purchase", title: "Крупная разовая покупка")
+        purchase.largePurchaseMonth = 6
+        var unpaid = Audit51Scenario(id: "no-salary", title: "Месяц без зарплаты")
+        unpaid.noSalaryMonth = 6
+        var cold = Audit51Scenario(id: "cold-start", title: "Холодный старт с середины месяца")
+        cold.months = 1; cold.year = 2024; cold.firstDay = 16
+        var sparse = Audit51Scenario(id: "sparse-start", title: "Разреженное начало и плотный хвост")
+        sparse.sparseMonths = 4
+        var volatile = Audit51Scenario(id: "volatile", title: "Сильные колебания расходов")
+        volatile.monthlyScalePercent = [50, 175, 65, 220, 90, 140]
+        var refunds = Audit51Scenario(id: "many-refunds", title: "Много возвратов, включая прошлые покупки")
+        refunds.refundPercent = 70; refunds.earlierPurchaseRefundKopecks = 3_000_000
+        var tenth = Audit51Scenario(id: "salary-tenth", title: "Одна зарплата 10-го, два календарных года")
+        tenth.salaryDays = [10]; tenth.months = 24
+        return [stable, late, growing, purchase, unpaid, cold, sparse, volatile, refunds, tenth]
+    }
+
+    static func audit51Generate(_ scenario: Audit51Scenario) -> [FinancialOperationInput] {
+        let calendar = audit51Calendar()
+        let first = calendar.date(from: DateComponents(year: scenario.year, month: 1, day: 1))!
+        var result: [FinancialOperationInput] = []
+        for index in 0..<scenario.months {
+            let start = calendar.date(byAdding: .month, value: index, to: first)!
+            let parts = calendar.dateComponents([.year, .month], from: start)
+            let days = calendar.range(of: .day, in: .month, for: start)!.count
+            var dailyRandom = Audit51Random(state: scenario.seed &+ UInt64(index) &* 0x9E37)
+            var salaryRandom = Audit51Random(state: scenario.seed &+ UInt64(index) &* 0xA71D)
+            func append(_ amount: Int64, _ kind: String, _ category: String, _ title: String, _ day: Int,
+                        _ mcc: String? = nil, saveSide: Bool = false) {
+                let safeDay = min(days, max(1, day))
+                if index == 0 && safeDay < scenario.firstDay { return }
+                var input = op(amount, kind: kind, category: category, description: title, mcc: mcc,
+                               date: String(format: "%04d-%02d-%02dT12:00:00Z", parts.year!, parts.month!, safeDay))
+                if saveSide { input.paymentMethod = "Сейв (выписка)" }
+                result.append(input)
+            }
+            if index < scenario.sparseMonths {
+                // 1, 2, 3, 1 expense rows at the end of a month, then a dense archive.
+                for offset in 0..<(1 + index % 3) {
+                    append(-Int64(30_000 + offset * 20_000), "expense", "Супермаркеты", "Магазин А", days - offset, "5411")
+                }
+                continue
+            }
+            for (payment, day) in scenario.salaryDays.enumerated() {
+                let jitter = salaryRandom.number(-scenario.salaryJitterDays, scenario.salaryJitterDays)
+                if index != scenario.noSalaryMonth {
+                    append(scenario.salaryKopecks / Int64(scenario.salaryDays.count), "income", "Зарплата",
+                           payment == 0 ? "ООО Ромашка аванс" : "ООО Ромашка зарплата", day + jitter)
+                }
+            }
+            append(-scenario.rentKopecks, "expense", "ЖКХ", "Аренда Тест", scenario.rentDay, "4900")
+            append(-scenario.subscriptionKopecks, "expense", "Подписки", "Подписка Тест", scenario.subscriptionDay, "4899")
+            append(-scenario.utilitiesKopecks, "expense", "ЖКХ", "Коммунальные Тест", scenario.utilitiesDay, "4900")
+            if parts.month == scenario.annualMonth {
+                append(-scenario.annualKopecks, "expense", "Подписки", "Годовая подписка Тест", 12, "4899")
+            }
+            let scale = scenario.monthlyScalePercent[index % scenario.monthlyScalePercent.count] + index * scenario.growthPercentPerMonth
+            var refundableGroceries: Int64 = 0
+            for day in 1...days {
+                if dailyRandom.number(0, 99) < 95 {
+                    let amount = Int64(dailyRandom.number(30_000, 110_000)) * Int64(scale) / 100
+                    let shop = ["Магазин А", "Магазин Б", "Магазин В"][dailyRandom.number(0, 2)]
+                    append(-amount, "expense", "Супермаркеты", shop, day, "5411")
+                    if index != 0 || day >= scenario.firstDay { refundableGroceries += amount }
+                }
+                if dailyRandom.number(0, 99) < 75 {
+                    append(-Int64(dailyRandom.number(12_000, 48_000)) * Int64(scale) / 100,
+                           "expense", "Кафе и рестораны", ["Кафе А", "Кафе Б", "Кафе В"][dailyRandom.number(0, 2)], day, "5812")
+                }
+                if dailyRandom.number(0, 99) < 15 {
+                    append(-Int64(dailyRandom.number(25_000, 85_000)) * Int64(scale) / 100,
+                           "expense", "Такси", "Такси Тест", day, "4121")
+                }
+                if day % 7 == 0 && scenario.refundPercent > 0 {
+                    append(refundableGroceries * Int64(scenario.refundPercent) / 100, "refund", "Возврат", "Возврат покупки Магазин А", day)
+                    refundableGroceries = 0
+                }
+            }
+            if index == scenario.largePurchaseMonth {
+                append(-scenario.largePurchaseKopecks, "expense", "Электроника", "Техника Тест", scenario.largePurchaseDay, "5732")
+            }
+            if scenario.earlierPurchaseRefundKopecks > 0 && index == 0 {
+                append(scenario.earlierPurchaseRefundKopecks, "refund", "Возврат", "Возврат прошлой покупки Тест", 2)
+            }
+            if index % 3 == 0 { append(scenario.cashDepositKopecks, "income", "Пополнение", "Пополнение наличными Тест", 11) }
+            append(-scenario.saveTransferKopecks, "internal_transfer", "Переводы", "Перевод между своими счетами в Сейв", 8)
+            append(scenario.saveTransferKopecks, "internal_transfer", "Переводы", "Счёт в Сейвах", 8, saveSide: true)
+            append(scenario.saveReturnKopecks, "internal_transfer", "Переводы", "Перевод между своими счетами из Сейва", 22)
+            append(-scenario.saveReturnKopecks, "internal_transfer", "Переводы", "Счёт в Сейвах", 22, saveSide: true)
+            append(scenario.interestKopecks, "interest_income", "Проценты", "Начисление процентов Тест", days, saveSide: true)
+        }
+        // ISO UTC strings are sortable; the original index makes equal timestamps reproducible too.
+        return result.enumerated().sorted {
+            $0.element.occurredAt == $1.element.occurredAt ? $0.offset < $1.offset : $0.element.occurredAt < $1.element.occurredAt
+        }.map(\.element)
+    }
+
+    struct Audit51Measurement {
+        let scenario: String
+        let month: Int
+        let day: String
+        let error: Double?
+        let bias: Double?
+        let covered: Bool
+        let forecast: FinancialEngine.MonthForecast
+        let actual: Int64
+        let knownCount: Int
+        let failures: [String]
+    }
+
+    static func audit51Measure(_ scenario: Audit51Scenario, monthIndices: [Int]? = nil,
+                               checkpoints: [Int] = [1, 5, 10, 15, 20, 25, 0]) -> [Audit51Measurement] {
+        let calendar = audit51Calendar()
+        let inputs = audit51Generate(scenario)
+        let dated = inputs.map { ($0, BankDateParser.parse($0.occurredAt)!) }
+        let first = calendar.date(from: DateComponents(year: scenario.year, month: 1, day: 1))!
+        var rows: [Audit51Measurement] = []
+        for index in monthIndices ?? Array(0..<scenario.months) {
+            let start = calendar.date(byAdding: .month, value: index, to: first)!
+            let end = calendar.date(byAdding: .month, value: 1, to: start)!
+            let days = calendar.range(of: .day, in: .month, for: start)!.count
+            let actualInputs = dated.filter { $0.1 >= start && $0.1 < end }.map(\.0)
+            let actual = FinancialEngine.report(actualInputs, in: DateInterval(start: start, end: end), taxonomy: .builtin).netExpenseKopecks
+            for checkpoint in checkpoints {
+                let day = checkpoint == 0 ? days : checkpoint
+                let now = calendar.date(byAdding: .day, value: day, to: start)!.addingTimeInterval(-0.001)
+                let known = dated.prefix { $0.1 <= now }.map(\.0)
+                let forecast = FinancialEngine.monthForecast(known, now: now, calendar: calendar, taxonomy: .builtin)
+                var failures: [String] = []
+                if forecast.projectedExpenseKopecks < 0 { failures.append("negative-expense") }
+                if forecast.projectedExpenseLowKopecks > forecast.projectedExpenseKopecks
+                    || forecast.projectedExpenseKopecks > forecast.projectedExpenseHighKopecks { failures.append("unordered-range") }
+                if checkpoint == 0 && forecast.projectedExpenseKopecks != actual { failures.append("month-end-not-actual") }
+                if checkpoint == 0 && !(forecast.projectedExpenseLowKopecks <= actual && actual <= forecast.projectedExpenseHighKopecks) {
+                    failures.append("month-end-outside-range")
+                }
+                let denominator = abs(Double(actual))
+                let delta = Double(forecast.projectedExpenseKopecks) - Double(actual)
+                rows.append(Audit51Measurement(scenario: scenario.id, month: index,
+                                               day: checkpoint == 0 ? "last" : String(day),
+                                               error: denominator == 0 ? nil : abs(delta) / denominator * 100,
+                                               bias: denominator == 0 ? nil : delta / denominator * 100,
+                                               covered: forecast.projectedExpenseLowKopecks <= actual && actual <= forecast.projectedExpenseHighKopecks,
+                                               forecast: forecast, actual: actual, knownCount: known.count, failures: failures))
+            }
+        }
+        return rows
+    }
+
+    static func audit51Quantile(_ values: [Double], _ quantile: Double) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let position = Double(sorted.count - 1) * quantile
+        let lower = Int(position)
+        let upper = min(lower + 1, sorted.count - 1)
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - Double(lower))
+    }
+
+    static func audit51PrintMetrics(_ rows: [Audit51Measurement], scenario: String, day: String) {
+        let errors = rows.compactMap(\.error)
+        let biases = rows.compactMap(\.bias)
+        let bias = biases.isEmpty ? 0 : biases.reduce(0, +) / Double(biases.count)
+        let coverage = rows.isEmpty ? 0 : Double(rows.filter(\.covered).count) / Double(rows.count) * 100
+        print(String(format: "METRIC\t%@\t%@\t%d\t%d\t%.3f\t%.3f\t%.3f\t%.3f", scenario, day,
+                     rows.count, errors.count, audit51Quantile(errors, 0.5), audit51Quantile(errors, 0.9), bias, coverage))
+    }
+
+    static func audit51RequireStableMiddle(_ rows: [Audit51Measurement]) {
+        // Seed 0x51A7, 12 months: worst day-15 APE is 41.077% (first month).
+        // After two baseline months the observed maximum is 10.031%.
+        // 45% overall / 12% warmed up are measured regression bounds, not product accuracy promises.
+        for row in rows where row.scenario == "stable" && row.day == "15" {
+            let limit = row.forecast.historyMonths >= 2 ? 12.0 : 45.0
+            require(row.error != nil && row.error! <= limit, "audit51: stable mid-month APE <= \(limit)% in month \(row.month + 1)")
+        }
+    }
+
+    // Full 12–24 month grid is separately callable if its runtime exceeds the local check budget.
+    // Passing assertInvariants=false is measurement only; violations are printed, never silently fixed.
+    static func testAudit51FullForecasts(assertInvariants: Bool = true, scenarios: [Audit51Scenario] = audit51Scenarios()) {
+        let started = Date()
+        print("METRIC\tscenario\tday\tcalls\tdefinedAPE\tmedianAPE\tP90APE\tbias\tcoverage")
+        var allRows: [Audit51Measurement] = []
+        for scenario in scenarios {
+            let rows = audit51Measure(scenario)
+            allRows += rows
+            print("SCENARIO\t\(scenario.id)\t\(scenario.title)\t\(scenario.months)\t\(audit51Generate(scenario).count)")
+            audit51PrintMetrics(rows, scenario: scenario.id, day: "all")
+            for day in ["1", "5", "10", "15", "20", "25", "last"] {
+                audit51PrintMetrics(rows.filter { $0.day == day }, scenario: scenario.id, day: day)
+            }
+            for row in rows {
+                print(String(format: "ROW\t%@\t%d\t%@\t%.6f\t%.6f\t%d\t%d\t%d\t%d", row.scenario, row.month + 1, row.day,
+                             row.error ?? -1, row.bias ?? 0, row.covered ? 1 : 0, row.knownCount, row.forecast.historyMonths,
+                             row.forecast.upcoming.filter { !$0.isIncome && $0.overdue }.count))
+            }
+            for row in rows where !row.failures.isEmpty {
+                print("INVARIANT\t\(row.scenario)\t\(row.month + 1)\t\(row.day)\t\(row.failures.joined(separator: ","))\t\(row.forecast.projectedExpenseKopecks)\t\(row.actual)")
+            }
+            if scenario.id == "stable" {
+                for row in rows where row.day == "15" {
+                    print(String(format: "STABLE_MIDDLE\t%d\t%.3f", row.month + 1, row.error ?? 0))
+                }
+            }
+            fflush(stdout)
+            if assertInvariants {
+                require(rows.allSatisfy { $0.failures.isEmpty }, "audit51: forecast invariants in \(scenario.id)")
+                audit51RequireStableMiddle(rows)
+            }
+        }
+        audit51PrintMetrics(allRows, scenario: "all", day: "all")
+        for day in ["1", "5", "10", "15", "20", "25", "last"] {
+            audit51PrintMetrics(allRows.filter { $0.day == day }, scenario: "all", day: day)
+        }
+        print(String(format: "RUNTIME\t%.3f\t%d", Date().timeIntervalSince(started), allRows.count))
+    }
+
+    static func testAudit51SyntheticGenerator() {
+        let started = Date()
+        let scenarios = audit51Scenarios()
+        require(scenarios.count == 10 && Set(scenarios.map(\.id)).count == 10, "audit51: ten distinctly named scenarios")
+        let calendar = audit51Calendar()
+        var lengths = Set<Int>()
+        for scenario in scenarios {
+            let first = audit51Generate(scenario)
+            let repeated = audit51Generate(scenario)
+            require(first.map { "\($0.occurredAt)|\($0.amountKopecks)|\($0.kind)|\($0.description)|\($0.category)|\($0.mcc ?? "")|\($0.paymentMethod ?? "")" }
+                    == repeated.map { "\($0.occurredAt)|\($0.amountKopecks)|\($0.kind)|\($0.description)|\($0.category)|\($0.mcc ?? "")|\($0.paymentMethod ?? "")" },
+                    "audit51: seed reproduces every input in \(scenario.id)")
+            require(zip(first, first.dropFirst()).allSatisfy { $0.occurredAt <= $1.occurredAt }, "audit51: sorted history")
+            require(first.allSatisfy { BankDateParser.parse($0.occurredAt) != nil && $0.status == "Выполнено" }, "audit51: ISO dates and completed status")
+            let start = calendar.date(from: DateComponents(year: scenario.year, month: 1, day: 1))!
+            for index in 0..<scenario.months {
+                let month = calendar.date(byAdding: .month, value: index, to: start)!
+                lengths.insert(calendar.range(of: .day, in: .month, for: month)!.count)
+            }
+            require(first.filter { $0.kind == "internal_transfer" }.allSatisfy {
+                let assessment = FinancialEngine.classify($0)
+                return assessment.type == .internalTransfer && assessment.expenseContributionKopecks == 0 && assessment.incomeContributionKopecks == 0
+            }, "audit51: own transfer legs are neither expense nor income")
+        }
+        require(lengths == [28, 29, 30, 31], "audit51: common and leap February, 30 and 31 days")
+        let cold = audit51Generate(scenarios.first { $0.id == "cold-start" }!)
+        require(cold.allSatisfy { calendar.component(.day, from: BankDateParser.parse($0.occurredAt)!) >= 16 }, "audit51: cold start really starts mid-month")
+        var varied = scenarios[0]; varied.seed += 1
+        require(audit51Generate(varied).map(\.amountKopecks) != audit51Generate(scenarios[0]).map(\.amountKopecks), "audit51: another seed changes daily amounts")
+        let stableInputs = audit51Generate(scenarios[0])
+        let noSalary = audit51Generate(scenarios.first { $0.id == "no-salary" }!)
+        require(noSalary.filter { $0.category == "Зарплата" && $0.occurredAt.hasPrefix("2023-07") }.isEmpty,
+                "audit51: missing-salary month contains no salary")
+        require(stableInputs.filter { $0.kind == "expense" }.map(\.amountKopecks) == noSalary.filter { $0.kind == "expense" }.map(\.amountKopecks),
+                "audit51: independent random streams keep expenses unchanged when salary is omitted")
+        let sparse = audit51Generate(scenarios.first { $0.id == "sparse-start" }!)
+        for month in 1...4 {
+            require(sparse.filter { $0.occurredAt.hasPrefix(String(format: "2023-%02d", month)) }.count == 1 + (month - 1) % 3,
+                    "audit51: early month really has one to three records")
+        }
+        require(stableInputs.filter { $0.description == "Годовая подписка Тест" }.count == 1,
+                "audit51: annual obligation occurs once per year")
+        require(audit51Generate(scenarios.last!).filter { $0.description == "Годовая подписка Тест" }.count == 2,
+                "audit51: 24-month history includes two annual obligations")
+        print(String(format: "Audit51 generator seconds: %.3f", Date().timeIntervalSince(started)))
+    }
+
+    static func testAudit51ForecastSmoke() {
+        let started = Date()
+        let calendar = audit51Calendar()
+        let now = calendar.date(from: DateComponents(year: 2024, month: 2, day: 29, hour: 23))!
+        let empty = FinancialEngine.monthForecast([], now: now, calendar: calendar)
+        require(empty.projectedExpenseKopecks == 0 && empty.projectedExpenseLowKopecks == 0 && empty.projectedExpenseHighKopecks == 0,
+                "audit51: empty leap-month forecast is a zero range")
+        let stable = audit51Scenarios()[0]
+        let rows = audit51Measure(stable, monthIndices: [0, 5, 11], checkpoints: [15, 0])
+        require(rows.allSatisfy { $0.failures.isEmpty }, "audit51: stable smoke invariants")
+        audit51RequireStableMiddle(rows)
+        let cold = audit51Measure(audit51Scenarios().first { $0.id == "cold-start" }!, checkpoints: [1, 0])
+        require(cold.allSatisfy { $0.failures.isEmpty } && cold.first?.knownCount == 0,
+                "audit51: cold start has no look-ahead, then closes at the actual expense")
+        print("Audit51 smoke: \(rows.count + cold.count + 1) forecasts; full metrics use testAudit51FullForecasts")
+        print(String(format: "Audit51 smoke seconds: %.3f", Date().timeIntervalSince(started)))
+    }
+
+    // Not called from main: these expectations fail on the audited engine; Claude owns the fixes.
+    static func testKnownIssues51() {
+        testKnownIssue51NegativeForecast()
+        testKnownIssue51OverdueMonthEnd()
+    }
+
+    static func testKnownIssue51NegativeForecast() {
+        let scenario = audit51Scenarios().first { $0.id == "many-refunds" }!
+        let row = audit51Measure(scenario, monthIndices: [0], checkpoints: [5])[0]
+        require(row.forecast.projectedExpenseKopecks >= 0,
+                "known issue51: refunds produce a negative expense forecast \(row.forecast.projectedExpenseKopecks); actual completed month is \(row.actual)")
+    }
+
+    static func testKnownIssue51OverdueMonthEnd() {
+        let calendar = audit51Calendar()
+        let inputs = (1...3).map { month in
+            op(-10_000, kind: "expense", category: "ЖКХ", description: "Коммунальные Тест",
+               date: String(format: "2024-%02d-15T12:00:00Z", month))
+        }
+        let start = calendar.date(from: DateComponents(year: 2024, month: 4, day: 1))!
+        let end = calendar.date(byAdding: .month, value: 1, to: start)!
+        let forecast = FinancialEngine.monthForecast(inputs, now: end.addingTimeInterval(-0.001), calendar: calendar)
+        let actual = FinancialEngine.report(inputs, in: DateInterval(start: start, end: end)).netExpenseKopecks
+        require(forecast.projectedExpenseKopecks == actual && forecast.projectedExpenseLowKopecks <= actual && actual <= forecast.projectedExpenseHighKopecks,
+                "known issue51: month-end forecast includes an unpaid overdue obligation \(forecast.projectedExpenseKopecks); actual is \(actual)")
+    }
+
     static func main() {
+        testAudit51SyntheticGenerator()
+        testAudit51ForecastSmoke()
         testKnownIssues50()
         testBudgetLargestAmount()
         testAudit50ReceiptResults()
