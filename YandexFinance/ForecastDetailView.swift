@@ -9,8 +9,6 @@ struct ForecastDetailView: View {
     let presentation: FinancePresentationCache
     /// The same setting the main screen reads: below this balance the end-of-month reserve turns yellow.
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
-    /// The cautious part of the irregular income goes into the reserve (decision C); the main screen reads the same setting.
-    @AppStorage("reserveCountsIrregular") private var countsIrregular = true
     @FocusState private var bufferFocused: Bool
     /// The late payment whose new day is being chosen.
     @State private var moving: FinancialEngine.UpcomingPayment?
@@ -67,9 +65,10 @@ struct ForecastDetailView: View {
         Section {
             Text("Останется к концу месяца").font(.headline)
             if let balance = balanceKopecks {
-                let reserve = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: forecast, includeIrregular: countsIrregular)
-                let range = FinancialEngine.monthReserveRange(balanceKopecks: balance, forecast: forecast, includeIrregular: countsIrregular)
-                let irregularLeft = countsIrregular ? forecast.cautiousIrregularLeftKopecks : 0
+                // Only money that is there or regularly comes: an irregular income is never counted in advance (the reserve
+                // cannot exceed the balance at the start of a month only because transfers usually come).
+                let reserve = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: forecast)
+                let range = FinancialEngine.monthReserveRange(balanceKopecks: balance, forecast: forecast)
                 Text(signedRubles(reserve))
                     .font(.largeTitle.weight(.semibold))
                     .foregroundStyle(reserveColor(reserve))
@@ -81,14 +80,15 @@ struct ForecastDetailView: View {
                         .font(.subheadline).foregroundStyle(.orange)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.futureExpenseKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))"
-                         + (irregularLeft > 0 ? " + нерегулярные (осторожно) \(rubles(irregularLeft))" : ""))
+                    Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.futureExpenseKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))")
                     Text("Счета: " + (accountNames.isEmpty ? "не выбраны" : accountNames.joined(separator: ", ")) + ". Отложенные деньги исключаются в настройках.")
                 }
                 .font(.caption).foregroundStyle(.secondary)
-                let withIncome = FinancialEngine.monthReserveWithTypicalIncome(balanceKopecks: balance, forecast: forecast)
-                if withIncome > reserve {
-                    Label("Если придут обычные нерегулярные поступления: ≈ \(signedRubles(withIncome))", systemImage: "arrow.down.circle")
+                // A hint, not the reserve: the smallest irregular income of the last full months that has not come yet.
+                if forecast.cautiousIrregularLeftKopecks > 0 {
+                    let withIncome = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: forecast, includeIrregular: true)
+                    let month = forecast.cautiousIrregularMonth.map { " (как в \($0.formatted(.dateTime.month(.wide))))" } ?? ""
+                    Label("Если придёт хотя бы минимум обычных поступлений\(month): ≈ \(signedRubles(withIncome))", systemImage: "arrow.down.circle")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
             } else {
@@ -96,15 +96,6 @@ struct ForecastDetailView: View {
                     .foregroundStyle(.secondary)
             }
             bufferRow
-            if forecast.cautiousIrregularIncomeKopecks > 0 {
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Учитывать нерегулярные поступления", isOn: $countsIrregular)
-                    Text("Самый маленький приход за последние полные месяцы"
-                         + (forecast.cautiousIrregularMonth.map { " (\($0.formatted(.dateTime.month(.wide))))" } ?? "")
-                         + ": \(rubles(forecast.cautiousIrregularIncomeKopecks)); в этом месяце уже пришло \(rubles(forecast.irregularIncomeSoFarKopecks)), в запас добавляется \(rubles(forecast.cautiousIrregularLeftKopecks)).")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
         }.glassRows()
     }
 

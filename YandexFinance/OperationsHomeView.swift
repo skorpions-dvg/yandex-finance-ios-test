@@ -19,7 +19,6 @@ struct OperationsHomeView: View {
     /// «Доходы» / «Расходы» tapped: the report of the chosen period.
     @State private var periodReport: ReportMode?
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
-    @AppStorage("reserveCountsIrregular") private var reserveCountsIrregular = true
     @State private var showSearch = false
     @State private var showAdd = false
     @State private var pendingSavedOperation: ManualOperation?
@@ -99,6 +98,7 @@ struct OperationsHomeView: View {
                     }
                 }
                 .appSurface()
+                .watchesPushedScreens()
                 .listStyle(.insetGrouped)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -192,7 +192,7 @@ struct OperationsHomeView: View {
     // MARK: - Period Row
     private var periodRow: some View {
         Section {
-            VStack(spacing: 4) {
+            VStack(alignment: .leading, spacing: 4) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         capsuleButton(title: "Период",
@@ -220,6 +220,7 @@ struct OperationsHomeView: View {
                     Text("\(from.formatted(.dateTime.day().month().year())) — \(through.formatted(.dateTime.day().month().year()))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }.glassRows()
@@ -333,7 +334,7 @@ struct OperationsHomeView: View {
                             Text("—").font(.title3.weight(.semibold))
                             Text(accounts.isEmpty ? "добавьте счета" : "выберите счета в настройках").font(.caption).foregroundStyle(.secondary)
                         } else {
-                            let reserve = FinancialEngine.monthReserve(balanceKopecks: reserveBalance(), forecast: f, includeIrregular: reserveCountsIrregular)
+                            let reserve = FinancialEngine.monthReserve(balanceKopecks: reserveBalance(), forecast: f)
                             Text(signedRubles(reserve))
                                 .font(.title3.weight(.semibold))
                                 .foregroundStyle(reserveColor(reserve))

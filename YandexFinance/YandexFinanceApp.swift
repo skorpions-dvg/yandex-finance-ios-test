@@ -54,6 +54,15 @@ struct ContentView: View {
     @ScaledMetric(relativeTo: .caption2) private var tabContentHeight: CGFloat = 50
     @State private var bankHeaderHeight: CGFloat = 52
     private var bottomSpace: CGFloat { max(Self.barSpace, tabContentHeight + 6) }
+    /// Tab pages with a screen pushed over their root. On such a page the pages do not turn under the finger: the swipe to the
+    /// right is the system «back» (the two gestures fought, and every other swipe opened the neighbouring tab).
+    @State private var pushedPages: Set<Int> = []
+
+    private func pushedChange(_ page: Int) -> (Bool) -> Void {
+        { pushed in
+            if pushed { pushedPages.insert(page) } else { pushedPages.remove(page) }
+        }
+    }
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
@@ -89,6 +98,7 @@ struct ContentView: View {
                                                onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
+                                .environment(\.pageScreenPushed, pushedChange(1))
                                 .frame(width: width, height: height)
                                 .overlay {
                                     // While the accounts are open, a tap on the visible edge of the page closes them.
@@ -100,18 +110,22 @@ struct ContentView: View {
                             ReportsView(browser: browser, presentation: presentation)
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
+                                .environment(\.pageScreenPushed, pushedChange(2))
                                 .frame(width: width, height: height)
                                 .id(2)
                             SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
                                          onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
+                                .environment(\.pageScreenPushed, pushedChange(3))
                                 .frame(width: width, height: height)
                                 .id(3)
                         }
                         .scrollTargetLayout()
                     }
                     .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
+                    // Only the page in front decides: a page left with a screen pushed does not hold the others.
+                    .scrollDisabled(pushedPages.contains(page ?? 1))
                     .scrollPosition(id: $page, anchor: .leading)
                     .scrollIndicators(.hidden)
                     .onChange(of: page) { _, newPage in
@@ -185,7 +199,14 @@ struct ContentView: View {
     private func closeAccounts() { animate { page = 1 } }
 
     private func selectTab(_ tab: Int) {
-        if selectedTab == tab && tab == 3 { settingsReset += 1 }
+        if selectedTab == tab && tab == 3 {
+            settingsReset += 1
+            // A new Settings root replaces the old one: whatever order their appear/disappear come in, the pages turn again.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                pushedPages.remove(3)
+            }
+        }
         selectedTab = tab
         if page == tab {
             // The saved position can stay at a page the pager is no longer on; a repeated value would do nothing.
@@ -308,7 +329,7 @@ private struct TabLabels: View {
                     icon(index)
                         .font(.title3)
                         .symbolVariant(active ? .fill : .none)
-                    Text(tabItems[index].title).font(.caption2.weight(.medium)).lineLimit(2).multilineTextAlignment(.center)
+                    Text(tabItems[index].title).font(.caption2.weight(.medium)).lineLimit(1)
                 }
                 .foregroundStyle(active ? Color.accentColor : Color.primary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -646,6 +667,46 @@ struct OperationLookView: View {
     }
 }
 
+/// «Журнал проверок»: what is saved, where the archive comes from, the last checks and the reading errors.
+@MainActor
+struct SyncJournalView: View {
+    @ObservedObject var browser: BankBrowser
+    let pendingCount: Int
+
+    var body: some View {
+        List {
+            Section {
+                Text("Сохранено операций: \(browser.history.operations.count)")
+                if let imported = browser.history.statementImportedAt {
+                    Text("Архив из выписки: до 30.09.2026")
+                    Text("Импортировано из выписки: \(browser.history.statementOperationCount ?? 0) операций · \(imported.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Архив до 01.10.2026: выписка ещё не импортирована")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if let date = browser.history.lastSync {
+                    Text("Последнее сохранение: \(date.formatted(date: .abbreviated, time: .shortened))")
+                }
+                Text(browser.bootstrapComplete ? "Архив и текущая история подготовлены" : "Архив до 01.10.2026 ещё не импортирован")
+                Text("Ошибок чтения: \(browser.history.unresolvedIssues?.count ?? 0)")
+                if let date = browser.history.lastCompletedSync {
+                    Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
+                }
+                if pendingCount > 0 {
+                    Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(pendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }.glassRows()
+        }
+        .appSurface()
+        .navigationTitle("Журнал проверок")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 /// Bank connection, sync, statement import and storage, moved here from the former bank tab.
 @MainActor
 struct SettingsView: View {
@@ -791,31 +852,21 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.orange)
                     }
                 } header: { Text("Обновление") }.glassRows()
+                // One row; everything else is on its own screen (the owner found the section too long).
                 Section {
-                    Text("Сохранено операций: \(browser.history.operations.count)")
-                    if let imported = browser.history.statementImportedAt {
-                        Text("Архив из выписки: до 30.09.2026")
-                        Text("Импортировано из выписки: \(browser.history.statementOperationCount ?? 0) операций · \(imported.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("Архив до 01.10.2026: выписка ещё не импортирована")
-                            .font(.caption).foregroundStyle(.orange)
+                    let issues = browser.history.unresolvedIssues?.count ?? 0
+                    let attention = issues > 0 || pendingCount > 0 || browser.history.statementImportedAt == nil
+                    NavigationLink {
+                        SyncJournalView(browser: browser, pendingCount: pendingCount)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Журнал проверок")
+                            Text("\(browser.history.operations.count) операций · ошибок \(issues)"
+                                 + (browser.history.lastCompletedSync.map { " · проверено \($0.formatted(.dateTime.day().month().hour().minute()))" } ?? ""))
+                                .font(.caption2).foregroundStyle(attention ? Color.orange : Color.secondary)
+                        }
                     }
-                    if let date = browser.history.lastSync {
-                        Text("Последнее сохранение: \(date.formatted(date: .abbreviated, time: .shortened))")
-                    }
-                    Text(browser.bootstrapComplete ? "Архив и текущая история подготовлены" : "Архив до 01.10.2026 ещё не импортирован")
-                    Text("Ошибок чтения: \(browser.history.unresolvedIssues?.count ?? 0)")
-                    if let date = browser.history.lastCompletedSync {
-                        Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
-                    }
-                    if pendingCount > 0 {
-                        Text("Старых операций в обработке старше \(IncrementalSyncPolicy.pendingWatchDays) дней: \(pendingCount). Они не растягивают автообновление; при необходимости проверьте их вручную.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                    Text("Архив до 01.10.2026 берётся из PDF-выписки и повторно через сайт не сканируется. История с 01.10.2026 и новее проверяется через банк; после успешной проверки автообновление использует короткое окно с запасом. При закрытом приложении обновление не гарантируется.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                } header: { Text("Журнал проверок") }.glassRows()
+                }.glassRows()
                 Section {
                     NavigationLink {
                         DataAndCopiesView(browser: browser, exportBackup: exportBackupJSON, exportReceipts: exportReceiptsZIP,
@@ -862,6 +913,7 @@ struct SettingsView: View {
                 }.listRowBackground(Color.clear)
             }
             .appSurface()
+            .watchesPushedScreens()
             .navigationTitle("Настройки")
             // Large titles lose their leading margin inside the horizontal pages; inline matches «Операции».
             .navigationBarTitleDisplayMode(.inline)

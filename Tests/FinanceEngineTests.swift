@@ -1423,6 +1423,11 @@ struct FinanceEngineTests {
         require(april.cautiousIrregularIncomeKopecks == 25_000 && calendar.component(.month, from: april.cautiousIrregularMonth ?? .distantPast) == 2,
                 "the smallest irregular income of the full months: \(april.cautiousIrregularIncomeKopecks)")
         require(april.cautiousIrregularLeftKopecks == 15_000, "what already came this month is taken off")
+        // The reserve the screens show never counts irregular income: it is never above the balance plus the regular income still expected.
+        for balance in [0, 50_000, 100_000] as [Int64] {
+            require(FinancialEngine.monthReserve(balanceKopecks: balance, forecast: april) <= balance + april.expectedIncomeLeftKopecks,
+                    "the reserve is never above the balance and the regular income still expected")
+        }
         require(FinancialEngine.monthReserve(balanceKopecks: 100_000, forecast: april, includeIrregular: true)
                 == FinancialEngine.monthReserve(balanceKopecks: 100_000, forecast: april) + 15_000, "the reserve adds it only when asked")
         let range = FinancialEngine.monthReserveRange(balanceKopecks: 100_000, forecast: april, includeIrregular: true)
