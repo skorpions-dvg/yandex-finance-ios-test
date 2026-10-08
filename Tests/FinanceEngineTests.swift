@@ -1271,6 +1271,81 @@ struct FinanceEngineTests {
                 "a rejected batch makes no partial category edits")
     }
 
+    static func testManualExpenseReviewUndo() {
+        let day = BankDateParser.parse("2032-06-02T10:00:00Z")!
+        let manual = ManualOperation(kind: .expense, amountKopecks: 10_000, date: day, accountID: UUID(),
+                                     group: "Другое", subcategory: "Прочее", note: "КафеТест ручная покупка")
+        let neighbour = ManualOperation(kind: .expense, amountKopecks: 5_000, date: day, accountID: nil,
+                                        group: "Другое", subcategory: "Прочее", note: manual.note)
+        var history = SavedHistory()
+        history.manualOperations = [manual, neighbour]
+        let bank = bankOp("manual-review-bank", -700, description: "МагазинТест банковский", mcc: "5411")
+        history.operations = [bank]
+        let cafe = history.categoryTree.first { $0.name == "Еда" }!.categories.first { $0.name == "Кафе и рестораны" }!.id
+        history.categoryRules = [CategoryRule(payeeKey: FinancialEngine.payeeRuleKey(bank.description),
+                                               title: bank.description, categoryID: cafe)]
+        history.categoryOverrides = [bank.identity: cafe]
+        let group = UncategorizedReview.groups(history).first { $0.operations[0].manualID == manual.id }!
+        let options = CategorySuggestions.suggest(for: group, history: history)
+        require(!group.appliesToAll && options.first?.categoryID == cafe, "manual expense receives a word suggestion and stays individual")
+        let previous = ExpenseReviewUndo(history, operation: manual.bankOperation)
+        require(previous.manualCategory?.operationID == manual.id && previous.manualCategory?.categoryID == UncategorizedReview.otherExpenseID,
+                "manual undo captures only the record id and former category")
+        let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, duration: 30 * 86400)
+        let before = FinancialEngine.report(history.financialInputs, in: interval)
+        require(ExpenseReviewEdits.apply(cafe, to: group, history: &history) && previous.changed(in: history),
+                "manual quick review applies its suggestion and offers undo")
+        require(history.manualOperations?[0].subcategory == "Кафе и рестораны" && history.manualOperations?[1] == neighbour,
+                "manual quick review changes only the selected expense, even for the same payee")
+        require(history.categoryRules == previous.rules && history.categoryOverrides == previous.overrides,
+                "manual quick review does not create a bank rule or an override")
+        let after = FinancialEngine.report(history.financialInputs, in: interval)
+        require(before.grossExpenseKopecks == after.grossExpenseKopecks && before.incomeKopecks == after.incomeKopecks,
+                "manual quick review preserves income and expense totals")
+
+        // Other edits and bank sync may arrive during the undo window.
+        history.manualOperations?[0].amountKopecks = 31_400
+        history.manualOperations?[0].date = day.addingTimeInterval(3600)
+        history.manualOperations?[0].accountID = UUID()
+        history.manualOperations?[0].note = "КафеТест новый комментарий"
+        require(history.setExpenseCategory(cafe, for: neighbour.bankOperation, forPayee: false), "manual undo fixture edits a neighbouring expense")
+        let addedIncome = ManualOperation(kind: .income, amountKopecks: 8_000, date: day, accountID: nil,
+                                         group: nil, subcategory: "Зарплата и выплаты", note: "ПоступлениеТест")
+        history.manualOperations?.append(addedIncome)
+        let synced = bankOp("manual-review-synced", -900, description: "ПолучательТест новый")
+        history.operations.append(synced)
+        history.incomeCategoryOverrides = ["manual-review-income": "Зарплата и выплаты"]
+        var expected = history.manualOperations!
+        expected[0].group = "Другое"
+        expected[0].subcategory = "Прочее"
+        let beforeUndo = FinancialEngine.report(history.financialInputs, in: interval)
+        require(previous.restore(in: &history), "manual undo restores the former category through the existing setter")
+        require(history.manualOperations == expected,
+                "manual undo preserves the current amount, date, account, comment, neighbouring category and added entry")
+        require(history.operations == [bank, synced] && history.incomeCategoryOverrides?["manual-review-income"] == "Зарплата и выплаты",
+                "manual undo preserves newly synced bank data and income choices")
+        let undone = FinancialEngine.report(history.financialInputs, in: interval)
+        require(beforeUndo.grossExpenseKopecks == undone.grossExpenseKopecks && beforeUndo.incomeKopecks == undone.incomeKopecks,
+                "manual undo changes no financial totals")
+
+        var removed = history
+        removed.manualOperations?.removeAll { $0.id == manual.id }
+        removed.categoryOverrides?["later-choice"] = cafe
+        let remaining = removed.manualOperations
+        let laterOverrides = removed.categoryOverrides
+        require(!previous.restore(in: &removed) && removed.manualOperations == remaining && removed.categoryOverrides == laterOverrides,
+                "manual undo never recreates a deleted record or partially restores category settings")
+        var changedKind = history
+        changedKind.manualOperations?[0].kind = .income
+        let currentEntries = changedKind.manualOperations
+        require(!previous.restore(in: &changedKind) && changedKind.manualOperations == currentEntries,
+                "manual undo cannot change an operation's newly edited financial type")
+        require(history.renameExpenseCategory(UncategorizedReview.otherExpenseID, to: "РазобратьТест"), "manual undo fixture renames the old category")
+        require(history.setExpenseCategory(cafe, for: history.manualOperations![0].bankOperation, forPayee: false), "manual undo fixture selects another category")
+        require(previous.restore(in: &history) && history.manualOperations?[0].subcategory == "РазобратьТест",
+                "manual undo uses the stable category id and respects a category rename")
+    }
+
     static func testCardToSaveTransfer() {
         // The bank's shared history lists a card → Save transfer as two rows titled after the Save account.
         let day = BankDateParser.parse("2026-10-07T00:00:00Z")!
@@ -2167,6 +2242,7 @@ struct FinanceEngineTests {
         testCategorySuggestions()
         testRuleCandidates()
         testExpenseReviewEdits()
+        testManualExpenseReviewUndo()
         testFixedCostGroups()
         testIncomeCategories()
         testSaveStatementSource()

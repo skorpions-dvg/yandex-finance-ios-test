@@ -107,8 +107,7 @@ private struct ReviewGroupOperationsView: View {
         let suggestions = QuickReviewCache.suggestions(browser.history, presentation: presentation)
         List {
             if let group = groups.first(where: { $0.id == groupID }), let operation = group.operations.first {
-                // Manual entries keep the existing picker until their undo scope is clarified (their category is not an override).
-                if group.kind == .expense && !operation.isManual, let options = suggestions[group.id], !options.isEmpty {
+                if group.kind == .expense, let options = suggestions[group.id], !options.isEmpty {
                     Section("Подсказки категории") {
                         ForEach(options) { suggestion in
                             Button {

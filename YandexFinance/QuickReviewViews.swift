@@ -30,7 +30,7 @@ final class QuickReviewState: ObservableObject {
     }
 
     func apply(_ categoryID: UUID, to group: ReviewGroup, browser: BankBrowser) -> String? {
-        let previous = Undo(browser.history)
+        let previous = Undo(browser.history, operation: group.operations.first)
         let error = saveExpenseCategoryChange(browser) { history in
             ExpenseReviewEdits.apply(categoryID, to: group, history: &history)
         }
@@ -53,10 +53,11 @@ final class QuickReviewState: ObservableObject {
 
     func cancelApplication(browser: BankBrowser) -> String? {
         guard let previous = undo else { return nil }
-        // Restore category settings only; bank sync, accounts and other edits keep their current values.
-        guard browser.updateUserData({ history in
+        // Restore category settings and the selected manual category; keep all other current data.
+        let error = saveExpenseCategoryChange(browser) { history in
             previous.restore(in: &history)
-        }) else { return browser.message }
+        }
+        guard error == nil else { return error }
         expiration?.cancel()
         undo = nil
         return nil
@@ -139,7 +140,7 @@ struct QuickReviewUndoModifier: ViewModifier {
     }
 }
 
-/// The existing picker stays intact; capture only category settings when it opens, offer undo when it returns.
+/// Capture category settings and the selected manual category when the existing picker opens.
 @MainActor
 struct QuickReviewCategoryPicker: View {
     @ObservedObject var browser: BankBrowser
@@ -150,7 +151,7 @@ struct QuickReviewCategoryPicker: View {
 
     var body: some View {
         OperationExpenseCategoryView(browser: browser, operation: operation, applyToAll: appliesToAll)
-            .onAppear { previous = QuickReviewState.Undo(browser.history) }
+            .onAppear { previous = QuickReviewState.Undo(browser.history, operation: operation) }
             .onDisappear {
                 if let previous, previous.changed(in: browser.history) { state.offerUndo(previous) }
             }

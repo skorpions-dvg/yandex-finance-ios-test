@@ -20,22 +20,45 @@ struct RuleCandidate: Equatable, Identifiable {
 
 /// A short-lived undo record, never a backup of the financial history.
 struct ExpenseReviewUndo {
+    struct ManualCategory {
+        let operationID: UUID
+        let categoryID: UUID
+    }
+
     let id = UUID()
     let rules: [CategoryRule]?
     let overrides: [String: UUID]?
+    let manualCategory: ManualCategory?
 
-    init(_ history: SavedHistory) {
+    init(_ history: SavedHistory, operation: BankOperation? = nil) {
         rules = history.categoryRules
         overrides = history.categoryOverrides
+        if let id = operation?.manualID,
+           let current = history.manualOperations?.first(where: { $0.id == id }),
+           let categoryID = history.expenseCategoryID(for: current.bankOperation) {
+            manualCategory = ManualCategory(operationID: id, categoryID: categoryID)
+        } else { manualCategory = nil }
     }
 
     func changed(in history: SavedHistory) -> Bool {
-        rules != history.categoryRules || overrides != history.categoryOverrides
+        if let previous = manualCategory {
+            guard let current = history.manualOperations?.first(where: { $0.id == previous.operationID }) else { return false }
+            return history.expenseCategoryID(for: current.bankOperation) != previous.categoryID
+        }
+        return rules != history.categoryRules || overrides != history.categoryOverrides
     }
 
-    func restore(in history: inout SavedHistory) {
+    @discardableResult
+    func restore(in history: inout SavedHistory) -> Bool {
+        if let previous = manualCategory {
+            // Use the current record, so amount, date, accounts and comment edited since the choice survive undo.
+            guard let current = history.manualOperations?.first(where: { $0.id == previous.operationID }),
+                  current.kind == .expense,
+                  history.setExpenseCategory(previous.categoryID, for: current.bankOperation, forPayee: false) else { return false }
+        }
         history.categoryRules = rules
         history.categoryOverrides = overrides
+        return true
     }
 }
 
