@@ -24,6 +24,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published private(set) var codeLength = 4
     /// The owner chose the bank page itself for this sign-in: the code window does not come back over it.
     private var preferBankPage = false
+    /// The balances are being read (the bank's main page may be open for it): a second reading does not start meanwhile.
+    private var readingBalances = false
     @Published var busy = false
     @Published var message = ""
     @Published private(set) var statementPreview: StatementImportPreview?
@@ -323,10 +325,35 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// operations always have «−» or «+», so a row of the history is never taken for a balance). Two different sums for one label
     /// and no sum at all are left alone; the last reading stays until a new one is found.
     private func readBankBalances() async {
+        guard !readingBalances else { return }
+        readingBalances = true
+        defer { readingBalances = false }
+        if await readBalancesOnPage() { return }
+        // The history shows no balances; the bank's main page («Главный») does. Tap it, read, and go back to the history the
+        // scanner reads (whatever was found).
+        guard !busy, !signInRequested else { return }
+        let tap = """
+        const leaf = [...document.querySelectorAll('body *')].find(el => el.children.length === 0 && el.getClientRects().length > 0 &&
+            /^главн(ый|ая)$/i.test((el.textContent || '').trim()));
+        const target = leaf ? (leaf.closest('a, button, [role="button"], [role="tab"], [role="link"]') || leaf) : null;
+        if (target) target.click();
+        return !!target;
+        """
+        guard (try? await webView.callAsyncJavaScript(tap, arguments: [:], in: nil, contentWorld: .defaultClient) as? Bool) == true else { return }
+        for _ in 0..<16 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !busy, !signInRequested else { return }
+            if await readBalancesOnPage() { break }
+        }
+        guard !busy, !signInRequested else { return }
+        webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
+    }
+
+    /// Reads the balances on the page that is open now; true when one was found and saved.
+    private func readBalancesOnPage() async -> Bool {
         let script = """
-        const labels = { card: /^карта\\s+п[эе]й$/i, save: /^(сч[её]т\\s+в\\s+сейвах|сейв)$/i };
+        const labels = { card: /^карта(\\s+п[эе]й)?$/i, save: /^(сч[её]т\\s+в\\s+сейвах|сейвы?)$/i };
         const balance = /^\\d{1,3}([\\s\\u00a0\\u202f]\\d{3})*(,\\d{1,2})?\\s*₽$/;
-        const signed = /^[+−–-]\\s*\\d/;
         const leaves = [...document.querySelectorAll('body *')].filter(el => el.children.length === 0 && el.getClientRects().length > 0);
         const result = {};
         for (const [key, label] of Object.entries(labels)) {
@@ -338,8 +365,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                     box = box.parentElement;
                     const lines = (box.innerText || '').split('\\n').map(line => line.trim()).filter(Boolean);
                     if (lines.length > 4) break;
+                    // One sum without a sign next to the label. The sums of operations always have «−» or «+», so a row of the
+                    // history never gives one; a signed line next to a balance (the interest of Save) does not matter.
                     const found = lines.filter(line => balance.test(line));
-                    if (found.length === 1 && !lines.some(line => signed.test(line))) { sums.add(found[0]); break; }
+                    if (found.length === 1) { sums.add(found[0]); break; }
                 }
             }
             if (sums.size === 1) result[key] = [...sums][0];
@@ -347,16 +376,17 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         return result;
         """
         guard let found = try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient) as? [String: Any]
-        else { return }
+        else { return false }
         let card = (found["card"] as? String).flatMap(FinancialEngine.rublesKopecks)
         let save = (found["save"] as? String).flatMap(FinancialEngine.rublesKopecks)
-        guard card != nil || save != nil else { return }
+        guard card != nil || save != nil else { return false }
         var reading = history.bankBalances ?? BankBalanceReading(readAt: Date())
         if let card { reading.cardKopecks = card }
         if let save { reading.saveKopecks = save }
         reading.readAt = Date()
         let read = reading
         updateUserData { $0.bankBalances = read }
+        return true
     }
 
     /// An error next to the code field (not anywhere on the page: the word «ошибка» can be in any other text).
