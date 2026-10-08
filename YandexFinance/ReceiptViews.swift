@@ -119,8 +119,9 @@ struct ReceiptSection: View {
             sourceRow("Из галереи", "photo.on.rectangle") { showGallery = true }
             sourceRow("Документ", "doc") { showFiles = true }
         }
-        .padding(.vertical, 6)
-        .frame(minWidth: 230)
+        .padding(.vertical, 4)
+        // A fixed narrow width: with a flexible one the popover spread over most of the screen.
+        .frame(width: 190)
         .presentationCompactAdaptation(.popover)
     }
 
@@ -133,8 +134,9 @@ struct ReceiptSection: View {
             }
         } label: {
             Label(title, systemImage: icon)
+                .font(.subheadline)
                 .foregroundStyle(.primary)
-                .padding(.horizontal, 16).padding(.vertical, 12)
+                .padding(.horizontal, 14).padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
