@@ -31,15 +31,31 @@ extension BudgetStatus {
 struct BudgetBar: View {
     let fraction: Double
     let level: BudgetLevel
+    var status: BudgetStatus? = nil
+
+    static func accessibilityValue(_ status: BudgetStatus) -> String {
+        func amount(_ kopecks: Int64) -> String {
+            (Decimal(kopecks) / 100).formatted(.number.precision(.fractionLength(0)).locale(Locale(identifier: "ru_RU"))) + " рублей"
+        }
+        let remaining = status.remainingKopecks >= 0 ? "осталось \(amount(status.remainingKopecks))"
+                                                   : "превышен на \(amount(-status.remainingKopecks))"
+        return "Потрачено \(status.percent) процентов, \(remaining), лимит \(amount(status.limitKopecks))"
+            + (status.isMonthOnly ? ", только этот месяц" : "")
+    }
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.1))
-                Capsule().fill(level.color).frame(width: max(4, geometry.size.width * min(1, max(0, fraction))))
+                if fraction > 0 {
+                    Capsule().fill(level.color).frame(width: max(4, geometry.size.width * min(1, fraction)))
+                }
             }
         }
         .frame(height: 6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status?.title ?? "Бюджет")
+        .accessibilityValue(status.map { Self.accessibilityValue($0) } ?? "Потрачено \(Int(max(0, fraction) * 100)) процентов")
     }
 }
 
@@ -117,23 +133,40 @@ struct BudgetsView: View {
     private func row(_ status: BudgetStatus, _ monthKey: String) -> some View {
         Button { editing = BudgetFormTarget(group: status.group, isNew: false, month: monthKey) } label: {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Image(systemName: status.group == nil ? "calendar" : "tag").foregroundStyle(.secondary).frame(width: 24)
-                    Text(status.title).font(.headline)
-                    if status.isMonthOnly { Text("только этот месяц").font(.caption2).foregroundStyle(.secondary) }
-                    Spacer()
-                    Text("\(status.percent) %").font(.headline).monospacedDigit().foregroundStyle(status.level.color)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Label(status.title, systemImage: status.group == nil ? "calendar" : "tag").font(.headline)
+                        Spacer()
+                        Text("\(status.percent) %").font(.headline).monospacedDigit()
+                    }.fixedSize(horizontal: true, vertical: false)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label(status.title, systemImage: status.group == nil ? "calendar" : "tag").font(.headline)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Потрачено \(status.percent) %").font(.subheadline).monospacedDigit()
+                    }
                 }
-                BudgetBar(fraction: status.fraction, level: status.level)
-                HStack {
-                    Text("\(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
-                    Spacer()
-                    Text(status.caption).foregroundStyle(status.level == .calm ? Color.secondary : status.level.color)
+                if status.isMonthOnly { Text("только этот месяц").font(.caption).foregroundStyle(.primary) }
+                BudgetBar(fraction: status.fraction, level: status.level, status: status).accessibilityHidden(true)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Text("\(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
+                        Spacer()
+                        Text(status.caption)
+                    }.fixedSize(horizontal: true, vertical: false)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
+                        Text(status.caption)
+                    }.fixedSize(horizontal: false, vertical: true)
                 }
-                .font(.caption).monospacedDigit()
+                .font(.caption).monospacedDigit().foregroundStyle(.primary)
             }
+            .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(status.title)
+        .accessibilityValue(BudgetBar.accessibilityValue(status))
+        .accessibilityHint("Изменить лимит бюджета")
     }
 }
 

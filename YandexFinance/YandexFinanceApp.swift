@@ -51,11 +51,14 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     /// Height the floating tab bar takes at the bottom of every page.
     static let barSpace: CGFloat = 56
+    @ScaledMetric(relativeTo: .caption2) private var tabContentHeight: CGFloat = 50
+    @State private var bankHeaderHeight: CGFloat = 52
+    private var bottomSpace: CGFloat { max(Self.barSpace, tabContentHeight + 6) }
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
             BankWebView(browser: browser)
-                .padding(.top, browser.bankPageVisible ? (browser.signInRequested ? 110 : 52) : 0)
+                .padding(.top, browser.bankPageVisible ? bankHeaderHeight : 0)
                 .allowsHitTesting(browser.bankPageVisible)
                 .accessibilityHidden(!browser.bankPageVisible)
             // One opaque wallpaper covers the mounted bank page without hiding its WebView.
@@ -74,7 +77,7 @@ struct ContentView: View {
                         HStack(spacing: 0) {
                             // Clear Liquid Glass: the wallpaper and the edge of the page show through, nothing is dimmed.
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
-                                .frame(width: drawerWidth, height: max(0, height - Self.barSpace - 16), alignment: .top)
+                                .frame(width: drawerWidth, height: max(0, height - bottomSpace - 16), alignment: .top)
                                 // Clear glass with a grey haze: the wallpaper shows through, the rows stay readable.
                                 .glassEffect(.clear.tint(colorScheme == .dark ? Color.black.opacity(0.45) : Color.white.opacity(0.28)), in: .rect(cornerRadius: 28))
                                 .clipShape(.rect(cornerRadius: 28))
@@ -85,7 +88,7 @@ struct ContentView: View {
                             OperationsHomeView(browser: browser, presentation: presentation, onAccounts: openAccounts,
                                                onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
-                                .environment(\.bottomBarSpace, Self.barSpace)
+                                .environment(\.bottomBarSpace, bottomSpace)
                                 .frame(width: width, height: height)
                                 .overlay {
                                     // While the accounts are open, a tap on the visible edge of the page closes them.
@@ -96,13 +99,13 @@ struct ContentView: View {
                                 .id(1)
                             ReportsView(browser: browser, presentation: presentation)
                                 // Lists scroll under the floating bar and stop with their last row above it.
-                                .environment(\.bottomBarSpace, Self.barSpace)
+                                .environment(\.bottomBarSpace, bottomSpace)
                                 .frame(width: width, height: height)
                                 .id(2)
                             SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
                                          onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
-                                .environment(\.bottomBarSpace, Self.barSpace)
+                                .environment(\.bottomBarSpace, bottomSpace)
                                 .frame(width: width, height: height)
                                 .id(3)
                         }
@@ -134,7 +137,8 @@ struct ContentView: View {
                 }
 
                 // Close to the bottom edge, just above the home indicator, as in Telegram.
-                LensTabBar(progress: tabProgress, selection: tabSelection, reduceMotion: reduceMotion, select: selectTab)
+                LensTabBar(progress: tabProgress, selection: tabSelection, reduceMotion: reduceMotion,
+                           height: max(50, tabContentHeight), select: selectTab)
                     .padding(.horizontal, 40)
                     .padding(.bottom, -14)
             }
@@ -146,13 +150,14 @@ struct ContentView: View {
                         Button("Готово") { browser.finishSignIn() }.fontWeight(.semibold)
                         Spacer()
                         Text(browser.pageTextNotice.isEmpty ? browser.host : browser.pageTextNotice).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Button { browser.copyPageText() } label: { Image(systemName: "doc.on.doc") }
                             .accessibilityLabel("Скопировать текст страницы")
                         Spacer()
                         Button("История") { browser.openHistory() }.disabled(browser.busy)
                     }
                     .padding(.horizontal)
-                    .frame(height: 52)
+                    .frame(minHeight: 52)
                     if browser.signInRequested {
                         Label("Банк просит войти. Введите код из SMS — iPhone подскажет его над клавиатурой. После входа страница закроется сама.",
                               systemImage: "key.fill")
@@ -162,6 +167,7 @@ struct ContentView: View {
                     }
                 }
                 .background(.bar)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bankHeaderHeight = $0 }
             }
         }
         .onChange(of: browser.busy) { _, busy in
@@ -221,6 +227,7 @@ private struct LensTabBar: View {
     let progress: TabBarProgress
     let selection: TabBarSelection
     let reduceMotion: Bool
+    let height: CGFloat
     let select: (Int) -> Void
     @State private var drag = LensDrag()
     @State private var held = false
@@ -263,7 +270,7 @@ private struct LensTabBar: View {
                     }
             )
         }
-        .frame(height: 50)
+        .frame(height: height)
         .padding(inset)
         // Frosted glass with a dark haze, so a bright wallpaper or list under the bar does not wash out the labels.
         .glassEffect(.regular.tint(colorScheme == .dark ? Color.black.opacity(0.38) : Color.white.opacity(0.22)), in: .capsule)
@@ -301,7 +308,7 @@ private struct TabLabels: View {
                     icon(index)
                         .font(.title3)
                         .symbolVariant(active ? .fill : .none)
-                    Text(tabItems[index].title).font(.caption2.weight(.medium))
+                    Text(tabItems[index].title).font(.caption2.weight(.medium)).lineLimit(2).multilineTextAlignment(.center)
                 }
                 .foregroundStyle(active ? Color.accentColor : Color.primary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -677,18 +684,22 @@ struct SettingsView: View {
     }
 
     private func exportReceiptsZIP() {
-        guard let archive = ReceiptStore.exportArchive() else {
-            browser.message = "Фото чеков на этом телефоне пока нет."
-            return
+        do {
+            guard let archive = try ReceiptStore.exportArchive() else {
+                browser.message = "Фото чеков на этом телефоне пока нет."
+                return
+            }
+            guard archive.count > 0 else {
+                browser.message = ReceiptLogic.exportMessage(saved: 0, skipped: archive.skipped)
+                return
+            }
+            exportedType = .zip
+            exportedName = "FinanceTest-receipts-\(Date().formatted(.iso8601.year().month().day()))"
+            exportedNotice = ReceiptLogic.exportMessage(saved: archive.count, skipped: archive.skipped)
+            exportedBackup = BackupDocument(data: archive.data)
+        } catch {
+            browser.message = "Не удалось прочитать список фото чеков: \(error.localizedDescription). Попробуйте ещё раз."
         }
-        guard archive.count > 0 else {
-            browser.message = ReceiptLogic.exportMessage(saved: 0, skipped: archive.skipped)
-            return
-        }
-        exportedType = .zip
-        exportedName = "FinanceTest-receipts-\(Date().formatted(.iso8601.year().month().day()))"
-        exportedNotice = ReceiptLogic.exportMessage(saved: archive.count, skipped: archive.skipped)
-        exportedBackup = BackupDocument(data: archive.data)
     }
     /// «Собрать чеки для проверки»: the photos with the text read from them, for the check of the reading.
     private func collectReceiptChecks() {
@@ -838,8 +849,7 @@ struct SettingsView: View {
                 Section {
                     Text("Версия \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") · сборка \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                         .font(.caption2)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .fixedSize(horizontal: false, vertical: true)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
                 }.listRowBackground(Color.clear)
