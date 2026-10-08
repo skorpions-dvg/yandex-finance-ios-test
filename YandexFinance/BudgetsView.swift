@@ -47,7 +47,9 @@ struct BudgetBar: View {
 struct BudgetFormTarget: Identifiable {
     let group: String?
     let isNew: Bool
-    var id: String { (group ?? "—month") + (isNew ? "+new" : "") }
+    /// The month the form edits («yyyy-MM»), fixed when the form opens: a form left open over midnight keeps its month.
+    let month: String
+    var id: String { (group ?? "—month") + (isNew ? "+new" : "") + month }
 }
 
 /// «Бюджеты»: the limits of the current month with what is spent against each, and the form to change them.
@@ -61,6 +63,7 @@ struct BudgetsView: View {
         let _ = presentation.prepare(browser.history)
         let month = Date()
         let statuses = presentation.budgetStatuses(browser.history, month: month)
+        let monthKey = BudgetEngine.monthKey(month)
         List {
             Section {
                 Text(month.formatted(.dateTime.month(.wide).year()).capitalized).font(.headline)
@@ -71,7 +74,7 @@ struct BudgetsView: View {
                 Section {
                     ContentUnavailableView("Бюджетов пока нет", systemImage: "target",
                                            description: Text("Задайте лимит на весь месяц или на группу расходов, например «Еда»."))
-                    Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
+                    Button { editing = BudgetFormTarget(group: nil, isNew: true, month: monthKey) } label: {
                         Label { Text("Добавить бюджет").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(.primary) }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
@@ -80,10 +83,10 @@ struct BudgetsView: View {
                 }.glassRows()
             } else {
                 if let total = statuses.first(where: { $0.group == nil }) {
-                    Section("Весь месяц") { row(total) }.glassRows()
+                    Section("Весь месяц") { row(total, monthKey) }.glassRows()
                 } else {
                     Section {
-                        Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
+                        Button { editing = BudgetFormTarget(group: nil, isNew: true, month: monthKey) } label: {
                             Label { Text("Задать лимит на весь месяц").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(.primary) }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
@@ -93,7 +96,7 @@ struct BudgetsView: View {
                 }
                 let groups = statuses.filter { $0.group != nil }
                 if !groups.isEmpty {
-                    Section("Группы расходов") { ForEach(groups) { row($0) } }.glassRows()
+                    Section("Группы расходов") { ForEach(groups) { row($0, monthKey) } }.glassRows()
                 }
             }
         }
@@ -102,7 +105,7 @@ struct BudgetsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: { Image(systemName: "plus") }
+                Button { editing = BudgetFormTarget(group: nil, isNew: true, month: BudgetEngine.monthKey(Date())) } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Добавить бюджет")
             }
         }
@@ -111,8 +114,8 @@ struct BudgetsView: View {
         }
     }
 
-    private func row(_ status: BudgetStatus) -> some View {
-        Button { editing = BudgetFormTarget(group: status.group, isNew: false) } label: {
+    private func row(_ status: BudgetStatus, _ monthKey: String) -> some View {
+        Button { editing = BudgetFormTarget(group: status.group, isNew: false, month: monthKey) } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Image(systemName: status.group == nil ? "calendar" : "tag").foregroundStyle(.secondary).frame(width: 24)
@@ -147,7 +150,14 @@ struct BudgetFormView: View {
     @State private var error: String?
     @State private var loaded = false
 
-    private var monthKey: String { BudgetEngine.monthKey(Date()) }
+    private var monthKey: String { target.month }
+
+    /// «Октябрь 2026» for the month the form edits.
+    private var monthTitle: String {
+        let parts = target.month.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 2, let date = Calendar.current.date(from: DateComponents(year: parts[0], month: parts[1], day: 1)) else { return target.month }
+        return date.formatted(.dateTime.month(.wide).year()).capitalized
+    }
     private var budgets: [Budget] { browser.history.budgets ?? [] }
 
     /// The groups of the user's tree, and the group of a limit whose group has been deleted since.
@@ -176,6 +186,7 @@ struct BudgetFormView: View {
                     } else {
                         LabeledContent("Что ограничить", value: group ?? "Весь месяц")
                     }
+                    LabeledContent("Месяц", value: monthTitle)
                     TextField("Лимит, ₽", text: $amountText).keyboardType(.decimalPad)
                     Toggle("Только на этот месяц", isOn: $monthOnly)
                 } footer: {

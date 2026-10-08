@@ -1,5 +1,6 @@
 import UIKit
 import Vision
+import CoreImage
 
 /// Reads a receipt on the phone itself, nothing leaves it: the QR code of a cash receipt and the printed text. What the
 /// text means (the sum, the date, the shop) is decided by `ReceiptParser`.
@@ -8,43 +9,62 @@ enum ReceiptRecognizer {
         await Task.detached(priority: .userInitiated) { read(images) }.value
     }
 
-    nonisolated private static func read(_ images: [UIImage]) -> ParsedReceipt {
+    /// What one reading of a picture gave: the QR code, the rows of the exact pass, the rows of the pass with the correction of words.
+    private struct Reading {
         var qr: ParsedReceipt?
-        var lines: [String] = []
-        var nameLines: [String] = []
+        var lines: [String]
+        var nameLines: [String]
+    }
+
+    nonisolated private static func read(_ images: [UIImage]) -> ParsedReceipt {
+        var chosen: [Reading] = []
         for image in images {
             guard let cgImage = image.cgImage else { continue }
-            let text = VNRecognizeTextRequest()
-            text.recognitionLevel = .accurate
-            text.recognitionLanguages = ["ru-RU", "en-US"]
-            text.usesLanguageCorrection = false
-            // The goods are words: a second pass with the correction of words reads their names better than the exact pass,
-            // which is kept for the digits.
-            let words = VNRecognizeTextRequest()
-            words.recognitionLevel = .accurate
-            words.recognitionLanguages = ["ru-RU", "en-US"]
-            words.usesLanguageCorrection = true
-            let codes = VNDetectBarcodesRequest()
-            codes.symbologies = [.qr]
-            let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation(image.imageOrientation), options: [:])
-            try? handler.perform([text, words, codes])
-            if qr == nil {
-                for code in codes.results ?? [] {
-                    if let payload = code.payloadStringValue, let parsed = ReceiptParser.parseQR(payload) {
-                        qr = parsed
-                        break
-                    }
-                }
+            let direction = orientation(image.imageOrientation)
+            var best = reading(of: cgImage, orientation: direction)
+            // A photo is also read after the receipt is found in it and straightened (as the scanner does): the one that gives
+            // more (sum, date and time, prices that add up, QR) is taken; the original wins a tie.
+            if let flat = straightened(cgImage, orientation: direction) {
+                let other = reading(of: flat, orientation: .up)
+                if score(other) > score(best) { best = other }
             }
-            if qr == nil { qr = qrInParts(of: cgImage) }
-            lines += rows(from: text.results ?? [])
-            nameLines += rows(from: words.results ?? [])
+            chosen.append(best)
         }
-        var result = ReceiptParser.merge(qr: qr, text: ReceiptParser.parseText(lines))
-        // Names from the pass with the correction of words, prices from the exact pass (the same order of goods in both). When
-        // the passes found different numbers of goods, the exact pass is taken as it is: worse names, but with their prices.
-        let named = ReceiptParser.itemEntries(in: nameLines)
-        let priced = ReceiptParser.itemEntries(in: lines)
+        return assemble(Reading(qr: chosen.compactMap(\.qr).first, lines: chosen.flatMap(\.lines), nameLines: chosen.flatMap(\.nameLines)))
+    }
+
+    nonisolated private static func reading(of cgImage: CGImage, orientation: CGImagePropertyOrientation) -> Reading {
+        let text = VNRecognizeTextRequest()
+        text.recognitionLevel = .accurate
+        text.recognitionLanguages = ["ru-RU", "en-US"]
+        text.usesLanguageCorrection = false
+        // The goods are words: a second pass with the correction of words reads their names better than the exact pass,
+        // which is kept for the digits.
+        let words = VNRecognizeTextRequest()
+        words.recognitionLevel = .accurate
+        words.recognitionLanguages = ["ru-RU", "en-US"]
+        words.usesLanguageCorrection = true
+        let codes = VNDetectBarcodesRequest()
+        codes.symbologies = [.qr]
+        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
+        try? handler.perform([text, words, codes])
+        var qr: ParsedReceipt?
+        for code in codes.results ?? [] {
+            if let payload = code.payloadStringValue, let parsed = ReceiptParser.parseQR(payload) {
+                qr = parsed
+                break
+            }
+        }
+        if qr == nil { qr = qrInParts(of: cgImage) }
+        return Reading(qr: qr, lines: rows(from: text.results ?? []), nameLines: rows(from: words.results ?? []))
+    }
+
+    /// Names from the pass with the correction of words, prices from the exact pass (the same order of goods in both). When the
+    /// passes found different numbers of goods, the exact pass is taken as it is: worse names, but with their prices.
+    nonisolated private static func assemble(_ reading: Reading) -> ParsedReceipt {
+        var result = ReceiptParser.merge(qr: reading.qr, text: ReceiptParser.parseText(reading.lines))
+        let named = ReceiptParser.itemEntries(in: reading.nameLines)
+        let priced = ReceiptParser.itemEntries(in: reading.lines)
         if !named.isEmpty && named.count == priced.count {
             result.goods = zip(named, priced).map { ReceiptGood(name: $0.name, kopecks: $1.kopecks) }
         } else if !priced.isEmpty {
@@ -52,8 +72,39 @@ enum ReceiptRecognizer {
         } else {
             result.goods = named
         }
-        result.readLines = lines
+        result.readLines = reading.lines
         return result
+    }
+
+    /// How much a reading gave: the QR code, the sum, the date with its time, the prices, and above all prices that add up to the sum.
+    nonisolated private static func score(_ reading: Reading) -> Int {
+        let parsed = assemble(reading)
+        var points = 0
+        if reading.qr != nil { points += 5 }
+        if parsed.totalKopecks != nil { points += 3 }
+        if parsed.date != nil { points += parsed.dateHasTime ? 3 : 1 }
+        points += parsed.goods.filter { $0.kopecks != nil }.count
+        if ReceiptParser.goodsSumNote(parsed.goods, expectedKopecks: parsed.totalKopecks)?.adds == true { points += 8 }
+        return points
+    }
+
+    /// The receipt found in a photo and straightened, or nil when none was found. A photo taken at an angle puts the right column
+    /// of sums at the height of other rows and makes the QR code small and skew.
+    nonisolated private static func straightened(_ cgImage: CGImage, orientation: CGImagePropertyOrientation) -> CGImage? {
+        let request = VNDetectDocumentSegmentationRequest()
+        try? VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:]).perform([request])
+        guard let found = request.results?.first, found.confidence > 0.5 else { return nil }
+        let image = CIImage(cgImage: cgImage).oriented(orientation)
+        let extent = image.extent
+        func point(_ corner: CGPoint) -> CIVector {
+            CIVector(x: extent.origin.x + corner.x * extent.width, y: extent.origin.y + corner.y * extent.height)
+        }
+        let corrected = image.applyingFilter("CIPerspectiveCorrection", parameters: [
+            "inputTopLeft": point(found.topLeft), "inputTopRight": point(found.topRight),
+            "inputBottomLeft": point(found.bottomLeft), "inputBottomRight": point(found.bottomRight),
+        ])
+        guard corrected.extent.width >= 300, corrected.extent.height >= 300 else { return nil }
+        return CIContext().createCGImage(corrected, from: corrected.extent)
     }
 
     /// A photographed QR code is small in a picture of a whole receipt: if it was not found in the whole picture, nine

@@ -670,6 +670,34 @@ struct FinanceEngineTests {
                 && text.contains("ИТОГ 45.00") && text.contains("Еда/Супермаркеты"), "the text holds the saved values, the extracted ones and the raw text")
     }
 
+    /// Prices from the figures around a good, and the check of the sum (46.16).
+    static func testReceiptPriceBands() {
+        let layout = ["ЦЕНА ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ",
+                      "ТОВАР А шарик <РОССИя>: 10 29.99", "36.99 29.99",
+                      "ТОВАР Б пиво тЕн 174.99", "174.99 174.99ł",
+                      "ТОВАР В колбаса П/СУХ",
+                      "ТОВАР Г креветки в/м хВО: 490 179.99 79.99", "279.99 279.99 559.98",
+                      "ТОВАР Д шоколад какаС-РЕм", "59.99 211 . 119.98",
+                      "ТОВАР Е арахис: 19,99", "73.99 73.99 1ШT -",
+                      "Карта Nº ****-****-0000"]
+        let goods = ReceiptParser.itemEntries(in: layout)
+        require(goods.count == 6 && goods.map(\.kopecks) == [2_999, 17_499, nil, 55_998, 11_998, 7_399],
+                "the total of a line from the figures around it: sums on the name line, a row stuck to the next name, a multiple, a misread sum")
+        require(goods[0].name == "ТОВАР А шарик Россия", "the name without the number after it and the brackets")
+        require(ReceiptParser.lineTotal([]) == nil && ReceiptParser.lineTotal([4_550]) == 4_550 && ReceiptParser.lineTotal([6_500, 13_000]) == 13_000
+                && ReceiptParser.lineTotal([3_699, 2_999, 2_999]) == 2_999 && ReceiptParser.lineTotal([27_999, 27_999, 55_998]) == 55_998,
+                "single sum, a unit and its multiple, a repeated price, a repeated price and its multiple")
+        require(ReceiptParser.lineTotal([100, 250, 777]) == 777, "nothing to go by: the last sum")
+        // the check of the sum
+        let right = [ReceiptGood(name: "А", kopecks: 6_000), ReceiptGood(name: "Б", kopecks: 4_000)]
+        require(ReceiptParser.goodsSumNote(right, expectedKopecks: 10_000)?.adds == true, "the prices add up")
+        let off = ReceiptParser.goodsSumNote(right, expectedKopecks: 12_000)
+        require(off?.adds == false && off?.text.contains("проверьте цены") == true, "the prices do not add up")
+        require(ReceiptParser.goodsSumNote(right + [ReceiptGood(name: "В")], expectedKopecks: 10_000)?.adds == false, "a good without a price is not a match")
+        require(ReceiptParser.goodsSumNote([ReceiptGood(name: "А")], expectedKopecks: 10_000) == nil && ReceiptParser.goodsSumNote(right, expectedKopecks: nil) == nil,
+                "nothing to compare")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3223,6 +3251,7 @@ struct FinanceEngineTests {
         testReceiptNoise()
         testReceiptGoods()
         testReceiptCheckReport()
+        testReceiptPriceBands()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

@@ -19,9 +19,18 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published private(set) var statementPreview: StatementImportPreview?
     private var statementPreviewBase: Data?
     @Published var host = "bank.yandex.ru"
-    @Published var history = SavedHistory() { didSet { historyRevision &+= 1 } }
-    /// Counts every replacement of `history`; `updateUserDataAfterClosing` uses it to see whether anything else changed it.
-    private var historyRevision = 0
+    @Published var history = SavedHistory()
+    /// What the owner has saved but the screens have not been given yet (see `updateUserDataAfterClosing`). Every later change,
+    /// the backup and the scans start from it, so two quick changes never overwrite one another.
+    private var pendingHistory: SavedHistory?
+
+    /// Gives the screens what is waiting.
+    private func settlePending() {
+        if let waiting = pendingHistory {
+            pendingHistory = nil
+            history = waiting
+        }
+    }
     @Published private(set) var storageError: String?
     @Published private(set) var storageRetryFailed = false
     private let vault = Vault()
@@ -313,6 +322,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
     func applyStatementImport() {
         guard !busy, readable, let preview = statementPreview, let base = statementPreviewBase else { return }
+        settlePending()
         do {
             // A scan or another edit may finish while the confirmation is open.
             // Never overwrite changes made after the preview was prepared.
@@ -453,6 +463,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         next.unresolvedIssues = items
     }
     private func merge(_ batch: ImportBatch, initialImport: Bool, startedAt: Date, resumed: Bool, mode: String, requestedDays: Int?, automaticRun: Bool) throws {
+        settlePending()
         var next = history
         let acceptedOperations = webViewOperations(batch.operations)
         let acceptedIssues = webViewIssues(batch.issues ?? [])
@@ -503,6 +514,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             guard busy, activeRunID == runID, let string = raw as? String, let data = string.data(using: .utf8) else { return }
             let snapshot = try JSONDecoder().decode(ProgressCheckpoint.self, from: data)
             guard snapshot.runID == runID else { return }
+            settlePending()
             var next = history
             let counts = apply(webViewOperations(snapshot.operations), to: &next)
             addIssues(webViewIssues(snapshot.issues), to: &next)
@@ -542,10 +554,11 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @discardableResult
     func updateUserData(_ change: (inout SavedHistory) -> Void) -> Bool {
         guard readable else { message = "Хранилище недоступно, изменения не сохранены."; return false }
-        var next = history
+        var next = pendingHistory ?? history
         change(&next)
         do {
             try vault.save(next)
+            pendingHistory = nil
             history = next
             return true
         } catch {
@@ -559,7 +572,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @discardableResult
     func updateUserDataAfterClosing(_ change: @escaping (inout SavedHistory) -> Void) -> Bool {
         guard readable else { message = "Хранилище недоступно, изменения не сохранены."; return false }
-        var next = history
+        var next = pendingHistory ?? history
         change(&next)
         do {
             try vault.save(next)
@@ -567,11 +580,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             message = "Не удалось сохранить: \(error.localizedDescription)"
             return false
         }
-        let revision = historyRevision
+        pendingHistory = next
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 400_000_000)
-            guard let self else { return }
-            if self.historyRevision == revision { self.history = next } else { _ = self.updateUserData(change) }
+            self?.settlePending()
         }
         return true
     }
@@ -597,7 +609,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
     }
 
-    func backupData() throws -> Data { try HistoryBackup.encode(history) }
+    func backupData() throws -> Data { try HistoryBackup.encode(pendingHistory ?? history) }
 
     /// Replaces the local history with a backup file chosen by the user.
     func restoreBackup(from url: URL) {
@@ -608,6 +620,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             var restored = try HistoryBackup.decode(Data(contentsOf: url))
             restored.moveTransfersToOwnGroup()
             try vault.save(restored)
+            pendingHistory = nil
             history = restored
             loadingHistory = false
             readable = true
@@ -623,6 +636,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         guard !busy else { return }
         do {
             try vault.reset()
+            pendingHistory = nil
             history = SavedHistory()
             loadingHistory = false
             readable = true

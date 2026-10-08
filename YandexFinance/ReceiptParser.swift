@@ -240,7 +240,11 @@ enum ReceiptParser {
         } else {
             return []
         }
-        var result: [ReceiptGood] = []
+        // A good is its name line and the lines of figures after it up to the next name. In a photo taken at an angle the right
+        // column of sums can land on the name line and a row of figures can stick to the next name: all the sums of the band
+        // are gathered, and `lineTotal` picks the one that is the total of this line.
+        var names: [String] = []
+        var bands: [[Int64]] = []
         var index = start
         while index < lines.count {
             let line = lines[index]
@@ -248,13 +252,49 @@ enum ReceiptParser {
             index += 1
             if endWords.contains(where: { lower.contains($0) }) { break }
             if serviceWords.contains(where: { lower.contains($0) }) { continue }
-            guard let name = itemName(line), result.last?.name != name else { continue }
-            var price = amounts(in: line).last
-            if price == nil, index < lines.count, letters(lines[index]) < 3 { price = amounts(in: lines[index]).last }
-            result.append(ReceiptGood(name: name, kopecks: price))
-            if result.count >= 60 { break }
+            if let name = itemName(line) {
+                if names.last == name { bands[bands.count - 1] += amounts(in: line); continue }
+                names.append(name)
+                bands.append(amounts(in: line))
+                if names.count >= 60 { break }
+            } else if !bands.isEmpty {
+                bands[bands.count - 1] += amounts(in: line)
+            }
         }
-        return result
+        return zip(names, bands).map { ReceiptGood(name: $0, kopecks: lineTotal($1)) }
+    }
+
+    /// The total of a line of a receipt among the sums found around its name. The unit price, the price after the discount and
+    /// the total are printed together: the total is a price that repeats, or a whole multiple of one («2 × 279,99 = 559,98»).
+    /// Nothing repeated: a sum that is a multiple of another; nothing of that kind: the last sum.
+    static func lineTotal(_ sums: [Int64]) -> Int64? {
+        guard !sums.isEmpty else { return nil }
+        var seen = Set<Int64>()
+        var repeated = Set<Int64>()
+        for sum in sums where !seen.insert(sum).inserted { repeated.insert(sum) }
+        var candidates = Set<Int64>()
+        for unit in repeated where unit > 0 {
+            for times in 1...9 where sums.contains(unit * Int64(times)) { candidates.insert(unit * Int64(times)) }
+        }
+        if let best = candidates.max() { return best }
+        for unit in sums where unit > 0 {
+            for times in 2...9 where sums.contains(unit * Int64(times)) { candidates.insert(unit * Int64(times)) }
+        }
+        return candidates.max() ?? sums.last
+    }
+
+    /// Whether the prices of the goods add up to a sum, and a sentence about it for the owner; nil when there is nothing to
+    /// compare (no sum, or no price at all).
+    static func goodsSumNote(_ goods: [ReceiptGood], expectedKopecks: Int64?) -> (text: String, adds: Bool)? {
+        guard let expected = expectedKopecks else { return nil }
+        let priced = goods.compactMap(\.kopecks)
+        guard !priced.isEmpty else { return nil }
+        let sum = priced.reduce(0, +)
+        let missing = goods.count - priced.count
+        if sum == expected && missing == 0 { return ("Сумма товаров сходится с суммой операции.", true) }
+        var text = "Сумма товаров \(ReceiptGood.rubles(sum)), сумма операции \(ReceiptGood.rubles(expected)): проверьте цены"
+        if missing > 0 { text += " (у \(missing) без цены)" }
+        return (text + ".", false)
     }
 
     /// A word with capitals among small letters is a misread («КОлбасКА»): it becomes «Колбаска». Words in capitals only and

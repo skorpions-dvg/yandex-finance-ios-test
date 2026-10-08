@@ -115,7 +115,11 @@ struct ManualOperationFormView: View {
                                                 .scrollContentBackground(.hidden)
                                                 .padding(6)
                                                 .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 10))
-                                                                                        Text("Одно название на строку, цена после « — »; исправьте или удалите лишнее. Товары сохраняются в операции, в блоке «Товары» под чеком.")
+                                                                                        if let check = ReceiptParser.goodsSumNote(itemsText.split(separator: "\n").map { ReceiptGood(line: String($0)) },
+                                                                                      expectedKopecks: parsedAmount) {
+                                                Text(check.text).font(.caption).foregroundStyle(check.adds ? Color.green : Color.orange)
+                                            }
+                                            Text("Одно название на строку, цена после « — »; исправьте или удалите лишнее. Товары сохраняются в операции, в блоке «Товары» под чеком.")
                                                 .font(.caption2).foregroundStyle(.secondary)
                                         }
                                     } label: {
