@@ -194,18 +194,31 @@ private struct BottomBarSpaceKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
-private struct PageScreenPushedKey: EnvironmentKey {
-    static let defaultValue: (Bool) -> Void = { _ in }
+/// The tab pages that have a screen pushed over their root. One object for the whole app: the pages get the same reference and
+/// their own number, values that never change, so the pages are not rebuilt while the pager turns (a closure made anew on every
+/// update of the window rebuilt all three pages at each turn, 46.26).
+final class PagerLocks: ObservableObject {
+    @Published var pushed: Set<Int> = []
+}
+
+private struct PagerLocksKey: EnvironmentKey {
+    static let defaultValue: PagerLocks? = nil
+}
+
+private struct TabPageKey: EnvironmentKey {
+    static let defaultValue = 0
 }
 
 /// Tells the horizontal pager of the tabs that the page has a screen pushed over its root (or none any more).
 private struct PushedScreenWatcher: ViewModifier {
-    @Environment(\.pageScreenPushed) private var pushed
+    @Environment(\.pagerLocks) private var locks
+    @Environment(\.tabPage) private var page
 
     func body(content: Content) -> some View {
         content
-            .onAppear { pushed(false) }
-            .onDisappear { pushed(true) }
+            // Only a real change is published: the window above is not redrawn for nothing.
+            .onAppear { if locks?.pushed.contains(page) == true { locks?.pushed.remove(page) } }
+            .onDisappear { if locks?.pushed.contains(page) == false { locks?.pushed.insert(page) } }
     }
 }
 
@@ -215,10 +228,15 @@ extension EnvironmentValues {
         get { self[BottomBarSpaceKey.self] }
         set { self[BottomBarSpaceKey.self] = newValue }
     }
-    /// Called with true when a screen is pushed over the root of a tab page, with false when its root is back.
-    var pageScreenPushed: (Bool) -> Void {
-        get { self[PageScreenPushedKey.self] }
-        set { self[PageScreenPushedKey.self] = newValue }
+    /// The pushed screens of the tab pages (see `PagerLocks`).
+    var pagerLocks: PagerLocks? {
+        get { self[PagerLocksKey.self] }
+        set { self[PagerLocksKey.self] = newValue }
+    }
+    /// The number of the tab page a view is on: 1 — Операции, 2 — Отчёты, 3 — Настройки.
+    var tabPage: Int {
+        get { self[TabPageKey.self] }
+        set { self[TabPageKey.self] = newValue }
     }
 }
 

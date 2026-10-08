@@ -755,8 +755,10 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
 // (46.25): each tab root reports its pushed screens and the pager does not turn while one is open.
 {
   const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
-  assert.match(app, /\.scrollDisabled\(pushedPages\.contains\(page \?\? 1\)\)/, 'The pager must stop while a screen is pushed on the page in front');
-  for (const page of [1, 2, 3]) assert.ok(app.includes(`pushedChange(${page})`), `Tab page ${page} must report its pushed screens`);
+  assert.match(app, /\.scrollDisabled\(pagerLocks\.pushed\.contains\(page \?\? 1\)\)/, 'The pager must stop while a screen is pushed on the page in front');
+  for (const page of [1, 2, 3]) assert.ok(app.includes(`.environment(\\.tabPage, ${page})`), `Tab page ${page} must report its pushed screens`);
+  // A closure in the environment of the pages is made anew on every update and rebuilds all pages while the pager turns.
+  assert.ok(!app.includes('pageScreenPushed'), 'The pages must not get a closure in their environment');
   for (const file of ['YandexFinanceApp.swift', 'ReportsView.swift', 'OperationsHomeView.swift']) {
     const code = fs.readFileSync(path.join(__dirname, '../YandexFinance/' + file), 'utf8');
     assert.ok(code.includes('.watchesPushedScreens()'), `${file}: the tab root must watch its pushed screens`);
