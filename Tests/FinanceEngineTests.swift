@@ -2153,6 +2153,7 @@ struct FinanceEngineTests {
         testKnownIssuePayeeSeries()
         testKnownIssueReceiptQRSeconds()
         testKnownIssueMinimumAmount()
+        testKnownIssueBackupAnchorPrecision()
     }
 
     static func testKnownIssueArchiveTruncation() {
@@ -2189,6 +2190,23 @@ struct FinanceEngineTests {
     static func testKnownIssueMinimumAmount() {
         require(FinancialEngine.classify(op(Int64.min, kind: "expense")).type == .unknown,
                 "known issue: an unrepresentable positive expense magnitude must be rejected safely instead of trapping")
+    }
+
+    static func testKnownIssueBackupAnchorPrecision() {
+        let anchor = BankDateParser.parse("2032-06-01T10:00:00.900Z")!
+        let account = Account(name: "Audit card", icon: "creditcard", color: "blue", startBalanceKopecks: 1_000,
+                              startDate: anchor, tracksBankCard: true)
+        var original = SavedHistory()
+        original.accounts = [account]
+        original.operations = [bankOp("audit-before-anchor", -100, description: "AuditShop", date: "2032-06-01T10:00:00.500Z")]
+        do {
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(original))
+            guard let restoredAccount = restored.accounts?.first else { require(false, "known issue: backup lost its account"); return }
+            let before = original.accountBalances(account, at: [.distantFuture])
+            let after = restored.accountBalances(restoredAccount, at: [.distantFuture])
+            require(before == after && restoredAccount.startDate == anchor,
+                    "known issue: a backup must preserve the precise balance anchor and not count a pre-anchor expense again")
+        } catch { require(false, "known issue: the synthetic backup unexpectedly failed to decode") }
     }
 
     static func main() {
