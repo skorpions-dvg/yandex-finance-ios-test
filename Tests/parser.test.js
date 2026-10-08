@@ -7,6 +7,50 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('mode', source); // Validate the entire injected async function.
 const parse = new Function(source.split('\nconst found = new Map();')[0] + '\nreturn parseCard;')();
 
+// Audit 54 P3: unsigned amounts are a hypothetical bank layout, not a confirmed current regression.
+// Opt-in expected/actual diagnostics; the ordinary suite keeps exercising the signed bank contract.
+function audit55BankRows() {
+  const cases = [
+    ['unicode-minus', '−9,00', '−9,00', 'Карта Пэй', 'Карта Пэй'],
+    ['en-dash', '−9,00', '–9,00', 'Сплит', 'Сплит'],
+    ['ascii-minus', '−9,00', '-9,00', 'Баллы Плюса', 'Баллы Плюса'],
+    ['plus', '+9,00', '+9,00', 'Счёт в Сейвах', 'Счёт в Сейвах'],
+    ['nbsp', '−1 009,00', '−1\u00a0009,00', 'Карта Пэй', 'Карта Пэй'],
+    ['unsigned-points-P3', '−9,00', '9,00', 'Баллы Плюса', 'Баллы Плюса'],
+    ['unsigned-split-P3', '−9,00', '9,00', 'Сплит', 'Сплит'],
+    ['no-amount-split-control', '−9,00', null, '', null, 'Магазин учебный Сплит'],
+    ['no-amount-points-control', '−9,00', null, '', null, 'Магазин учебный Баллы Плюса'],
+    ['merchant-amount-control', '−9,00', '−9,00', 'Карта Пэй', 'Карта Пэй', 'Магазин учебный +60 ₽'],
+    ['merchant-only-amount-reject-control', '−9,00', null, '', null, 'Магазин учебный +60 ₽ Сплит', '', true],
+    ['explicit-method-control', '−9,00', '−9,00', 'Сплит', 'Карта *2733', 'Магазин учебный', 'Способ оплаты\nКарта *2733'],
+  ];
+  const failed = [];
+  for (const [id, sum, rowSum, tail, method, title = 'Магазин учебный', details = '', reject = false] of cases) {
+    const row = title + (rowSum === null ? '' : ` ${rowSum} ₽ ${tail}`);
+    const card = `${title}\nСегодня, 10:30\n${sum} ₽\nПодробнее\nСтатус\nВыполнено\n${details}`;
+    const reference = {type: 'DEPOT', chainId: `synthetic55-${id}`, operationId: `synthetic55-${id}`, operationTimestamp: '2033-03-10T10:30:00Z'};
+    const address = 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify([reference]));
+    const expected = reject ? {reject: 'Сумма не совпала'} : {
+      method, amount: Math.round(Number(sum.replace(/[−–]/g, '-').replace(/\s/g, '').replace(',', '.')) * 100), title,
+    };
+    let actual;
+    let passed;
+    try {
+      const result = parse(address, card, row, new Date('2033-03-11T12:00:00Z'));
+      actual = {method: result.paymentMethod, amount: result.amountKopecks, title: result.description};
+      passed = !reject && JSON.stringify(actual) === JSON.stringify(expected);
+    } catch (error) {
+      actual = {reject: error.message};
+      passed = reject && /Сумма не совпала/.test(error.message);
+    }
+    if (!passed) failed.push(id);
+    console.log('BANK55 ' + JSON.stringify({id, passed, row, card, expected, actual}));
+  }
+  console.log('BANK55 ' + JSON.stringify({type: 'summary', checks: cases.length, failed}));
+  return failed;
+}
+if (process.argv.includes('--known55') && audit55BankRows().length) process.exitCode = 1;
+
 // Stage 53: fictional independent cases. Run --known53 separately for desired behaviour that currently fails.
 function audit53BankRows(knownOnly = false) {
   const makeCard = (title, amount, details = '') => `${title}\nСегодня, 10:30\n${amount} ₽\nПодробнее\nСтатус\nВыполнено\n${details}`;

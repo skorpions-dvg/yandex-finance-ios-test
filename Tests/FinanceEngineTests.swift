@@ -3813,6 +3813,66 @@ struct FinanceEngineTests {
         require(failures.isEmpty, "known forecast54 desired behaviour not implemented: " + failures.joined(separator: ", "))
     }
 
+    /// Audit 54 desired receipt behaviour. Opt-in, deliberately outside main until the parser is corrected.
+    /// Full text passes preserve the evidence; price repairs must not manufacture agreement with the receipt total.
+    static func testKnownIssues55(caseID: String? = nil) {
+        var failures: [String] = []
+        var count = 0
+        func goodsJSON(_ goods: [ReceiptGood]) -> [[String: Any]] {
+            goods.map { ["name": $0.name, "kopecks": $0.kopecks.map { $0 as Any } ?? NSNull()] }
+        }
+        func check(_ id: String, _ passed: Bool, input: Any, expected: Any, actual: Any) {
+            count += 1
+            print("RECEIPT55: " + forecast54JSON(["id": id, "passed": passed, "input": input,
+                                                  "expected": expected, "actual": actual]))
+            if !passed { failures.append(id) }
+        }
+        let header = "ЦЕНА КОЛ-ВО СУММА"
+        let examples: [(String, [String], [ReceiptGood], Int64)] = [
+            ("A54-1-service", [header, "Пирог учебный 120.00 100.00 100.00", "ИТОГО 120.00", "СЕРВИСНЫЙ СБОР 20.00"],
+             [ReceiptGood(name: "Пирог учебный", kopecks: 10_000)], 12_000),
+            ("A54-1-tips", [header, "Пирог учебный 120.00 100.00 100.00", "ИТОГО 120.00", "ЧАЕВЫЕ 20.00"],
+             [ReceiptGood(name: "Пирог учебный", kopecks: 10_000)], 12_000),
+            ("A54-1-incomplete", [header, "Молоко учебное 150.00 100.00 100.00", "ИТОГО 150.00"],
+             [ReceiptGood(name: "Молоко учебное", kopecks: 10_000)], 15_000),
+            ("A54-1-distant-band", [header, "Позиция учебная без цены", "", "Товар учебный посредине 70.00",
+                                   "Товар учебный последний 50.00", "ИТОГО 170.00"],
+             [ReceiptGood(name: "Позиция учебная без цены", kopecks: nil),
+              ReceiptGood(name: "Товар учебный посредине", kopecks: 7_000),
+              ReceiptGood(name: "Товар учебный последний", kopecks: 5_000)], 17_000),
+            ("A54-3-two-identical-goods", [header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 200.00"],
+             [ReceiptGood(name: "Товар учебный", kopecks: 10_000), ReceiptGood(name: "Товар учебный", kopecks: 10_000)], 20_000),
+            ("A54-3-ocr-duplicate-control", [header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 100.00"],
+             [ReceiptGood(name: "Товар учебный", kopecks: 10_000)], 10_000),
+            ("discount-control", [header, "Товар учебный первый 500.00", "Товар учебный второй 600.00", "ИТОГО 1000.00"],
+             [ReceiptGood(name: "Товар учебный первый", kopecks: 50_000), ReceiptGood(name: "Товар учебный второй", kopecks: 60_000)], 100_000),
+            ("no-price-evidence-control", [header, "Позиция учебная без цены", "Товар учебный 70.00", "ИТОГО 170.00"],
+             [ReceiptGood(name: "Позиция учебная без цены", kopecks: nil), ReceiptGood(name: "Товар учебный", kopecks: 7_000)], 17_000),
+        ]
+        for (id, lines, wantedGoods, wantedTotal) in examples where caseID == nil || caseID == id {
+            let parsed = ReceiptParser.parseText(lines, now: forecast54Date(0, 1), calendar: forecast54Calendar)
+            check(id, parsed.goods == wantedGoods && parsed.totalKopecks == wantedTotal, input: lines,
+                  expected: ["goods": goodsJSON(wantedGoods), "total": wantedTotal],
+                  actual: ["goods": goodsJSON(parsed.goods), "total": parsed.totalKopecks.map { $0 as Any } ?? NSNull()])
+        }
+        let pairID = "A54-2-swapped-similar-names"
+        if caseID == nil || caseID == pairID {
+            let namedLines = [header, "Йогурт учебный клубника 80.00", "Йогурт учебный вишня 120.00", "ИТОГО 200.00"]
+            let pricedLines = [header, "Йогурт учебный вишня 120.00", "Йогурт учебный клубника 80.00", "ИТОГО 200.00"]
+            let named = ReceiptParser.parseText(namedLines, now: forecast54Date(0, 1), calendar: forecast54Calendar).goods
+            let priced = ReceiptParser.parseText(pricedLines, now: forecast54Date(0, 1), calendar: forecast54Calendar).goods
+            let actual = ReceiptParser.pairGoods(named: named, priced: priced)
+            let correct = [ReceiptGood(name: "Йогурт учебный клубника", kopecks: 8_000),
+                           ReceiptGood(name: "Йогурт учебный вишня", kopecks: 12_000)]
+            check(pairID, actual == nil || actual == correct, input: ["named": namedLines, "priced": pricedLines],
+                  expected: ["rejectPairOrMapByName": goodsJSON(correct)],
+                  actual: ["paired": actual.map { goodsJSON($0) as Any } ?? NSNull(),
+                           "crossSimilarity": ReceiptParser.similarity(named[0].name, priced[0].name)])
+        }
+        print("RECEIPT55: " + forecast54JSON(["type": "summary", "checks": count, "failed": failures]))
+        require(failures.isEmpty, "known receipt55 desired behaviour not implemented: " + failures.joined(separator: ", "))
+    }
+
     static func main() {
         testForecastRefunds55()
         testForecast54FixtureStructure()
