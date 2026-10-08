@@ -3546,6 +3546,277 @@ struct FinanceEngineTests {
         }
     }
 
+    // MARK: Stage 58 opt-in receipt contracts. Not called by the ordinary main.
+
+    static var receipt58Calendar: Calendar {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(secondsFromGMT: 0)!; return cal
+    }
+    static var receipt58Now: Date { BankDateParser.parse("2032-10-09T20:00:00Z")! }
+    static func json58(_ value: [String: Any]) -> String {
+        String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
+    }
+    static func record58(_ value: [String: Any]) { print("STAGE58: " + json58(value)) }
+
+    /// Test-side identity envelope: FinancialOperationInput currently has no identity field.
+    /// The future production API must retain real bank identities; never encode them in title/purpose for this test.
+    struct ReceiptMatchCandidate58 {
+        let identity: String
+        let input: FinancialOperationInput
+    }
+    enum ReceiptMatchOutcome58: Equatable {
+        case confirmed(identity: String, timeFix: Date?)
+        case ambiguous([String])
+        case none
+    }
+    struct ReceiptMatchCase58 {
+        let id: String
+        let total: Int64?
+        let date: Date?
+        let hasTime: Bool
+        let operations: [ReceiptMatchCandidate58]
+        let expected: ReceiptMatchOutcome58
+        /// For >5 equal top scores the contract permits any five of the eligible identities, without a specified order.
+        var cappedTie = false
+    }
+    static func match58Date(_ iso: String) -> Date { BankDateParser.parse(iso)! }
+    static func match58Candidate(_ id: String, _ amount: Int64 = -12_345, date: String = "2032-10-08T18:37:00Z",
+                                 status: String = "Выполнено", kind: String = "expense", manual: Bool = false) -> ReceiptMatchCandidate58 {
+        var input = op(amount, kind: kind, status: status, category: "Супермаркеты", description: "Магазин учебный", date: date)
+        if manual { input.paymentMethod = "Вручную"; input.accountID = ManualOperation.noAccountID }
+        return ReceiptMatchCandidate58(identity: id, input: input)
+    }
+    static var receiptMatchCases58: [ReceiptMatchCase58] {
+        let when = match58Date("2032-10-08T18:37:00Z")
+        func yes(_ id: String, _ fix: String? = "2032-10-08T18:37:00Z") -> ReceiptMatchOutcome58 {
+            .confirmed(identity: id, timeFix: fix.map(match58Date))
+        }
+        func c(_ id: String, _ ops: [ReceiptMatchCandidate58], _ expected: ReceiptMatchOutcome58,
+               total: Int64? = 12_345, date: Date? = when, time: Bool = true, capped: Bool = false) -> ReceiptMatchCase58 {
+            ReceiptMatchCase58(id: id, total: total, date: date, hasTime: time, operations: ops, expected: expected, cappedTie: capped)
+        }
+        return [
+            c("unique", [match58Candidate("bank58-A")], yes("bank58-A")),
+            c("ten-minutes", [match58Candidate("bank58-A")], yes("bank58-A"), date: match58Date("2032-10-08T18:27:00Z")),
+            c("midnight-seven-minutes", [match58Candidate("bank58-A", date: "2032-10-09T00:05:00Z")],
+              yes("bank58-A", "2032-10-09T00:05:00Z"), date: match58Date("2032-10-08T23:58:00Z")),
+            c("identical-inputs-distinct-identities", [match58Candidate("bank58-A"), match58Candidate("bank58-B")], .ambiguous(["bank58-A", "bank58-B"])),
+            c("five-days-apart", [match58Candidate("bank58-A", date: "2032-10-13T18:37:00Z")], .none),
+            c("digit-3-to-2", [match58Candidate("bank58-A", -72_999)], yes("bank58-A"), total: 73_999),
+            c("different-amount", [match58Candidate("bank58-A", -12_499)], .none),
+            c("date-only-unique", [match58Candidate("bank58-A")], yes("bank58-A", nil), time: false),
+            c("date-only-time-does-not-break-tie", [match58Candidate("bank58-A"), match58Candidate("bank58-B", date: "2032-10-08T09:00:00Z")],
+              .ambiguous(["bank58-A", "bank58-B"]), time: false),
+            c("manual-not-candidate", [match58Candidate("manual:00000000-0000-0000-0000-000000000058", manual: true)], .none),
+            c("manual-and-bank", [match58Candidate("manual:00000000-0000-0000-0000-000000000058", manual: true), match58Candidate("bank58-A")], yes("bank58-A")),
+            c("cancelled-not-candidate", [match58Candidate("bank58-A", status: "Отменено")], .none),
+            c("processing-is-candidate", [match58Candidate("bank58-A", status: "В обработке")], yes("bank58-A")),
+            c("margin-exactly-twenty", [match58Candidate("bank58-A"), match58Candidate("bank58-B", date: "2032-10-08T18:57:00Z")], yes("bank58-A")),
+            c("margin-nineteen", [match58Candidate("bank58-A"), match58Candidate("bank58-B", date: "2032-10-08T18:56:00Z")], .ambiguous(["bank58-A", "bank58-B"])),
+            c("time-fix-fifteen", [match58Candidate("bank58-A", date: "2032-10-08T18:52:00Z")], yes("bank58-A", "2032-10-08T18:52:00Z")),
+            c("no-time-fix-sixteen", [match58Candidate("bank58-A", date: "2032-10-08T18:53:00Z")], yes("bank58-A", nil)),
+            c("no-negative-time-score", [match58Candidate("bank58-A", date: "2032-10-08T16:37:00Z"), match58Candidate("bank58-B", date: "2032-10-08T08:37:00Z")],
+              .ambiguous(["bank58-A", "bank58-B"])),
+            c("adjacent-calendar-day-over-24h", [match58Candidate("bank58-A", date: "2032-10-09T23:00:00Z")], yes("bank58-A", nil),
+              date: match58Date("2032-10-08T00:00:00Z")),
+            c("two-calendar-days-excluded", [match58Candidate("bank58-A", date: "2032-10-10T00:00:00Z")], .none,
+              date: match58Date("2032-10-08T23:58:00Z")),
+            c("digit-8-to-6", [match58Candidate("bank58-A", -68_999)], yes("bank58-A"), total: 88_999),
+            c("digit-5-to-6", [match58Candidate("bank58-A", -63_999)], yes("bank58-A"), total: 53_999),
+            c("digit-1-to-7", [match58Candidate("bank58-A", -73_999)], yes("bank58-A"), total: 13_999),
+            c("two-digit-changes-excluded", [match58Candidate("bank58-A", -72_699)], .none, total: 73_899),
+            c("unapproved-digit-pair", [match58Candidate("bank58-A", -74_999)], .none, total: 73_999),
+            c("income-not-expense", [match58Candidate("bank58-A", 12_345, kind: "income")], .none),
+            c("refund-not-expense", [match58Candidate("bank58-A", 12_345, kind: "refund")], .none),
+            c("empty-operations", [], .none),
+            c("missing-total", [match58Candidate("bank58-A")], .none, total: nil),
+            c("missing-date", [match58Candidate("bank58-A")], .none, date: nil),
+            c("six-tied-candidates-capped-at-five", (0..<6).map { match58Candidate("bank58-\($0)") },
+              .ambiguous((0..<6).map { "bank58-\($0)" }), capped: true),
+        ]
+    }
+    static func matchOutcomeJSON58(_ value: ReceiptMatchOutcome58) -> [String: Any] {
+        switch value {
+        case .none: return ["kind": "none"]
+        case .ambiguous(let ids): return ["kind": "ambiguous", "identities": ids]
+        case .confirmed(let id, let fix):
+            return ["kind": "confirmed", "identity": id, "timeFix": fix.map { ISO8601DateFormatter().string(from: $0) as Any } ?? NSNull()]
+        }
+    }
+    static func sameMatchOutcome58(_ actual: ReceiptMatchOutcome58, _ fixture: ReceiptMatchCase58) -> Bool {
+        if case .ambiguous(let wanted) = fixture.expected, case .ambiguous(let ids) = actual {
+            guard ids.count == Set(ids).count else { return false }
+            if fixture.cappedTie { return (2...5).contains(ids.count) && Set(ids).isSubset(of: Set(wanted)) }
+            return ids.sorted() == wanted.sorted()
+        }
+        return actual == fixture.expected
+    }
+    /// A test-side oracle. The future app function is injected below, never replaced by this oracle for a PASS claim.
+    static func referenceReceiptMatch58(total: Int64?, date: Date?, hasTime: Bool,
+                                        operations: [ReceiptMatchCandidate58]) -> (outcome: ReceiptMatchOutcome58, scores: [String: Double]) {
+        guard let total, total > 0, let date else { return (.none, [:]) }
+        let allowed = Set(["32", "23", "86", "68", "56", "65", "17", "71"])
+        var ranked: [(identity: String, date: Date, score: Double)] = []
+        for candidate in operations {
+            let input = candidate.input
+            let status = input.status.lowercased()
+            guard input.kind == "expense", input.amountKopecks < 0, input.amountKopecks != Int64.min,
+                  input.paymentMethod != "Вручную", !candidate.identity.hasPrefix("manual:"),
+                  !["отмен", "отклон", "не выполн", "cancelled", "canceled"].contains(where: status.contains),
+                  let bankDate = BankDateParser.parse(input.occurredAt) else { continue }
+            let amount = -input.amountKopecks
+            let left = Array(String(total)), right = Array(String(amount))
+            var amountScore: Double = 100
+            if amount != total {
+                guard left.count == right.count else { continue }
+                let positions = left.indices.filter { left[$0] != right[$0] }
+                guard positions.count == 1, let p = positions.first, allowed.contains(String([left[p], right[p]])) else { continue }
+                amountScore = 40
+            }
+            let delta = receipt58Calendar.dateComponents([.day], from: receipt58Calendar.startOfDay(for: date),
+                                                          to: receipt58Calendar.startOfDay(for: bankDate)).day!
+            guard abs(delta) <= 1 else { continue }
+            let timeScore = hasTime ? max(0, 60 - abs(bankDate.timeIntervalSince(date)) / 60) : 0
+            ranked.append((candidate.identity, bankDate, amountScore + (delta == 0 ? 50 : 20) + timeScore))
+        }
+        ranked.sort { $0.score == $1.score ? $0.identity < $1.identity : $0.score > $1.score }
+        let scores = Dictionary(uniqueKeysWithValues: ranked.map { ($0.identity, $0.score) })
+        guard let best = ranked.first else { return (.none, scores) }
+        if ranked.count == 1 || best.score - ranked[1].score >= 20 {
+            let fix = hasTime && abs(best.date.timeIntervalSince(date)) <= 15 * 60 ? best.date : nil
+            return (.confirmed(identity: best.identity, timeFix: fix), scores)
+        }
+        return (.ambiguous(Array(ranked.prefix(5).map(\.identity))), scores)
+    }
+    static func testKnownReceiptMatch58(matcher: ((Int64?, Date?, Bool, [ReceiptMatchCandidate58]) -> ReceiptMatchOutcome58)? = nil) {
+        var failures: [String] = []
+        for fixture in receiptMatchCases58 {
+            let oracle = referenceReceiptMatch58(total: fixture.total, date: fixture.date, hasTime: fixture.hasTime, operations: fixture.operations)
+            require(sameMatchOutcome58(oracle.outcome, fixture), "58 explicit match oracle \(fixture.id)")
+            let actual = matcher.map { $0(fixture.total, fixture.date, fixture.hasTime, fixture.operations) }
+            let passed = actual.map { sameMatchOutcome58($0, fixture) }
+            if passed == false { failures.append(fixture.id) }
+            record58(["type": "receipt-match-test", "id": fixture.id,
+                      "totalKopecks": fixture.total.map { $0 as Any } ?? NSNull(),
+                      "date": fixture.date.map { ISO8601DateFormatter().string(from: $0) as Any } ?? NSNull(), "hasTime": fixture.hasTime,
+                      "operations": fixture.operations.map { ["identity": $0.identity, "amountKopecks": $0.input.amountKopecks,
+                          "date": $0.input.occurredAt, "kind": $0.input.kind, "status": $0.input.status,
+                          "paymentMethod": $0.input.paymentMethod.map { $0 as Any } ?? NSNull()] as [String: Any] },
+                      "expected": matchOutcomeJSON58(fixture.expected), "allowAnyFiveOfTied": fixture.cappedTie,
+                      "reference": matchOutcomeJSON58(oracle.outcome), "referenceScores": oracle.scores,
+                      "actual": actual.map { matchOutcomeJSON58($0) as Any } ?? NSNull(),
+                      "status": passed.map { $0 ? "PASS" : "FAIL" } ?? "PENDING_PRODUCTION_FUNCTION"])
+        }
+        record58(["type": "receipt-match-summary", "cases": receiptMatchCases58.count, "productionAdapter": matcher != nil, "failed": failures,
+                  "contractGap": "FinancialOperationInput has no bank identity; fixture keeps it in a test-only envelope"])
+        require(failures.isEmpty, "58 future match failures: \(failures.joined(separator: ", "))")
+    }
+
+    static func deepSeekReceipts58(caseID: String? = nil) -> (checks: Int, failures: [String]) {
+        var failures: [String] = []; var checks = 0
+        func goods(_ values: [ReceiptGood]) -> [[String: Any]] {
+            values.map { ["name": $0.name, "kopecks": $0.kopecks.map { $0 as Any } ?? NSNull()] }
+        }
+        let examples: [(String, [String], [ReceiptGood], Int64, Int64)] = [
+            ("DeepSeek-1", ["СЕРВИСНЫЙ СБОР", "100.00", "ИТОГ 120.00"], [ReceiptGood(name: "СЕРВИСНЫЙ СБОР", kopecks: 10_000)], 12_000, 2_000),
+            ("DeepSeek-2", ["ТОВАР", "100.00", "200.00", "ИТОГ 200.00"], [ReceiptGood(name: "ТОВАР", kopecks: 10_000)], 20_000, 10_000),
+            ("DeepSeek-3", ["ТОВАР А", "ТОВАР Б", "50.00", "ИТОГ 100.00"],
+             [ReceiptGood(name: "ТОВАР А", kopecks: nil), ReceiptGood(name: "ТОВАР Б", kopecks: 5_000)], 10_000, 5_000),
+            ("DeepSeek-5", ["Товар 100", "Товар 100", "ИТОГ 200"],
+             [ReceiptGood(name: "Товар", kopecks: 10_000), ReceiptGood(name: "Товар", kopecks: 10_000)], 20_000, 0),
+            ("DeepSeek-6", ["Товар", "73.99 1ШТ 72.99", "ИТОГ 73.99"], [ReceiptGood(name: "Товар", kopecks: 7_399)], 7_399, 0),
+            ("DeepSeek-7", ["Товар А", "36.99 29.99 1ШТ 29.99", "Товар Б", "174.99 174.99 1ШТ 174.99", "ИТОГ 204.98"],
+             [ReceiptGood(name: "Товар А", kopecks: 2_999), ReceiptGood(name: "Товар Б", kopecks: 17_499)], 20_498, 0),
+        ]
+        for (id, lines, expectedGoods, total, gap) in examples where caseID == nil || caseID == id {
+            let parsed = ReceiptParser.parseText(lines, now: receipt58Now, calendar: receipt58Calendar)
+            let actualGap = parsed.totalKopecks.map { $0 - parsed.goods.compactMap(\.kopecks).reduce(0, +) }
+            let passed = parsed.goods == expectedGoods && parsed.totalKopecks == total && actualGap == gap
+            checks += 1; if !passed { failures.append(id) }
+            record58(["type": "deepseek-receipt-test", "id": id, "input": lines,
+                      "expected": ["goods": goods(expectedGoods), "total": total, "gap": gap, "warningRequired": gap != 0],
+                      "actual": ["goods": goods(parsed.goods), "total": parsed.totalKopecks.map { $0 as Any } ?? NSNull(),
+                                 "gap": actualGap.map { $0 as Any } ?? NSNull()], "passed": passed,
+                      "warningStatus": "ParsedReceipt has no warning/ambiguity field; UI warning check pending"])
+        }
+        if caseID == nil || caseID == "DeepSeek-4" {
+            // The source supplies bare integer prices and a swapped second reading, without a header or total.
+            let first = ["Йогурт клубника 50", "Йогурт вишня 60"]
+            let second = ["Йогурт вишня 60", "Йогурт клубника 50"]
+            let named = ReceiptParser.parseText(first, now: receipt58Now, calendar: receipt58Calendar).goods
+            let priced = ReceiptParser.parseText(second, now: receipt58Now, calendar: receipt58Calendar).goods
+            let paired = ReceiptParser.pairGoods(named: named, priced: priced)
+            let expected = [ReceiptGood(name: "Йогурт клубника", kopecks: 5_000), ReceiptGood(name: "Йогурт вишня", kopecks: 6_000)]
+            let passed = paired == expected
+            checks += 1; if !passed { failures.append("DeepSeek-4") }
+            record58(["type": "deepseek-receipt-test", "id": "DeepSeek-4", "input": ["first": first, "second": second],
+                      "expected": ["paired": goods(expected), "warningRequired": false],
+                      "actual": ["firstGoods": goods(named), "secondGoods": goods(priced), "paired": paired.map { goods($0) as Any } ?? NSNull()], "passed": passed])
+        }
+        record58(["type": "deepseek-receipt-summary", "checks": checks, "failed": failures])
+        return (checks, failures)
+    }
+
+    static func testKnownIssues55(caseID: String? = nil) {
+        var failures: [String] = []
+        var count = 0
+        func goodsJSON(_ goods: [ReceiptGood]) -> [[String: Any]] {
+            goods.map { ["name": $0.name, "kopecks": $0.kopecks.map { $0 as Any } ?? NSNull()] }
+        }
+        func check(_ id: String, _ passed: Bool, input: Any, expected: Any, actual: Any) {
+            count += 1
+            print("RECEIPT55: " + json58(["id": id, "passed": passed, "input": input,
+                                                  "expected": expected, "actual": actual]))
+            if !passed { failures.append(id) }
+        }
+        let header = "ЦЕНА КОЛ-ВО СУММА"
+        let examples: [(String, [String], [ReceiptGood], Int64)] = [
+            ("A54-1-service", [header, "Пирог учебный 120.00 100.00 100.00", "ИТОГО 120.00", "СЕРВИСНЫЙ СБОР 20.00"],
+             [ReceiptGood(name: "Пирог учебный", kopecks: 10_000)], 12_000),
+            ("A54-1-tips", [header, "Пирог учебный 120.00 100.00 100.00", "ИТОГО 120.00", "ЧАЕВЫЕ 20.00"],
+             [ReceiptGood(name: "Пирог учебный", kopecks: 10_000)], 12_000),
+            ("A54-1-incomplete", [header, "Молоко учебное 150.00 100.00 100.00", "ИТОГО 150.00"],
+             [ReceiptGood(name: "Молоко учебное", kopecks: 10_000)], 15_000),
+            ("A54-1-distant-band", [header, "Позиция учебная без цены", "", "Товар учебный посредине 70.00",
+                                   "Товар учебный последний 50.00", "ИТОГО 170.00"],
+             [ReceiptGood(name: "Позиция учебная без цены", kopecks: nil),
+              ReceiptGood(name: "Товар учебный посредине", kopecks: 7_000),
+              ReceiptGood(name: "Товар учебный последний", kopecks: 5_000)], 17_000),
+            ("A54-3-two-identical-goods", [header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 200.00"],
+             [ReceiptGood(name: "Товар учебный", kopecks: 10_000), ReceiptGood(name: "Товар учебный", kopecks: 10_000)], 20_000),
+            ("A54-3-ocr-duplicate-control", [header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 100.00"],
+             [ReceiptGood(name: "Товар учебный", kopecks: 10_000)], 10_000),
+            ("discount-control", [header, "Товар учебный первый 500.00", "Товар учебный второй 600.00", "ИТОГО 1000.00"],
+             [ReceiptGood(name: "Товар учебный первый", kopecks: 50_000), ReceiptGood(name: "Товар учебный второй", kopecks: 60_000)], 100_000),
+            ("no-price-evidence-control", [header, "Позиция учебная без цены", "Товар учебный 70.00", "ИТОГО 170.00"],
+             [ReceiptGood(name: "Позиция учебная без цены", kopecks: nil), ReceiptGood(name: "Товар учебный", kopecks: 7_000)], 17_000),
+        ]
+        for (id, lines, wantedGoods, wantedTotal) in examples where caseID == nil || caseID == id {
+            let parsed = ReceiptParser.parseText(lines, now: receipt58Now, calendar: receipt58Calendar)
+            check(id, parsed.goods == wantedGoods && parsed.totalKopecks == wantedTotal, input: lines,
+                  expected: ["goods": goodsJSON(wantedGoods), "total": wantedTotal],
+                  actual: ["goods": goodsJSON(parsed.goods), "total": parsed.totalKopecks.map { $0 as Any } ?? NSNull()])
+        }
+        let pairID = "A54-2-swapped-similar-names"
+        if caseID == nil || caseID == pairID {
+            let namedLines = [header, "Йогурт учебный клубника 80.00", "Йогурт учебный вишня 120.00", "ИТОГО 200.00"]
+            let pricedLines = [header, "Йогурт учебный вишня 120.00", "Йогурт учебный клубника 80.00", "ИТОГО 200.00"]
+            let named = ReceiptParser.parseText(namedLines, now: receipt58Now, calendar: receipt58Calendar).goods
+            let priced = ReceiptParser.parseText(pricedLines, now: receipt58Now, calendar: receipt58Calendar).goods
+            let actual = ReceiptParser.pairGoods(named: named, priced: priced)
+            let correct = [ReceiptGood(name: "Йогурт учебный клубника", kopecks: 8_000),
+                           ReceiptGood(name: "Йогурт учебный вишня", kopecks: 12_000)]
+            check(pairID, actual == nil || actual == correct, input: ["named": namedLines, "priced": pricedLines],
+                  expected: ["rejectPairOrMapByName": goodsJSON(correct)],
+                  actual: ["paired": actual.map { goodsJSON($0) as Any } ?? NSNull(),
+                           "crossSimilarity": ReceiptParser.similarity(named[0].name, priced[0].name)])
+        }
+        let deep = deepSeekReceipts58(caseID: caseID)
+        count += deep.checks
+        failures += deep.failures
+        print("RECEIPT55: " + json58(["type": "summary", "checks": count, "failed": failures]))
+        require(failures.isEmpty, "known receipt55 desired behaviour not implemented: " + failures.joined(separator: ", "))
+    }
+
     static func main() {
         testAudit53AngledReceipts()
         testAudit53AccountHistory()
