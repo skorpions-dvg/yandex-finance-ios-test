@@ -9,7 +9,12 @@ struct ForecastDetailView: View {
     let presentation: FinancePresentationCache
     /// The same setting the main screen reads: below this balance the end-of-month reserve turns yellow.
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
+    /// The cautious part of the irregular income goes into the reserve (decision C); the main screen reads the same setting.
+    @AppStorage("reserveCountsIrregular") private var countsIrregular = true
     @FocusState private var bufferFocused: Bool
+    /// The late payment whose new day is being chosen.
+    @State private var moving: FinancialEngine.UpcomingPayment?
+    @State private var moveDate = Date()
     @Environment(\.dismiss) private var dismiss
 
     private var bufferKopecks: Int64 { Int64(reserveBufferRubles) * 100 }
@@ -21,6 +26,28 @@ struct ForecastDetailView: View {
                 forecastSection
             }
             .appSurface()
+            .sheet(item: $moving) { payment in
+                NavigationStack {
+                    Form {
+                        DatePicker("Новая дата", selection: $moveDate, in: Date()..., displayedComponents: .date)
+                            .datePickerStyle(.graphical)
+                        Text("«\(payment.title)» будет ожидаться в этот день; до него в вопросах не появится.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .navigationTitle("Перенести платёж")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) { Button("Отмена") { moving = nil } }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Готово") {
+                                answer(payment, .moved, movedTo: Calendar.current.startOfDay(for: moveDate))
+                                moving = nil
+                            }
+                        }
+                    }
+                }
+                .presentationDetents([.large])
+            }
             .navigationTitle("Прогноз на месяц")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -40,8 +67,9 @@ struct ForecastDetailView: View {
         Section {
             Text("Останется к концу месяца").font(.headline)
             if let balance = balanceKopecks {
-                let reserve = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: forecast)
-                let range = FinancialEngine.monthReserveRange(balanceKopecks: balance, forecast: forecast)
+                let reserve = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: forecast, includeIrregular: countsIrregular)
+                let range = FinancialEngine.monthReserveRange(balanceKopecks: balance, forecast: forecast, includeIrregular: countsIrregular)
+                let irregularLeft = countsIrregular ? forecast.cautiousIrregularLeftKopecks : 0
                 Text(signedRubles(reserve))
                     .font(.largeTitle.weight(.semibold))
                     .foregroundStyle(reserveColor(reserve))
@@ -53,12 +81,13 @@ struct ForecastDetailView: View {
                         .font(.subheadline).foregroundStyle(.orange)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.futureExpenseKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))")
+                    Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.futureExpenseKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))"
+                         + (irregularLeft > 0 ? " + нерегулярные (осторожно) \(rubles(irregularLeft))" : ""))
                     Text("Счета: " + (accountNames.isEmpty ? "не выбраны" : accountNames.joined(separator: ", ")) + ". Отложенные деньги исключаются в настройках.")
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 let withIncome = FinancialEngine.monthReserveWithTypicalIncome(balanceKopecks: balance, forecast: forecast)
-                if withIncome != reserve {
+                if withIncome > reserve {
                     Label("Если придут обычные нерегулярные поступления: ≈ \(signedRubles(withIncome))", systemImage: "arrow.down.circle")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -67,6 +96,15 @@ struct ForecastDetailView: View {
                     .foregroundStyle(.secondary)
             }
             bufferRow
+            if forecast.cautiousIrregularIncomeKopecks > 0 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Учитывать нерегулярные поступления", isOn: $countsIrregular)
+                    Text("Самый маленький приход за последние полные месяцы"
+                         + (forecast.cautiousIrregularMonth.map { " (\($0.formatted(.dateTime.month(.wide))))" } ?? "")
+                         + ": \(rubles(forecast.cautiousIrregularIncomeKopecks)); в этом месяце уже пришло \(rubles(forecast.irregularIncomeSoFarKopecks)), в запас добавляется \(rubles(forecast.cautiousIrregularLeftKopecks)).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }.glassRows()
     }
 
@@ -128,17 +166,45 @@ struct ForecastDetailView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if !f.upcoming.isEmpty {
+            if !f.questions.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Не пришли в срок — отметьте").font(.caption).foregroundStyle(.orange)
+                    ForEach(f.questions) { payment in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text(payment.title).lineLimit(1)
+                                Spacer()
+                                Text((payment.isIncome ? "+" : "−") + rubles(payment.amountKopecks))
+                            }
+                            .font(.subheadline)
+                            Text("ожидался \(payment.date.formatted(.dateTime.day().month())), прошло больше недели; в прогноз не входит")
+                                .font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                Button("Уже пришло") { answer(payment, .arrived) }
+                                Button("Не будет") { answer(payment, .skipped) }
+                                Button("Перенести") {
+                                    moveDate = Date()
+                                    moving = payment
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .font(.caption)
+                        }
+                    }
+                }
+            }
+            let expected = f.upcoming.filter { $0.status != .question }
+            if !expected.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Ещё ожидается").font(.caption).foregroundStyle(.secondary)
-                    ForEach(f.upcoming) { payment in
+                    ForEach(expected) { payment in
                         HStack {
                             Image(systemName: payment.isIncome ? "arrow.down.circle" : "arrow.up.circle")
                                 .foregroundStyle(payment.isIncome ? .green : .secondary)
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(payment.title).lineLimit(1)
-                                Text(payment.overdue
-                                     ? "ожидался \(payment.date.formatted(.dateTime.day().month())), не пришёл"
+                                Text(payment.status == .waiting
+                                     ? "ожидался \(payment.date.formatted(.dateTime.day().month())), ещё ждём до \((payment.waitUntil ?? payment.date).formatted(.dateTime.day().month()))"
                                      : payment.date.formatted(.dateTime.day().month()))
                                     .font(.caption)
                                     .foregroundStyle(payment.overdue ? .orange : .secondary)
@@ -184,6 +250,15 @@ struct ForecastDetailView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.glassRows()
+    }
+
+    /// Stores the owner's answer about a late payment; the forecast is computed again with it.
+    private func answer(_ payment: FinancialEngine.UpcomingPayment, _ kind: FinancialEngine.PaymentAnswer.Kind, movedTo: Date? = nil) {
+        _ = browser.updateUserData { history in
+            var answers = history.paymentAnswers ?? [:]
+            answers[payment.key] = FinancialEngine.PaymentAnswer(kind: kind, movedTo: movedTo)
+            history.paymentAnswers = answers
+        }
     }
 
     private func reserveColor(_ reserve: Int64) -> Color {

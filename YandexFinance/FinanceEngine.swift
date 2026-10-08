@@ -682,13 +682,15 @@ enum FinancialEngine {
     /// spending still expected this month (recurring payments and the variable tail) plus the regular income still
     /// expected (a salary that has its usual day ahead). Irregular income is never guessed here; see
     /// `monthReserveWithTypicalIncome`.
-    static func monthReserve(balanceKopecks: Int64, forecast: MonthForecast) -> Int64 {
+    /// With `includeIrregular` the cautious part of the irregular income still to come is added (decision C).
+    static func monthReserve(balanceKopecks: Int64, forecast: MonthForecast, includeIrregular: Bool = false) -> Int64 {
         balanceKopecks - max(0, forecast.futureExpenseKopecks) + forecast.expectedIncomeLeftKopecks
+            + (includeIrregular ? forecast.cautiousIrregularLeftKopecks : 0)
     }
 
     /// The reserve at the usual low and high spending of the months the forecast is built from.
-    static func monthReserveRange(balanceKopecks: Int64, forecast: MonthForecast) -> (low: Int64, high: Int64) {
-        let left = forecast.expectedIncomeLeftKopecks
+    static func monthReserveRange(balanceKopecks: Int64, forecast: MonthForecast, includeIrregular: Bool = false) -> (low: Int64, high: Int64) {
+        let left = forecast.expectedIncomeLeftKopecks + (includeIrregular ? forecast.cautiousIrregularLeftKopecks : 0)
         let atHighSpending = balanceKopecks - max(0, forecast.futureExpenseHighKopecks) + left
         let atLowSpending = balanceKopecks - max(0, forecast.futureExpenseLowKopecks) + left
         return (min(atHighSpending, atLowSpending), max(atHighSpending, atLowSpending))
@@ -756,13 +758,44 @@ enum FinancialEngine {
 
     /// A recurring payment or income still expected this month.
     struct UpcomingPayment: Equatable, Identifiable {
+        /// Expected on its day; its day has passed and it is still waited for (a week, decision 2); more than a week late:
+        /// the owner is asked about it, and it is not counted.
+        enum Status: String { case expected, waiting, question }
+
         let title: String
         let amountKopecks: Int64
         let date: Date
         let isIncome: Bool
-        /// Its usual day has already passed this month and it has not shown up yet.
+        /// Its usual day has already passed and it has not shown up yet.
         let overdue: Bool
+        var status: Status = .expected
+        /// What the owner's answer about it is stored under (`paymentKey`).
+        var key = ""
+        /// The last day it is still waited for: its day plus `paymentGraceDays`.
+        var waitUntil: Date?
         var id: String { "\(isIncome)|\(title)|\(date.timeIntervalSince1970)" }
+
+        static func == (lhs: UpcomingPayment, rhs: UpcomingPayment) -> Bool {
+            lhs.title == rhs.title && lhs.amountKopecks == rhs.amountKopecks && lhs.date == rhs.date
+                && lhs.isIncome == rhs.isIncome && lhs.overdue == rhs.overdue && lhs.status == rhs.status
+        }
+    }
+
+    /// The owner's answer about a regular payment that did not come on its day: it came (under another name or in cash), it
+    /// will not be this month, or it moves to another day.
+    struct PaymentAnswer: Codable, Equatable {
+        enum Kind: String, Codable { case arrived, skipped, moved }
+        var kind: Kind
+        var movedTo: Date?
+    }
+
+    /// Days a late regular payment is still waited for before the owner is asked.
+    static let paymentGraceDays = 7
+
+    /// One occurrence of a regular payment: income or expense, its payee and its usual day.
+    static func paymentKey(title: String, isIncome: Bool, due: Date, calendar: Calendar) -> String {
+        let day = calendar.dateComponents([.year, .month, .day], from: due)
+        return "\(isIncome ? "in" : "out")|\(counterpartyKey(title))|" + String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0)
     }
 
     /// One full month of the history behind the forecast, split the way the baseline sees it.
@@ -815,6 +848,14 @@ enum FinancialEngine {
         var futureExpenseLowKopecks: Int64 = 0
         var futureExpenseHighKopecks: Int64 = 0
 
+        /// The smallest irregular income of the full months behind the forecast (decision C), with the month it came in; zero with
+        /// too little history. What is left of it this month may go into the reserve (`monthReserve(includeIrregular:)`).
+        var cautiousIrregularIncomeKopecks: Int64 = 0
+        var cautiousIrregularMonth: Date?
+        var cautiousIrregularLeftKopecks: Int64 { max(0, cautiousIrregularIncomeKopecks - irregularIncomeSoFarKopecks) }
+        /// Regular payments more than a week late: the owner is asked about them, they are not counted.
+        var questions: [UpcomingPayment] { upcoming.filter { $0.status == .question } }
+
         /// Two full months of history at least: with fewer the forecast is only the pace of this month and is shown as facts,
         /// with «мало данных», without a range.
         var hasEnoughHistory: Bool { historyMonths >= 2 }
@@ -823,7 +864,7 @@ enum FinancialEngine {
         var projectedBalanceKopecks: Int64 { projectedIncomeKopecks - projectedExpenseKopecks }
         /// Regular income still expected this month; one whose usual day has passed without it arriving is not counted.
         var expectedIncomeLeftKopecks: Int64 {
-            upcoming.filter { $0.isIncome && !$0.overdue }.reduce(0) { $0 + $1.amountKopecks }
+            upcoming.filter { $0.isIncome && $0.status == .expected && !$0.overdue }.reduce(0) { $0 + $1.amountKopecks }
         }
         /// The same balance if the usual irregular income still comes this month (the second, optimistic scenario).
         var balanceWithTypicalIncomeKopecks: Int64 {
@@ -950,7 +991,7 @@ enum FinancialEngine {
     /// the usual monthly variable spending. Months with fewer than three expenses are not used.
     /// Built on `report`, so the usual rules apply.
     static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current,
-                              taxonomy: ExpenseTaxonomy = .builtin) -> MonthForecast {
+                              taxonomy: ExpenseTaxonomy = .builtin, answers: [String: PaymentAnswer] = [:]) -> MonthForecast {
         // The engine is also compiled on its own (statement import tests), so month bounds are computed here.
         let monthStartDate = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
         let startOfToday = calendar.startOfDay(for: now)
@@ -1085,23 +1126,41 @@ enum FinancialEngine {
             return Int64((rate * Double(remaining)).rounded())
         }
 
+        // Every occurrence after the last payment, from the start of last month: one of last month that has not come is never
+        // dropped silently on the 1st (decision 5), it is waited for and then asked about like any other.
+        let previousMonthStart = calendar.date(byAdding: .month, value: -1, to: monthStartDate)!
         var upcoming: [UpcomingPayment] = []
         for pattern in patterns {
             var count = 1
             var next = step(pattern.lastDate, by: pattern.intervalDays, times: count, calendar: calendar)
             while next < monthEnd {
-                if next >= monthStartDate {
-                    upcoming.append(UpcomingPayment(title: pattern.title, amountKopecks: pattern.typicalAmountKopecks, date: next,
-                                                    isIncome: pattern.isIncome, overdue: next < startOfToday))
+                if next >= previousMonthStart {
+                    let key = paymentKey(title: pattern.title, isIncome: pattern.isIncome, due: next, calendar: calendar)
+                    let answer = answers[key]
+                    // «It came» and «not this month» close it; «move» waits for it on the new day.
+                    let due = answer?.kind == .moved ? (answer?.movedTo ?? next) : next
+                    if answer?.kind != .arrived && answer?.kind != .skipped && due < monthEnd {
+                        let waitUntil = calendar.date(byAdding: .day, value: paymentGraceDays, to: calendar.startOfDay(for: due))!
+                        let status: UpcomingPayment.Status = due >= startOfToday ? .expected : (startOfToday <= waitUntil ? .waiting : .question)
+                        // Last month's occurrences only when they are late (an expected one of last month cannot be).
+                        if due >= monthStartDate || status != .expected {
+                            upcoming.append(UpcomingPayment(title: pattern.title, amountKopecks: pattern.typicalAmountKopecks, date: due,
+                                                            isIncome: pattern.isIncome, overdue: due < startOfToday, status: status,
+                                                            key: key, waitUntil: waitUntil))
+                        }
+                    }
                 }
                 count += 1
                 next = step(pattern.lastDate, by: pattern.intervalDays, times: count, calendar: calendar)
             }
         }
         upcoming.sort { $0.date < $1.date }
-        let upcomingExpense = upcoming.filter { !$0.isIncome }.reduce(0) { $0 + $1.amountKopecks }
+        // A late payment is counted while it is waited for; one asked about is not.
+        let upcomingExpense = upcoming.filter { !$0.isIncome && $0.status != .question }.reduce(0) { $0 + $1.amountKopecks }
         // An income whose usual day has passed without it arriving is counted nowhere (the reserve already ignores it).
-        let upcomingIncome = upcoming.filter { $0.isIncome && !$0.overdue }.reduce(0) { $0 + $1.amountKopecks }
+        let upcomingIncome = upcoming.filter { $0.isIncome && $0.status == .expected && !$0.overdue }.reduce(0) { $0 + $1.amountKopecks }
+        // The cautious irregular income: the smallest of the full months behind the forecast, only with enough history.
+        let cautiousIndex = variableIncomes.indices.min { variableIncomes[$0] < variableIncomes[$1] }
 
         // What is still expected, apart from what has been spent or returned so far.
         let futures = [tail(quantile(variableExpenses, 0.25)), tail(baseline), tail(quantile(variableExpenses, 0.75))].map { upcomingExpense + $0 }
@@ -1126,7 +1185,9 @@ enum FinancialEngine {
                              refundsKopecks: soFar.refundsKopecks,
                              futureExpenseKopecks: futures[1],
                              futureExpenseLowKopecks: futures.min()!,
-                             futureExpenseHighKopecks: futures.max()!)
+                             futureExpenseHighKopecks: futures.max()!,
+                             cautiousIrregularIncomeKopecks: months.count >= 2 ? cautiousIndex.map { max(0, variableIncomes[$0]) } ?? 0 : 0,
+                             cautiousIrregularMonth: months.count >= 2 ? cautiousIndex.map { months[$0].interval.start } : nil)
     }
 
     // MARK: - Chart data

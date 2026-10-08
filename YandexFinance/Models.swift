@@ -126,6 +126,8 @@ struct SavedHistory: Codable {
     var operationNatures: [String: String]?
     /// Spending limits of the month (stage 46); nil until the first one is set.
     var budgets: [Budget]?
+    /// The owner's answers about regular payments that did not come on their day, by `FinancialEngine.paymentKey`.
+    var paymentAnswers: [String: FinancialEngine.PaymentAnswer]?
     /// The goods of a receipt, per operation (identity): name and the final price of the line. Not the comment: the comment
     /// stays the owner's own words.
     var receiptGoods: [String: [ReceiptGood]]?

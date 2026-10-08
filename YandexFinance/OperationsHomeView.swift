@@ -19,6 +19,7 @@ struct OperationsHomeView: View {
     /// «Доходы» / «Расходы» tapped: the report of the chosen period.
     @State private var periodReport: ReportMode?
     @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
+    @AppStorage("reserveCountsIrregular") private var reserveCountsIrregular = true
     @State private var showSearch = false
     @State private var showAdd = false
     @State private var pendingSavedOperation: ManualOperation?
@@ -332,11 +333,12 @@ struct OperationsHomeView: View {
                             Text("—").font(.title3.weight(.semibold))
                             Text(accounts.isEmpty ? "добавьте счета" : "выберите счета в настройках").font(.caption).foregroundStyle(.secondary)
                         } else {
-                            let reserve = FinancialEngine.monthReserve(balanceKopecks: reserveBalance(), forecast: f)
+                            let reserve = FinancialEngine.monthReserve(balanceKopecks: reserveBalance(), forecast: f, includeIrregular: reserveCountsIrregular)
                             Text(signedRubles(reserve))
                                 .font(.title3.weight(.semibold))
                                 .foregroundStyle(reserveColor(reserve))
-                            Text(reserveCaption(reserve) + (f.hasEnoughHistory ? "" : " · мало данных"))
+                            Text(reserveCaption(reserve) + (f.hasEnoughHistory ? "" : " · мало данных")
+                                 + (f.questions.isEmpty ? "" : " · вопрос по платежу"))
                                 .font(.caption).foregroundStyle(reserveColor(reserve))
                         }
                     }

@@ -65,7 +65,9 @@ struct FinanceEngineTests {
                     op(-30_000, kind: "expense", category: "ЖКХ", description: "Аренда Тест", date: "2023-12-31T10:00:00Z"),
                     op(-30_000, kind: "expense", category: "ЖКХ", description: "Аренда Тест", date: iso(1, 31))]
         let march = FinancialEngine.monthForecast(rent, now: at(3, 5), calendar: calendar)
-        require(march.upcoming.map(\.date) == [at(3, 31)], "the rent of the 31st is expected on the 31st of March, not the 29th")
+        require(march.upcoming.filter { $0.date >= at(3, 1, 0) }.map(\.date) == [at(3, 31)], "the rent of the 31st is expected on the 31st of March, not the 29th")
+        // February's rent did not come either: since 46.24 it is still waited for in the first week of March (decision 5)
+        require(march.upcoming.filter { $0.date < at(3, 1, 0) }.map(\.status) == [.waiting], "last month's missing rent is waited for, not dropped")
 
         // The first day of a month without history: one purchase is not multiplied by thirty
         let first = FinancialEngine.monthForecast([op(-10_000, kind: "expense", category: "Супермаркеты", description: "Магазин Тест", date: iso(7, 1))],
@@ -1377,6 +1379,57 @@ struct FinanceEngineTests {
                     "the line of \(month.month) adds up to the net expense")
         }
         require(explained.baselineMonths.contains { $0.otherRefundsKopecks == 500 }, "a refund of an older purchase is shown apart")
+    }
+
+    /// A late regular payment is waited for a week, then asked about and not counted (decision 2); the owner's answer closes
+    /// or moves it; one of last month is not dropped on the 1st (decision 5); the cautious irregular income (decision C).
+    static func testForecastLatePaymentsAndIrregularIncome() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: 12))! }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2032-%02d-%02dT12:00:00Z", month, day) }
+        let service = (1...3).map { op(-50_000, kind: "expense", category: "Связь", description: "Услуга учебная регулярная", date: iso($0, 5)) }
+        func expected(_ forecast: FinancialEngine.MonthForecast) -> Int64 {
+            forecast.upcoming.filter { !$0.isIncome && $0.status != .question }.reduce(0) { $0 + $1.amountKopecks }
+        }
+        // decision 2: the 5th + 7 days is still waited for, on the 8th day it is a question
+        let seventh = FinancialEngine.monthForecast(service, now: at(4, 12), calendar: calendar)
+        let eighth = FinancialEngine.monthForecast(service, now: at(4, 13), calendar: calendar)
+        require(expected(seventh) == 50_000 && seventh.upcoming.first?.status == .waiting && seventh.questions.isEmpty, "a week late it is still waited for")
+        require(expected(eighth) == 0 && eighth.questions.count == 1, "more than a week late it is asked about, not counted")
+        let key = eighth.questions[0].key
+        require(key == FinancialEngine.paymentKey(title: "Услуга учебная регулярная", isIncome: false, due: at(4, 5), calendar: calendar), "the key of the answer")
+        for kind in [FinancialEngine.PaymentAnswer.Kind.arrived, .skipped] {
+            let answered = FinancialEngine.monthForecast(service, now: at(4, 13), calendar: calendar, answers: [key: .init(kind: kind)])
+            require(answered.questions.isEmpty && expected(answered) == 0, "the answer «\(kind.rawValue)» closes the question")
+        }
+        let moved = FinancialEngine.monthForecast(service, now: at(4, 13), calendar: calendar,
+                                                  answers: [key: .init(kind: .moved, movedTo: calendar.startOfDay(for: at(4, 20)))])
+        require(moved.questions.isEmpty && expected(moved) == 50_000 && moved.upcoming.first?.status == .expected, "a moved payment is expected on its new day")
+        // decision 5: the payment of the 30th that did not come is still waited for on the 1st of the next month
+        let rent = [iso(1, 30), iso(2, 29), iso(3, 30)].map { op(-50_000, kind: "expense", category: "ЖКХ", description: "Аренда учебная", date: $0) }
+        let first = FinancialEngine.monthForecast(rent, now: at(5, 1), calendar: calendar)
+        let late = first.upcoming.filter { $0.date < at(5, 1) }
+        require(late.count == 1 && late[0].status == .waiting && calendar.component(.month, from: late[0].date) == 4,
+                "last month's rent that has not come is shown as waited for, not dropped")
+        // decision C: the smallest irregular income of the full months, minus what came this month; nothing with too little history
+        var incomes: [FinancialOperationInput] = []
+        for (month, amount) in [(1, 40_000), (2, 25_000), (3, 60_000)] as [(Int, Int64)] {
+            incomes += stride(from: 1, through: 28, by: 3).map { op(-1_000, kind: "expense", category: "Супермаркеты", description: "Продукты учебные", date: iso(month, $0)) }
+            incomes.append(op(amount, kind: "income", category: "Переводы", description: "Перевод учебный \(month)", date: iso(month, 10 + month)))
+        }
+        incomes.append(op(10_000, kind: "income", category: "Переводы", description: "Перевод учебный апрель", date: iso(4, 2)))
+        let april = FinancialEngine.monthForecast(incomes, now: at(4, 5), calendar: calendar)
+        require(april.cautiousIrregularIncomeKopecks == 25_000 && calendar.component(.month, from: april.cautiousIrregularMonth ?? .distantPast) == 2,
+                "the smallest irregular income of the full months: \(april.cautiousIrregularIncomeKopecks)")
+        require(april.cautiousIrregularLeftKopecks == 15_000, "what already came this month is taken off")
+        require(FinancialEngine.monthReserve(balanceKopecks: 100_000, forecast: april, includeIrregular: true)
+                == FinancialEngine.monthReserve(balanceKopecks: 100_000, forecast: april) + 15_000, "the reserve adds it only when asked")
+        let range = FinancialEngine.monthReserveRange(balanceKopecks: 100_000, forecast: april, includeIrregular: true)
+        let plainRange = FinancialEngine.monthReserveRange(balanceKopecks: 100_000, forecast: april)
+        require(range.low == plainRange.low + 15_000 && range.high == plainRange.high + 15_000, "the range moves by the same amount")
+        let short = FinancialEngine.monthForecast(Array(incomes.prefix(11)) + [incomes[22]], now: at(2, 20), calendar: calendar)
+        require(short.cautiousIrregularIncomeKopecks == 0, "with fewer than two full months nothing irregular is counted")
     }
 
     static func testMonthReserve() {
@@ -3915,6 +3968,7 @@ struct FinanceEngineTests {
         testForecastSpeed()
         testForecastRefunds()
         testForecastCompletenessAndReturns()
+        testForecastLatePaymentsAndIrregularIncome()
         testKnownIssues52()
         testKnownIssues53()
         testKnownAccountIssues53()

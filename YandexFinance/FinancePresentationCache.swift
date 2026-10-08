@@ -66,8 +66,11 @@ final class FinancePresentationCache {
     }
 
     func forecast(_ history: SavedHistory, now: Date = Date()) -> FinancialEngine.MonthForecast {
-        value("forecast:\(Calendar.current.startOfDay(for: now))") {
-            FinancialEngine.monthForecast(inputs(history), now: now, taxonomy: history.expenseTaxonomy)
+        // The answers about late payments are in the key, not in `prepare`: an answer recomputes the forecast only.
+        let answers = (history.paymentAnswers ?? [:]).sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value.kind.rawValue)\($0.value.movedTo.map { "@\($0.timeIntervalSince1970)" } ?? "")" }.joined(separator: ";")
+        return value("forecast:\(Calendar.current.startOfDay(for: now)):\(answers)") {
+            FinancialEngine.monthForecast(inputs(history), now: now, taxonomy: history.expenseTaxonomy, answers: history.paymentAnswers ?? [:])
         }
     }
 }
