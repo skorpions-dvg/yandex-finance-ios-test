@@ -49,7 +49,7 @@ struct ManualOperationFormView: View {
 
     private var accounts: [Account] { browser.history.accounts ?? [] }
     private var eligibleAccounts: [Account] {
-        kind == .transfer ? accounts : accounts.filter { !$0.tracksBankCard }
+        kind == .transfer ? accounts : accounts.filter { !$0.followsBank }
     }
 
     private var parsedAmount: Int64? {

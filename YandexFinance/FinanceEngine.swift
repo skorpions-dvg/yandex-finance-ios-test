@@ -462,7 +462,7 @@ enum FinancialEngine {
             operationCount += 1
             let assessment = classify(operation)
             // The Save statement repeats the deposit side of transfers the card statement already has.
-            let fromSaveStatement = isSaveSide(operation) || otherAccountRows.contains(index)
+            let fromSaveStatement = isNotCardSide(operation) || otherAccountRows.contains(index)
             if assessment.type != .cancelled && !fromSaveStatement {
                 if operation.amountKopecks < 0 { bankDebit += -operation.amountKopecks }
                 if operation.amountKopecks > 0 { bankCredit += operation.amountKopecks }
@@ -630,10 +630,23 @@ enum FinancialEngine {
         let otherAccountRows = saveSidePairRows(operations)
         return operations.enumerated().reduce(startKopecks) { balance, item in
             let operation = item.element
-            guard !isSaveSide(operation), !otherAccountRows.contains(item.offset),
+            guard !isNotCardSide(operation), !otherAccountRows.contains(item.offset),
                   let date = BankDateParser.parse(operation.occurredAt), date >= since,
                   classify(operation).type != .cancelled else { return balance }
             return balance + operation.amountKopecks
+        }
+    }
+
+    /// Current balance of the Save account kept from the bank: the entered balance plus its rows after `since` — the interest,
+    /// the Save part of transfers with the card (both ways, tagged by the bank or the unmarked other side of a pair) and
+    /// payments made from Save. Everything of the card, Split and the points stays out.
+    static func saveAccountBalance(startKopecks: Int64, since: Date, operations: [FinancialOperationInput]) -> Int64 {
+        let otherAccountRows = saveSidePairRows(operations)
+        return operations.enumerated().reduce(startKopecks) { balance, item in
+            guard isSaveSide(item.element) || otherAccountRows.contains(item.offset),
+                  let date = BankDateParser.parse(item.element.occurredAt), date >= since,
+                  classify(item.element).type != .cancelled else { return balance }
+            return balance + item.element.amountKopecks
         }
     }
 
@@ -1365,6 +1378,18 @@ enum FinancialEngine {
     /// card balance and is not counted twice.
     static func isSaveSide(_ operation: FinancialOperationInput) -> Bool {
         normalized(operation.paymentMethod).contains("сейв")
+    }
+
+    /// A payment made with Split or with the Plus points: the bank card is not charged by it (the card pays the instalments
+    /// later, as separate rows of its own).
+    static func isSplitOrPointsSide(_ operation: FinancialOperationInput) -> Bool {
+        let method = normalized(operation.paymentMethod)
+        return method.contains("сплит") || method.contains("плюс") || method.contains("балл")
+    }
+
+    /// A row of the shared bank history that does not move the bank card: Save, Split or the points.
+    static func isNotCardSide(_ operation: FinancialOperationInput) -> Bool {
+        isSaveSide(operation) || isSplitOrPointsSide(operation)
     }
 
     private enum TransferDestination { case save, card }

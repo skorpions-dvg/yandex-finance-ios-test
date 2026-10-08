@@ -9,6 +9,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     @Published var selectedTab = 1
     /// The bank page always stays in the window (scanning needs it); this only brings it to the front.
     @Published var bankPageVisible = false
+    /// A line over the bank page after «copy the text of the page».
+    @Published var pageTextNotice = ""
     /// The bank page is in front because the bank asked to sign in (shows the code hint).
     @Published private(set) var signInRequested = false
     private var signInWatch: Task<Void, Never>?
@@ -572,6 +574,27 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             if self.historyRevision == revision { self.history = next } else { _ = self.updateUserData(change) }
         }
         return true
+    }
+
+    /// Puts the visible text of the open bank page on the clipboard (only on the user's tap, nothing is sent anywhere): it
+    /// shows how the accounts and their balances are written there.
+    func copyPageText() {
+        webView.evaluateJavaScript("document.body ? document.body.innerText : ''", in: nil, in: .defaultClient) { [weak self] result in
+            var read: String?
+            if case .success(let value) = result { read = value as? String }
+            let page = read
+            Task { @MainActor in
+                guard let self else { return }
+                if let text = page, !text.isEmpty {
+                    UIPasteboard.general.string = text
+                    self.pageTextNotice = "Скопировано: \(text.count) символов"
+                } else {
+                    self.pageTextNotice = "Не удалось прочитать страницу"
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                self.pageTextNotice = ""
+            }
+        }
     }
 
     func backupData() throws -> Data { try HistoryBackup.encode(history) }

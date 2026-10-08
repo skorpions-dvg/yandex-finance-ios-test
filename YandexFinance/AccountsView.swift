@@ -381,6 +381,7 @@ struct AccountFormView: View {
     @State private var balanceText: String
     @State private var showsBalance: Bool
     @State private var tracksBankCard: Bool
+    @State private var tracksSave: Bool
     @State private var groupID: UUID?
     @State private var showsIcons = false
     @State private var confirmDeletion = false
@@ -399,6 +400,7 @@ struct AccountFormView: View {
         _balanceText = State(initialValue: account.map { (Decimal($0.startBalanceKopecks) / 100).description } ?? "0")
         _showsBalance = State(initialValue: account?.showsBalance ?? true)
         _tracksBankCard = State(initialValue: account?.tracksBankCard ?? false)
+        _tracksSave = State(initialValue: account?.tracksSave ?? false)
         let groups = browser.history.accountGroups ?? []
         _groupID = State(initialValue: groups.contains { $0.id == account?.groupID } ? account?.groupID : nil)
     }
@@ -449,7 +451,12 @@ struct AccountFormView: View {
                 }.glassRows()
                 Section {
                     Toggle("Карта Яндекс Банка", isOn: $tracksBankCard)
-                } footer: { Text("Операции, загруженные из банка, будут менять остаток этого счёта.") }.glassRows()
+                        .onChange(of: tracksBankCard) { _, isOn in if isOn { tracksSave = false } }
+                    Toggle("Сейв Яндекс Банка", isOn: $tracksSave)
+                        .onChange(of: tracksSave) { _, isOn in if isOn { tracksBankCard = false } }
+                } footer: {
+                    Text("Операции, загруженные из банка, меняют остаток такого счёта: карты — её покупки и переводы, Сейва — проценты и переводы с карты и на карту. Введите остаток, как в банке, и сохраните: дальше приложение считает от него. Сверить с банком можно в любой момент: введите остаток из банка и сохраните.")
+                }.glassRows()
                 Section {
                     Picker("Группа", selection: $groupID) {
                         Text("Без группы").tag(nil as UUID?)
@@ -564,12 +571,16 @@ struct AccountFormView: View {
         saved.startBalanceKopecks = balance
         saved.showsBalance = showsBalance
         saved.tracksBankCard = tracksBankCard
+        saved.tracksSave = tracksSave ? true : nil
         let success = browser.updateUserData { history in
             if history.accountGroups == nil { history.accountGroups = [] }
             var accounts = history.accounts ?? []
             if !((history.accountGroups ?? []).contains { $0.id == saved.groupID }) { saved.groupID = nil }
             if saved.tracksBankCard {
                 for index in accounts.indices { accounts[index].tracksBankCard = false }
+            }
+            if saved.tracksSave == true {
+                for index in accounts.indices { accounts[index].tracksSave = nil }
             }
             if let index = accounts.firstIndex(where: { $0.id == saved.id }) { accounts[index] = saved }
             else { accounts.append(saved) }

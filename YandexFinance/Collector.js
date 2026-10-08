@@ -646,6 +646,11 @@ function parseCard(url, cardText, rowText, now = new Date()) {
     datePattern.lastIndex = 0;
     try { if (amount(value) === kopecks) componentAccount = name.trim(); } catch (_) {}
   }
+  // The list row names the account it belongs to after the amount («Карта Пэй», «Счёт в Сейвах», «Сплит», «Баллы Плюса»).
+  // The card of an interest payout has no «Способ оплаты», only «На счёт в Сейвах», so the row decides; the destination of
+  // an incoming payment to Save is the second source.
+  const listedAccountMatch = /(?:карта\s+п[эе]й|сч[её]т\s+в\s+сейвах|сплит|баллы\s+плюса)\s*$/i.exec(rowText.trim());
+  const listedAccount = listedAccountMatch ? listedAccountMatch[0].trim() : null;
   const fromOwn = /(?:^|\s)(?:с\s+карты\s+п[эе]й|со\s+сч[её]та\s+в\s+сейвах|с\s+сч[её]та\s+в\s+сейвах)/i.test(combined);
   const toOwn = /на\s+(?:сч[её]т\s+в\s+сейвах|карту\s+п[эе]й)/i.test(combined);
   const refund = !componentAccount && (rawCategory === 'Возврат' || summary.includes('Возврат'));
@@ -670,7 +675,10 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   return {identity: JSON.stringify(identities), verifiedAt: new Date().toISOString(), occurredAt: occurred.toISOString(),
     timePrecision: dates.length ? 'source_timestamp' : 'display_minute',
     description, amountKopecks: kopecks, currency: 'RUB', status,
-    category, mcc: detail('MCC'), purpose, paymentMethod: detail('Способ оплаты') || componentAccount, providers,
+    category, mcc: detail('MCC'), purpose,
+    paymentMethod: detail('Способ оплаты') || componentAccount || listedAccount
+      || (kopecks > 0 && !internalTransfer && /на\s+сч[её]т\s+в\s+сейвах/i.test(combined) ? 'Счёт в Сейвах' : null),
+    providers,
     kind: installment ? 'installment_payment' : refund ? 'refund' : internalTransfer ? 'internal_transfer'
       : interestIncome ? 'interest_income' : transfer ? 'transfer' : kopecks > 0 ? 'unclassified_income' : 'expense'};
 }

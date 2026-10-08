@@ -490,6 +490,70 @@ struct FinanceEngineTests {
                 == calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 18, minute: 37)), "spaces around the separators of a date and a time")
     }
 
+    /// The Save account from the bank, and the rows that must not move the card (stage 46.11).
+    static func testSaveAccountAndOtherSides() {
+        let start = BankDateParser.parse("2032-06-01T00:00:00Z")!
+        func row(_ amount: Int64, _ kind: String, _ method: String?, _ description: String, _ date: String = "2032-06-05T10:00:00Z") -> FinancialOperationInput {
+            var input = op(amount, kind: kind, description: description, date: date)
+            input.paymentMethod = method
+            return input
+        }
+        let rows = [
+            row(-50_000, "expense", "Карта Пэй", "Магазин А"),
+            row(1_918, "interest_income", "Счёт в Сейвах", "Выплата процентов"),
+            row(-7_000_000, "internal_transfer", "Карта Пэй", "Карта Пэй → Счёт в Сейвах", "2032-06-06T10:00:00Z"),
+            row(7_000_000, "internal_transfer", "Счёт в Сейвах", "Карта Пэй → Счёт в Сейвах", "2032-06-06T10:00:00Z"),
+            row(-1_000_000, "internal_transfer", "Счёт в Сейвах", "Счёт в Сейвах → Карта Пэй", "2032-06-07T10:00:00Z"),
+            row(1_000_000, "internal_transfer", "Карта Пэй", "Счёт в Сейвах → Карта Пэй", "2032-06-07T10:00:00Z"),
+            row(-300_000, "expense", "Сплит", "Магазин Б"),
+            row(-10_000, "expense", "Баллы Плюса", "Магазин В"),
+            row(-20_000, "installment_payment", "Карта *2733", "Платёж Сплита"),
+        ]
+        require(FinancialEngine.isNotCardSide(rows[1]) && FinancialEngine.isNotCardSide(rows[6]) && FinancialEngine.isNotCardSide(rows[7])
+                && !FinancialEngine.isNotCardSide(rows[0]) && !FinancialEngine.isNotCardSide(rows[8]), "Save, Split and the points are not the card")
+        // The card: its purchases, its part of the transfers and the instalment; not the interest, not Split, not the points.
+        let cardBalance = FinancialEngine.accountBalance(startKopecks: 100_000, since: start, tracksBankCard: true, operations: rows)
+        require(cardBalance == 100_000 - 50_000 - 7_000_000 + 1_000_000 - 20_000, "the card keeps only its own rows")
+        // Save: the interest, both transfers, and nothing of the card.
+        let saveBalance = FinancialEngine.saveAccountBalance(startKopecks: 500_000, since: start, operations: rows)
+        require(saveBalance == 500_000 + 1_918 + 7_000_000 - 1_000_000, "Save takes the interest and the transfers both ways")
+        require(FinancialEngine.saveAccountBalance(startKopecks: 500_000, since: start.addingTimeInterval(86_400 * 30), operations: rows) == 500_000,
+                "rows before the start of the account are not counted")
+
+        // The same through the accounts and the history.
+        let card = Account(name: "Яндекс банк", icon: "creditcard", color: "blue", startBalanceKopecks: 100_000, startDate: start, tracksBankCard: true)
+        let save = Account(name: "Сейв", icon: "banknote", color: "green", startBalanceKopecks: 500_000, startDate: start, tracksSave: true)
+        require(save.followsBank && card.followsBank && !Account(name: "Наличные", icon: "banknote", color: "green", startBalanceKopecks: 0, startDate: start).followsBank,
+                "the bank accounts are not kept by hand")
+        require(card.balance(bankOperations: rows, manual: []) == cardBalance && save.balance(bankOperations: rows, manual: []) == saveBalance, "the account balances")
+        let manual = ManualOperation(kind: .income, amountKopecks: 99_999, date: start.addingTimeInterval(86_400), accountID: save.id, group: nil, subcategory: "Прочие доходы")
+        require(save.balance(bankOperations: rows, manual: [manual]) == saveBalance, "an entry made by hand never moves the Save kept from the bank")
+
+        var history = SavedHistory()
+        history.accounts = [card, save]
+        history.operations = [
+            BankOperation(identity: "s-1", occurredAt: "2032-06-05T10:00:00Z", timePrecision: "exact", description: "Выплата процентов", amountKopecks: 1_918,
+                          currency: "RUB", status: "Выполнено", category: "Проценты", mcc: nil, purpose: nil, paymentMethod: "Счёт в Сейвах", providers: [],
+                          kind: "interest_income"),
+            BankOperation(identity: "c-1", occurredAt: "2032-06-05T11:00:00Z", timePrecision: "exact", description: "Магазин А", amountKopecks: -50_000,
+                          currency: "RUB", status: "Выполнено", category: "Супермаркеты", mcc: nil, purpose: nil, paymentMethod: "Карта Пэй", providers: [],
+                          kind: "expense"),
+        ]
+        let inputs = history.financialInputs
+        require(inputs[0].accountID == save.id && inputs[1].accountID == nil, "the Save row belongs to the Save account in the reports")
+        let june = DateInterval(start: start, end: start.addingTimeInterval(86_400 * 30))
+        func income(_ scope: ReportAccountScope) -> Int64 {
+            ReportEngine.slices(inputs, in: june, mode: .income, grouping: .categories, taxonomy: .builtin, filter: ReportFilter(scope: scope)).reduce(0) { $0 + $1.amountKopecks }
+        }
+        require(income(.accounts([save])) == 1_918 && income(.accounts([card])) == 0 && income(.all) == 1_918, "the interest is the income of Save, not of the card")
+        let movements = history.accountMovements(save)
+        require(movements.count == 1 && movements[0].delta == 1_918, "the movements of the Save account")
+        require(history.accountMovements(card).count == 1, "the card has its purchase only")
+        var held = history
+        held.manualOperations = [manual]
+        require(held.lastManualAccountID == nil, "no manual account to suggest: Save follows the bank")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3038,6 +3102,7 @@ struct FinanceEngineTests {
         testBudgets()
         testHistoryPeriodStorage()
         testReceiptTotals()
+        testSaveAccountAndOtherSides()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

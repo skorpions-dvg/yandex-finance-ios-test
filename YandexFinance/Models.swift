@@ -197,6 +197,9 @@ extension Account {
     /// operations on this account dated from `startDate` on. Manual entries never move the scanned bank card,
     /// because its side of a transfer arrives from the bank anyway.
     func balance(bankOperations: [FinancialOperationInput], manual: [ManualOperation]) -> Int64 {
+        if tracksSave == true {
+            return FinancialEngine.saveAccountBalance(startKopecks: startBalanceKopecks, since: startDate, operations: bankOperations)
+        }
         var total = FinancialEngine.accountBalance(startKopecks: startBalanceKopecks, since: startDate,
                                                    tracksBankCard: tracksBankCard, operations: bankOperations)
         guard !tracksBankCard else { return total }
@@ -269,6 +272,12 @@ struct Account: Codable, Equatable, Identifiable {
     /// Set to false for money that is put aside (a savings goal, a deposit): it stays in the balance but is not
     /// counted in the reserve until the end of the month. Missing (old data): counted.
     var countsInReserve: Bool?
+    /// The Save account of Yandex Bank: its interest, the transfers with the card and the payments from it come from the
+    /// bank. Missing (old data): kept by hand.
+    var tracksSave: Bool?
+
+    /// An account whose balance is moved by the bank, not by entries made by hand.
+    var followsBank: Bool { tracksBankCard || tracksSave == true }
 
     static let palette = ["orange", "red", "yellow", "green", "teal", "blue", "indigo", "purple", "pink", "gray"]
 }
@@ -430,9 +439,12 @@ struct ExpenseCategoryResolver {
     private let incomeOverrides: [String: String]
     private let natures: [String: String]
     private let manualAccounts: [String: UUID]
+    /// The Save account kept from the bank: the rows of Save belong to it (for the account choice of the reports).
+    private let saveAccountID: UUID?
 
     init(_ history: SavedHistory) {
         natures = history.operationNatures ?? [:]
+        saveAccountID = (history.accounts ?? []).first { $0.tracksSave == true }?.id
         manualAccounts = Dictionary((history.manualOperations ?? []).map {
             (ManualOperation.identityPrefix + $0.id.uuidString, $0.accountID ?? ManualOperation.noAccountID)
         }, uniquingKeysWith: { first, _ in first })
@@ -459,6 +471,7 @@ struct ExpenseCategoryResolver {
         var input = operation.financialInput
         if let nature = natures[operation.identity] { input.confirmedNature = nature }
         input.accountID = manualAccounts[operation.identity]
+        if input.accountID == nil, let saveAccountID, FinancialEngine.isSaveSide(input) { input.accountID = saveAccountID }
         return input
     }
 
@@ -856,7 +869,18 @@ extension SavedHistory {
             let otherAccountRows = FinancialEngine.saveSidePairRows(inputs)
             for (index, operation) in operations.enumerated() {
                 let input = inputs[index]
-                guard !FinancialEngine.isSaveSide(input), !otherAccountRows.contains(index),
+                guard !FinancialEngine.isNotCardSide(input), !otherAccountRows.contains(index),
+                      let date = BankDateParser.parse(operation.occurredAt), includingBeforeStart || date >= account.startDate,
+                      FinancialEngine.classify(input).type != .cancelled else { continue }
+                result.append(AccountMovement(operation: operation, date: date, delta: operation.amountKopecks))
+            }
+        } else if account.tracksSave == true {
+            // The Save account: its own rows of the bank history, seen from Save.
+            let inputs = operations.map(\.financialInput)
+            let otherAccountRows = FinancialEngine.saveSidePairRows(inputs)
+            for (index, operation) in operations.enumerated() {
+                let input = inputs[index]
+                guard FinancialEngine.isSaveSide(input) || otherAccountRows.contains(index),
                       let date = BankDateParser.parse(operation.occurredAt), includingBeforeStart || date >= account.startDate,
                       FinancialEngine.classify(input).type != .cancelled else { continue }
                 result.append(AccountMovement(operation: operation, date: date, delta: operation.amountKopecks))
@@ -899,7 +923,7 @@ extension SavedHistory {
             if moment >= account.startDate {
                 return movements.lazy.filter { $0.date >= account.startDate && $0.date < moment }.reduce(account.startBalanceKopecks) { $0 + $1.delta }
             }
-            guard account.tracksBankCard, let firstDate, moment > firstDate else { return nil }
+            guard account.followsBank, let firstDate, moment > firstDate else { return nil }
             return movements.lazy.filter { $0.date >= moment && $0.date < account.startDate }.reduce(account.startBalanceKopecks) { $0 - $1.delta }
         }
     }

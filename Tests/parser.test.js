@@ -32,6 +32,25 @@ assert.equal(missingStatusPurchase.status, 'Не указан');
 assert.equal(missingStatusPurchase.kind, 'expense');
 console.log('Parser: purchase, refund, Split, stable identity, exact kopecks, and rejection cases passed.');
 
+// The account of a row (46.11). An interest payout to Save: the card has no payment method, the row and the destination
+// say which account it is.
+const payoutText = 'Выплата процентов\nСегодня, 10:30\n+19,18 ₽\nПоддержка\nПодробнее\nПополнение\nНа счёт в Сейвах';
+const payoutFromRow = parse(url([ref]), payoutText, 'Выплата процентов Пополнение +19,18 ₽ Счёт в Сейвах');
+assert.equal(payoutFromRow.kind, 'interest_income');
+assert.equal(payoutFromRow.paymentMethod, 'Счёт в Сейвах', 'the interest belongs to the Save account named in the row');
+const payoutFromDestination = parse(url([ref]), payoutText, 'Выплата процентов Пополнение +19,18 ₽');
+assert.equal(payoutFromDestination.paymentMethod, 'Счёт в Сейвах', 'without the row label the destination in the card decides');
+const cardRow = parse(url([ref]), purchase, 'Тестовый магазин Развлечения −1 234,56 ₽ +60 Карта Пэй');
+assert.equal(cardRow.paymentMethod, 'Карта Пэй', 'a purchase from the card keeps its account');
+const splitRow = parse(url([ref]), purchase, 'Тестовый магазин −1 234,56 ₽ Сплит');
+assert.equal(splitRow.paymentMethod, 'Сплит', 'a purchase made with Split belongs to Split');
+const pointsRow = parse(url([ref]), purchase, 'Тестовый магазин −1 234,56 ₽ Баллы Плюса');
+assert.equal(pointsRow.paymentMethod, 'Баллы Плюса', 'a payment with Plus points belongs to the points');
+const methodWins = parse(url([ref]), purchase.replace('Статус', 'Способ оплаты\nКарта *2733\nСтатус'), 'Тестовый магазин −1 234,56 ₽ Карта Пэй');
+assert.equal(methodWins.paymentMethod, 'Карта *2733', 'the payment method of the card stays the strongest source');
+assert.equal(first.paymentMethod, null, 'a row without any account label stays without one');
+console.log('Parser: the account of a row (card, Save, Split, points) passed.');
+
 // v16 regression shape: status-less mobile cards must be ready and
 // classified without a 20-second wait.
 const demoTransferRef = {...ref, chainId: 'demo-savings-to-pay', operationTimestamp: '2026-08-14T06:34:00Z'};

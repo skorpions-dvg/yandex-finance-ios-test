@@ -145,7 +145,9 @@ struct ContentView: View {
                     HStack {
                         Button("Готово") { browser.finishSignIn() }.fontWeight(.semibold)
                         Spacer()
-                        Text(browser.host).font(.caption).foregroundStyle(.secondary)
+                        Text(browser.pageTextNotice.isEmpty ? browser.host : browser.pageTextNotice).font(.caption).foregroundStyle(.secondary)
+                        Button { browser.copyPageText() } label: { Image(systemName: "doc.on.doc") }
+                            .accessibilityLabel("Скопировать текст страницы")
                         Spacer()
                         Button("История") { browser.openHistory() }.disabled(browser.busy)
                     }

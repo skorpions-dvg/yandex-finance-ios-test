@@ -241,7 +241,7 @@ extension SavedHistory {
     /// The account of the latest manual operation, if it still exists and is kept by hand.
     var lastManualAccountID: UUID? {
         guard let id = manualOperations?.last(where: { $0.accountID != nil })?.accountID,
-              (accounts ?? []).contains(where: { $0.id == id && !$0.tracksBankCard }) else { return nil }
+              (accounts ?? []).contains(where: { $0.id == id && !$0.followsBank }) else { return nil }
         return id
     }
 }
