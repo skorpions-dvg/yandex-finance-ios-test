@@ -469,6 +469,27 @@ struct FinanceEngineTests {
         require(HistoryPeriod.currentMonth(now: date(9, 1), calendar: calendar) == .custom(from: date(9, 1), through: date(9, 1)), "on the 1st it is one day")
     }
 
+    /// The first real receipt (stage 46.10): «ИТОГ БЕЗ СКИДОК» was taken for the total.
+    static func testReceiptTotals() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 20, minute: 0))!
+        let discounted = ["МАГАЗИН ТЕСТ", "ЦЕНА ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ", "Товар один 120.00 100.00 1шт. 100.00",
+                          "Товар два 800.00 700.00 2шт. 1400.00", "Карта № ****-0000", "Скидка по карте Тест 100.00",
+                          "ИТОГ БЕЗ СКИДОК 1500.00", "СКИДКА 100.00", "ИТОГ 1400.00", "БЕЗНАЛИЧНЫМИ 1400.00", "08.10.32 18:37"]
+        let parsed = ReceiptParser.parseText(discounted, now: now, calendar: calendar)
+        require(parsed.totalKopecks == 140_000, "the total after the discounts, not «итог без скидок»")
+        require(parsed.date == calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 18, minute: 37)), "the date of the receipt")
+        require(ReceiptParser.parseText(discounted.filter { !$0.hasPrefix("БЕЗНАЛИЧ") }, now: now, calendar: calendar).totalKopecks == 140_000,
+                "without the card line the last «ИТОГ» is the total")
+        require(ReceiptParser.parseText(["ИТОГ БЕЗ СКИДОК 1500.00", "СКИДКА 100.00", "ИТОГ 1400.00", "БЕЗНАЛИЧНЫМИ 900.00", "БОНУСАМИ 500.00"],
+                                        now: now, calendar: calendar).totalKopecks == 90_000, "what was paid by card is what the bank charged")
+        require(ReceiptParser.parseText(["ИТОГ БЕЗ СКИДОК 1500.00", "НАЛИЧНЫМИ 1500.00", "ИТОГ 1400.00"], now: now, calendar: calendar).totalKopecks == 140_000,
+                "cash is not a total")
+        require(ReceiptParser.parseText(["Магазин Тест", "08. 10. 32  18 : 37", "ИТОГО 10.00"], now: now, calendar: calendar).date
+                == calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 18, minute: 37)), "spaces around the separators of a date and a time")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3016,6 +3037,7 @@ struct FinanceEngineTests {
         testReportAccountScope()
         testBudgets()
         testHistoryPeriodStorage()
+        testReceiptTotals()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

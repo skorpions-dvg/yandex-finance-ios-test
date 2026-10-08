@@ -5,6 +5,8 @@ struct ParsedReceipt: Equatable {
     var totalKopecks: Int64?
     var date: Date?
     var merchant: String?
+    /// The rows the phone read from the pictures, top to bottom: shown in the form so that a wrong reading can be seen.
+    var readLines: [String] = []
 
     var isEmpty: Bool { totalKopecks == nil && date == nil && merchant == nil }
 }
@@ -82,15 +84,22 @@ enum ReceiptParser {
         ParsedReceipt(totalKopecks: qr?.totalKopecks ?? text.totalKopecks, date: qr?.date ?? text.date, merchant: text.merchant)
     }
 
-    private static let totalKeywords: [[String]] = [["к оплате"], ["итого", "итог"], ["сумма"], ["всего", "total"]]
-    private static let notATotal = ["ндс", "налог", "скидк", "бонус", "сдач", "наличн", "получен", "аванс", "налич"]
+    /// What is looked for, in order: the sum to pay, what was paid by card (it is what the bank charges), the total.
+    private static let totalKeywords: [[String]] = [["к оплате"], ["безналичн"], ["итого", "итог"], ["сумма"], ["всего", "total"]]
+    /// «скидок» (in «итог без скидок») has other letters than «скидк»: both are listed.
+    private static let notATotal = ["ндс", "налог", "скидк", "скидок", "без скид", "до скид", "бонус", "сдач", "наличн", "получен", "аванс", "налич"]
 
     static func total(in lines: [String]) -> Int64? {
         for keywords in totalKeywords {
-            for (index, line) in lines.enumerated() {
-                let lower = line.lowercased()
-                guard keywords.contains(where: { lower.contains($0) }), !notATotal.contains(where: { lower.contains($0) }) else { continue }
-                var found = amounts(in: line)
+            // «Paid by card» holds the word «налич» itself; the totals are searched from the end: the last «ИТОГ» is the one
+            // after the discounts.
+            let isCard = keywords == ["безналичн"]
+            let fromEnd = keywords.contains("итог")
+            let order = fromEnd ? Array(lines.indices.reversed()) : Array(lines.indices)
+            for index in order {
+                let lower = lines[index].lowercased()
+                guard keywords.contains(where: { lower.contains($0) }), isCard || !notATotal.contains(where: { lower.contains($0) }) else { continue }
+                var found = amounts(in: lines[index])
                 if found.isEmpty, index + 1 < lines.count { found = amounts(in: lines[index + 1]) }
                 if let best = found.max(), best > 0 { return best }
             }
@@ -100,9 +109,9 @@ enum ReceiptParser {
 
     /// The first valid date; its time is on the same line or next to it. A date from the future is not a receipt date.
     static func date(in lines: [String], now: Date, calendar: Calendar) -> Date? {
-        let datePattern = #"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{4}|\d{2})(?!\d)"#
+        let datePattern = #"(?<!\d)(\d{1,2})\s?[./-]\s?(\d{1,2})\s?[./-]\s?(\d{4}|\d{2})(?!\d)"#
         let isoPattern = #"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)"#
-        let timePattern = #"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?(?!\d)"#
+        let timePattern = #"(?<!\d)([01]?\d|2[0-3])\s?:\s?([0-5]\d)(?:\s?:\s?[0-5]\d)?(?!\d)"#
         let limit = now.addingTimeInterval(86_400)
         for (index, line) in lines.enumerated() {
             var parts: (year: Int, month: Int, day: Int)?

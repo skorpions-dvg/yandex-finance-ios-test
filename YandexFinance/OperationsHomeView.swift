@@ -515,8 +515,6 @@ struct OperationsHomeView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .textCase(nil)
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
         }
     }

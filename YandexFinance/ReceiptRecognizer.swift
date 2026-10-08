@@ -29,9 +29,32 @@ enum ReceiptRecognizer {
                     }
                 }
             }
+            if qr == nil { qr = qrInParts(of: cgImage) }
             lines += rows(from: text.results ?? [])
         }
-        return ReceiptParser.merge(qr: qr, text: ReceiptParser.parseText(lines))
+        var result = ReceiptParser.merge(qr: qr, text: ReceiptParser.parseText(lines))
+        result.readLines = lines
+        return result
+    }
+
+    /// A photographed QR code is small in a picture of a whole receipt: if it was not found in the whole picture, nine
+    /// overlapping halves of it are tried, each one larger for Vision than the code is in the whole.
+    nonisolated private static func qrInParts(of cgImage: CGImage) -> ParsedReceipt? {
+        let width = cgImage.width, height = cgImage.height
+        let partWidth = width / 2, partHeight = height / 2
+        for row in 0..<3 {
+            for column in 0..<3 {
+                let rect = CGRect(x: column * (width - partWidth) / 2, y: row * (height - partHeight) / 2, width: partWidth, height: partHeight)
+                guard let part = cgImage.cropping(to: rect) else { continue }
+                let codes = VNDetectBarcodesRequest()
+                codes.symbologies = [.qr]
+                try? VNImageRequestHandler(cgImage: part, options: [:]).perform([codes])
+                for code in codes.results ?? [] {
+                    if let payload = code.payloadStringValue, let parsed = ReceiptParser.parseQR(payload) { return parsed }
+                }
+            }
+        }
+        return nil
     }
 
     /// The pieces of text of one printed row (a title and its sum are read apart) are joined into one line, top to bottom.

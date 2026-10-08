@@ -23,6 +23,8 @@ struct ManualOperationFormView: View {
     @State private var pendingReceipts: [String] = []
     /// What the reading of a receipt did, shown above the fields; `recognizing` while it is being read.
     @State private var recognition: String?
+    /// The rows the phone read from the receipt, for the folded «Что прочитано».
+    @State private var recognizedLines: [String] = []
     @State private var recognizing = false
     @State private var showDateTime = false
     @State private var selectsTime = false
@@ -89,6 +91,15 @@ struct ManualOperationFormView: View {
                                 HStack(spacing: 10) {
                                     if recognizing { ProgressView() }
                                     Text(recognizing ? "Читаю чек…" : (recognition ?? "")).font(.footnote)
+                                }
+                                if !recognizing && !recognizedLines.isEmpty {
+                                    DisclosureGroup("Что прочитано") {
+                                        Text(recognizedLines.joined(separator: "\n"))
+                                            .font(.caption.monospaced()).foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .textSelection(.enabled)
+                                    }
+                                    .font(.footnote)
                                 }
                             }.glassRows()
                         }
@@ -291,6 +302,7 @@ struct ManualOperationFormView: View {
 
     /// `dateAtStart`: the date of the form when the reading began; a date the user changed meanwhile is not overwritten.
     private func apply(_ parsed: ParsedReceipt, dateAtStart: Date) {
+        recognizedLines = parsed.readLines
         guard !parsed.isEmpty else {
             recognition = "Чек не распознан: введите данные вручную. Фото останется приложенным."
             return

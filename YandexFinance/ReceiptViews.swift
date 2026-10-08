@@ -101,6 +101,7 @@ struct ReceiptSection: View {
     @State private var screen: ReceiptScreen?
     @State private var showGallery = false
     @State private var showFiles = false
+    @State private var showSources = false
     @State private var picked: [PhotosPickerItem] = []
     @State private var failed = false
 
@@ -110,26 +111,29 @@ struct ReceiptSection: View {
         let files = self.files
         Section {
             VStack(alignment: .leading, spacing: 12) {
-                // Only the dots are the menu: it opens from them at the right edge, and the title is not part of the
-                // animation (when the whole row was the menu, its label was cut off while the menu closed).
-                HStack {
-                    Label("Добавить чек", systemImage: "doc.badge.plus")
-                    Spacer()
-                    Menu {
-                        if VNDocumentCameraViewController.isSupported {
-                            Button { screen = .scanner } label: { Label("Сканировать", systemImage: "doc.viewfinder") }
-                        }
-                        if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                            Button { screen = .camera } label: { Label("Камера", systemImage: "camera") }
-                        }
-                        Button { showGallery = true } label: { Label("Из галереи", systemImage: "photo.on.rectangle") }
-                        Button { showFiles = true } label: { Label("Документ", systemImage: "doc") }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
+                // The whole row opens a sheet of choices from the bottom: a menu fastened to the row cut its title off while
+                // it closed, and a menu on the dots alone left the row itself dead.
+                Button { showSources = true } label: {
+                    HStack {
+                        Label("Добавить чек", systemImage: "doc.badge.plus")
+                        Spacer()
+                        Image(systemName: "ellipsis").foregroundStyle(.secondary)
                     }
-                    .accessibilityLabel("Добавить чек")
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Добавить чек")
+                .confirmationDialog("Добавить чек", isPresented: $showSources, titleVisibility: .visible) {
+                    if VNDocumentCameraViewController.isSupported {
+                        Button("Сканировать") { screen = .scanner }
+                    }
+                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                        Button("Камера") { screen = .camera }
+                    }
+                    Button("Из галереи") { showGallery = true }
+                    Button("Документ") { showFiles = true }
+                    Button("Отмена", role: .cancel) {}
                 }
                 if !files.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
