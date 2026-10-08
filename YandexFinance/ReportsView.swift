@@ -115,6 +115,7 @@ struct ReportsView: View {
                 }
                 .appSurface()
             }
+            .watchesPushedScreens()
             .navigationTitle("Отчёты")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showPeriodSheet) {

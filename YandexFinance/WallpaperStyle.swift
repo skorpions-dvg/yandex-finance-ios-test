@@ -194,11 +194,31 @@ private struct BottomBarSpaceKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
+private struct PageScreenPushedKey: EnvironmentKey {
+    static let defaultValue: (Bool) -> Void = { _ in }
+}
+
+/// Tells the horizontal pager of the tabs that the page has a screen pushed over its root (or none any more).
+private struct PushedScreenWatcher: ViewModifier {
+    @Environment(\.pageScreenPushed) private var pushed
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { pushed(false) }
+            .onDisappear { pushed(true) }
+    }
+}
+
 extension EnvironmentValues {
     /// Room the floating tab bar takes at the bottom of a page; lists end their content above it.
     var bottomBarSpace: CGFloat {
         get { self[BottomBarSpaceKey.self] }
         set { self[BottomBarSpaceKey.self] = newValue }
+    }
+    /// Called with true when a screen is pushed over the root of a tab page, with false when its root is back.
+    var pageScreenPushed: (Bool) -> Void {
+        get { self[PageScreenPushedKey.self] }
+        set { self[PageScreenPushedKey.self] = newValue }
     }
 }
 
@@ -224,6 +244,9 @@ struct AppSurfaceModifier: ViewModifier {
 
 extension View {
     func appSurface() -> some View { modifier(AppSurfaceModifier()) }
+    /// Put on the root of a tab page inside its NavigationStack: while a screen is pushed over it, the swipe to the right
+    /// goes back instead of turning to the neighbouring tab.
+    func watchesPushedScreens() -> some View { modifier(PushedScreenWatcher()) }
 }
 
 struct WallpaperSettingsView: View {

@@ -54,6 +54,15 @@ struct ContentView: View {
     @ScaledMetric(relativeTo: .caption2) private var tabContentHeight: CGFloat = 50
     @State private var bankHeaderHeight: CGFloat = 52
     private var bottomSpace: CGFloat { max(Self.barSpace, tabContentHeight + 6) }
+    /// Tab pages with a screen pushed over their root. On such a page the pages do not turn under the finger: the swipe to the
+    /// right is the system «back» (the two gestures fought, and every other swipe opened the neighbouring tab).
+    @State private var pushedPages: Set<Int> = []
+
+    private func pushedChange(_ page: Int) -> (Bool) -> Void {
+        { pushed in
+            if pushed { pushedPages.insert(page) } else { pushedPages.remove(page) }
+        }
+    }
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
@@ -89,6 +98,7 @@ struct ContentView: View {
                                                onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
+                                .environment(\.pageScreenPushed, pushedChange(1))
                                 .frame(width: width, height: height)
                                 .overlay {
                                     // While the accounts are open, a tap on the visible edge of the page closes them.
@@ -100,18 +110,22 @@ struct ContentView: View {
                             ReportsView(browser: browser, presentation: presentation)
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
+                                .environment(\.pageScreenPushed, pushedChange(2))
                                 .frame(width: width, height: height)
                                 .id(2)
                             SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
                                          onHorizontalPan: { _, _, _ in })
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
+                                .environment(\.pageScreenPushed, pushedChange(3))
                                 .frame(width: width, height: height)
                                 .id(3)
                         }
                         .scrollTargetLayout()
                     }
                     .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
+                    // Only the page in front decides: a page left with a screen pushed does not hold the others.
+                    .scrollDisabled(pushedPages.contains(page ?? 1))
                     .scrollPosition(id: $page, anchor: .leading)
                     .scrollIndicators(.hidden)
                     .onChange(of: page) { _, newPage in
@@ -185,7 +199,14 @@ struct ContentView: View {
     private func closeAccounts() { animate { page = 1 } }
 
     private func selectTab(_ tab: Int) {
-        if selectedTab == tab && tab == 3 { settingsReset += 1 }
+        if selectedTab == tab && tab == 3 {
+            settingsReset += 1
+            // A new Settings root replaces the old one: whatever order their appear/disappear come in, the pages turn again.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                pushedPages.remove(3)
+            }
+        }
         selectedTab = tab
         if page == tab {
             // The saved position can stay at a page the pager is no longer on; a repeated value would do nothing.
@@ -892,6 +913,7 @@ struct SettingsView: View {
                 }.listRowBackground(Color.clear)
             }
             .appSurface()
+            .watchesPushedScreens()
             .navigationTitle("Настройки")
             // Large titles lose their leading margin inside the horizontal pages; inline matches «Операции».
             .navigationBarTitleDisplayMode(.inline)

@@ -98,6 +98,7 @@ struct OperationsHomeView: View {
                     }
                 }
                 .appSurface()
+                .watchesPushedScreens()
                 .listStyle(.insetGrouped)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {

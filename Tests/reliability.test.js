@@ -750,3 +750,15 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
     }
   }
 }
+
+// A swipe to the right on a screen pushed inside a tab page sometimes turned to the neighbouring tab instead of going back
+// (46.25): each tab root reports its pushed screens and the pager does not turn while one is open.
+{
+  const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
+  assert.match(app, /\.scrollDisabled\(pushedPages\.contains\(page \?\? 1\)\)/, 'The pager must stop while a screen is pushed on the page in front');
+  for (const page of [1, 2, 3]) assert.ok(app.includes(`pushedChange(${page})`), `Tab page ${page} must report its pushed screens`);
+  for (const file of ['YandexFinanceApp.swift', 'ReportsView.swift', 'OperationsHomeView.swift']) {
+    const code = fs.readFileSync(path.join(__dirname, '../YandexFinance/' + file), 'utf8');
+    assert.ok(code.includes('.watchesPushedScreens()'), `${file}: the tab root must watch its pushed screens`);
+  }
+}
