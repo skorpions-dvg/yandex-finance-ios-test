@@ -1477,6 +1477,37 @@ struct FinanceEngineTests {
                 "the card and Save accounts get the bank's balances, others none")
     }
 
+    /// The range of the forecast from the errors of the past forecasts of the same day (decision 4).
+    static func testForecastRange() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func iso(_ year: Int, _ month: Int, _ day: Int) -> String { String(format: "%04d-%02d-%02dT12:00:00Z", year, month, day) }
+        // fourteen months of steady shopping with a month of 2–3 times more now and then
+        var history: [FinancialOperationInput] = []
+        for index in 0..<14 {
+            let year = 2031 + (index / 12), month = index % 12 + 1
+            let scale: Int64 = index % 5 == 3 ? 3 : 1
+            for day in stride(from: 1, through: 28, by: 3) {
+                history.append(op(-1_000 * scale - Int64(day * 10), kind: "expense", category: "Супермаркеты", description: "Продукты учебные", date: iso(year, month, day)))
+            }
+        }
+        let now = calendar.date(from: DateComponents(year: 2032, month: 3, day: 10, hour: 15))!
+        let range = FinancialEngine.forecastRange(history, now: now, calendar: calendar)
+        require(range.months >= 4 && range.isShown, "the past months give their errors: \(range.months)")
+        require(range.lowErrorKopecks <= 0 && range.highErrorKopecks >= 0, "the range is around the forecast")
+        require(range.highErrorKopecks > 0, "a month far above the usual makes the upper side wider")
+        // what happens after today does not change the range (no peeking into the future of the past months either)
+        let future = history + [op(-9_999_999, kind: "expense", category: "Супермаркеты", description: "Будущее учебное", date: iso(2032, 3, 20))]
+        require(FinancialEngine.forecastRange(future, now: now, calendar: calendar).months == range.months, "an operation after today does not count")
+        // too little history: no range
+        let short = Array(history.prefix(30))
+        let shortRange = FinancialEngine.forecastRange(short, now: calendar.date(from: DateComponents(year: 2031, month: 4, day: 10))!, calendar: calendar)
+        require(!shortRange.isShown && shortRange.lowErrorKopecks == 0 && shortRange.highErrorKopecks == 0, "fewer than four months of errors: no range")
+        // the 31st: months without that day give no error
+        let late = FinancialEngine.forecastRange(history, now: calendar.date(from: DateComponents(year: 2032, month: 1, day: 31, hour: 12))!, calendar: calendar)
+        require(late.months <= 7, "only the months with a 31st give an error: \(late.months)")
+    }
+
     static func testMonthReserve() {
         let forecast = FinancialEngine.MonthForecast(spentKopecks: 24_913, incomeKopecks: 11_000, projectedExpenseKopecks: 129_940,
                                                      projectedExpenseLowKopecks: 117_098, projectedExpenseHighKopecks: 144_877,
@@ -4015,6 +4046,7 @@ struct FinanceEngineTests {
         testForecastCompletenessAndReturns()
         testForecastLatePaymentsAndIrregularIncome()
         testBalanceReconciliation()
+        testForecastRange()
         testKnownIssues52()
         testKnownIssues53()
         testKnownAccountIssues53()

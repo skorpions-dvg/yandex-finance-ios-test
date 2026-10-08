@@ -843,6 +843,52 @@ enum FinancialEngine {
         let lastDate: Date
     }
 
+    /// How far the forecast of this day of the month was off in the past months (decision 4): the actual spending of a month
+    /// minus what the same forecast said on the same day of it. `months` errors are known; the range is shown from four.
+    struct ForecastRange: Equatable, Sendable {
+        let months: Int
+        /// The error the actual spending may be below the forecast by (zero or negative) and above it by (zero or positive).
+        let lowErrorKopecks: Int64
+        let highErrorKopecks: Int64
+        var isShown: Bool { months >= 4 }
+    }
+
+    /// The range of the spending of this month from the errors of the past forecasts of the same day (decision 4, after the
+    /// answers of Grok, DeepSeek and the measurement of GPT, stage 57). For each of the last `maxMonths` months the forecast is
+    /// computed again as on the same day of that month, with only what was known then; its error is the actual spending of that
+    /// month minus that forecast. Each side of the range is a conformal bound of 90 % (k = ⌈(n+1)·0,9⌉-th error, the extreme one
+    /// while n ≤ 18), so together they cover the actual spending at least (n−1)/(n+1) of the time when months are alike. A month
+    /// without that day (the 31st in a short month) or without enough history of its own gives no error. Heavy (one forecast per
+    /// month): for a background task.
+    static func forecastRange(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current,
+                              taxonomy: ExpenseTaxonomy = .builtin, maxMonths: Int = 12) -> ForecastRange {
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        let day = calendar.component(.day, from: now)
+        let secondsIntoDay = now.timeIntervalSince(calendar.startOfDay(for: now))
+        var errors: [Int64] = []
+        for back in 1...max(1, maxMonths) {
+            let start = calendar.date(byAdding: .month, value: -back, to: monthStart)!
+            guard let length = calendar.range(of: .day, in: .month, for: start)?.count, day <= length else { continue }
+            let thatDay = calendar.date(byAdding: .day, value: day - 1, to: start)!
+            let then = thatDay.addingTimeInterval(secondsIntoDay)
+            let endOfThatDay = calendar.date(byAdding: .day, value: 1, to: thatDay)!
+            // Only what was known then: nothing after the end of that day.
+            let known = operations.filter { (BankDateParser.parse($0.occurredAt) ?? .distantFuture) < endOfThatDay }
+            let past = monthForecast(known, now: then, calendar: calendar, taxonomy: taxonomy)
+            guard past.hasEnoughHistory else { continue }
+            let month = DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!)
+            let actual = max(0, report(operations, in: month, taxonomy: taxonomy).netExpenseKopecks)
+            errors.append(actual - past.projectedExpenseKopecks)
+        }
+        let n = errors.count
+        guard n >= 4 else { return ForecastRange(months: n, lowErrorKopecks: 0, highErrorKopecks: 0) }
+        let sorted = errors.sorted()
+        let k = Int((Double(n + 1) * 0.9).rounded(.up))
+        let high = sorted[min(k, n) - 1]
+        let low = sorted[max(n - k, 0)]
+        return ForecastRange(months: n, lowErrorKopecks: min(0, low), highErrorKopecks: max(0, high))
+    }
+
     /// A recurring payment or income still expected this month.
     struct UpcomingPayment: Equatable, Identifiable {
         /// Expected on its day; its day has passed and it is still waited for (a week, decision 2); more than a week late:

@@ -88,6 +88,16 @@ final class FinancePresentationCache {
         }
     }
 
+    /// The range of the forecast once computed in the background for the day (`FinancialEngine.forecastRange`); dropped with
+    /// the rest when the data change.
+    func cachedForecastRange(now: Date = Date()) -> FinancialEngine.ForecastRange? {
+        values["forecastRange:\(Calendar.current.startOfDay(for: now))"] as? FinancialEngine.ForecastRange
+    }
+
+    func storeForecastRange(_ range: FinancialEngine.ForecastRange, now: Date = Date()) {
+        values["forecastRange:\(Calendar.current.startOfDay(for: now))"] = range
+    }
+
     func forecast(_ history: SavedHistory, now: Date = Date()) -> FinancialEngine.MonthForecast {
         // The answers about late payments are in the key, not in `prepare`: an answer recomputes the forecast only.
         let answers = (history.paymentAnswers ?? [:]).sorted { $0.key < $1.key }

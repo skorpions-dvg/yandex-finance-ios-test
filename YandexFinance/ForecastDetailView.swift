@@ -13,6 +13,8 @@ struct ForecastDetailView: View {
     /// The late payment whose new day is being chosen.
     @State private var moving: FinancialEngine.UpcomingPayment?
     @State private var moveDate = Date()
+    /// The range from the errors of the past forecasts (decision 4), computed in the background when the window opens.
+    @State private var spread: FinancialEngine.ForecastRange?
     @Environment(\.dismiss) private var dismiss
 
     private var bufferKopecks: Int64 { Int64(reserveBufferRubles) * 100 }
@@ -24,6 +26,7 @@ struct ForecastDetailView: View {
                 forecastSection
             }
             .appSurface()
+            .task { await loadSpread() }
             .sheet(item: $moving) { payment in
                 NavigationStack {
                     Form {
@@ -68,13 +71,15 @@ struct ForecastDetailView: View {
                 // Only money that is there or regularly comes: an irregular income is never counted in advance (the reserve
                 // cannot exceed the balance at the start of a month only because transfers usually come).
                 let reserve = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: forecast)
-                let range = FinancialEngine.monthReserveRange(balanceKopecks: balance, forecast: forecast)
                 Text(signedRubles(reserve))
                     .font(.largeTitle.weight(.semibold))
                     .foregroundStyle(reserveColor(reserve))
                 if forecast.hasEnoughHistory {
-                    Text("обычно от \(signedRubles(range.low)) до \(signedRubles(range.high))")
-                        .font(.subheadline).foregroundStyle(.secondary)
+                    // More spending than forecast leaves less: the high error of the spending is the low end of the reserve.
+                    spreadLine { spread in
+                        "от \(signedRubles(reserve - spread.highErrorKopecks)) до \(signedRubles(reserve - spread.lowErrorKopecks))"
+                    }
+                    .font(.subheadline)
                 } else {
                     Text("Мало данных: прогноз станет точнее после двух полных месяцев истории (сейчас \(forecast.historyMonths)).")
                         .font(.subheadline).foregroundStyle(.orange)
@@ -141,8 +146,10 @@ struct ForecastDetailView: View {
             VStack(alignment: .leading, spacing: 2) {
                 LabeledContent("Расходы к концу месяца", value: "≈ " + rubles(f.projectedExpenseKopecks))
                 if f.hasEnoughHistory {
-                    Text("обычно от \(rubles(f.projectedExpenseLowKopecks)) до \(rubles(f.projectedExpenseHighKopecks))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    spreadLine { spread in
+                        "от \(rubles(max(0, f.projectedExpenseKopecks + spread.lowErrorKopecks))) до \(rubles(f.projectedExpenseKopecks + spread.highErrorKopecks))"
+                    }
+                    .font(.caption)
                 } else {
                     Text("по темпу этого месяца, без опыта прошлых месяцев")
                         .font(.caption).foregroundStyle(.orange)
@@ -237,7 +244,7 @@ struct ForecastDetailView: View {
                             }
                         }
                     }
-                    Text("Расходы к концу месяца = потрачено + ещё ожидаемые регулярные + обычные траты до конца месяца. Обычные траты берутся по медиане этих месяцев; текущий месяц влияет на них постепенно: в начале почти нет, к концу почти полностью. Вилка — по нижней и верхней четверти этих месяцев. Обычные траты считаются по покупкам: покупка, возвращённая в том же месяце, в них не входит, а возврат за старую покупку показан отдельно.")
+                    Text("Расходы к концу месяца = потрачено + ещё ожидаемые регулярные + обычные траты до конца месяца. Обычные траты берутся по медиане этих месяцев; текущий месяц влияет на них постепенно: в начале почти нет, к концу почти полностью. Диапазон — весь разброс ошибок прошлых прогнозов того же числа месяца: прогноз каждого из последних месяцев пересчитан так, как будто сегодня то же число того месяца, и сравнён с тем, сколько на самом деле ушло; от четырёх таких месяцев. Обычные траты считаются по покупкам: покупка, возвращённая в том же месяце, в них не входит, а возврат за старую покупку показан отдельно.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 .font(.subheadline)
@@ -247,6 +254,32 @@ struct ForecastDetailView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.glassRows()
+    }
+
+    /// The line of the range: «весь прошлый разброс за N мес.: от … до …», or why there is none yet.
+    @ViewBuilder
+    private func spreadLine(_ text: @escaping (FinancialEngine.ForecastRange) -> String) -> some View {
+        if let spread {
+            if spread.isShown {
+                Text("весь прошлый разброс за \(spread.months) мес.: " + text(spread)).foregroundStyle(.secondary)
+            } else {
+                Text("Диапазон появится, когда для сверки наберётся 4 прошлых месяца (сейчас \(spread.months)).").foregroundStyle(.secondary)
+            }
+        } else {
+            Text("Считаю диапазон по прошлым месяцам…").foregroundStyle(.secondary)
+        }
+    }
+
+    /// The range is a forecast for each of the last months again: in the background, once a day and for the same data.
+    private func loadSpread() async {
+        if let cached = presentation.cachedForecastRange() { spread = cached; return }
+        let inputs = presentation.inputs(browser.history)
+        let taxonomy = browser.history.expenseTaxonomy
+        let computed = await Task.detached(priority: .userInitiated) {
+            FinancialEngine.forecastRange(inputs, taxonomy: taxonomy)
+        }.value
+        presentation.storeForecastRange(computed)
+        spread = computed
     }
 
     /// Stores the owner's answer about a late payment; the forecast is computed again with it.
