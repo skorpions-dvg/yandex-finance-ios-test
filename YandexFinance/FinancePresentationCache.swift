@@ -36,9 +36,15 @@ final class FinancePresentationCache {
         value("inputs") { history.financialInputs }
     }
 
-    func report(_ history: SavedHistory, interval: DateInterval) -> FinanceReport {
-        value("report:\(interval.start):\(interval.end)") {
-            FinancialEngine.report(inputs(history), in: interval, taxonomy: history.expenseTaxonomy)
+    /// The inputs of the chosen accounts; every input under «all accounts».
+    func inputs(_ history: SavedHistory, scope: ReportAccountScope) -> [FinancialOperationInput] {
+        guard !scope.isAll else { return inputs(history) }
+        return value("inputs:\(scope.cacheKey)") { inputs(history).filter(scope.includes) }
+    }
+
+    func report(_ history: SavedHistory, interval: DateInterval, scope: ReportAccountScope = .all) -> FinanceReport {
+        value("report:\(interval.start):\(interval.end):\(scope.cacheKey)") {
+            FinancialEngine.report(inputs(history, scope: scope), in: interval, taxonomy: history.expenseTaxonomy)
         }
     }
 

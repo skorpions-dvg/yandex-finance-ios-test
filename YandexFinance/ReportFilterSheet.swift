@@ -8,27 +8,31 @@ struct ReportFilterSheet: View {
     let mode: ReportMode
     /// «Income and expenses» has no switch between the two, so its filter offers the categories and payees of both.
     var bothModes = false
+    /// The accounts the report is about: the offered payees and income categories are theirs.
+    var scope: ReportAccountScope = .all
     @Binding var filter: ReportFilter
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
     static func groups(browser: BankBrowser, presentation: FinancePresentationCache,
-                       interval: DateInterval, mode: ReportMode) -> [String] {
+                       interval: DateInterval, mode: ReportMode, scope: ReportAccountScope = .all) -> [String] {
         if mode == .expenses {
             let names = browser.history.expenseTaxonomy.groupNames
             return names.contains("Переводы") ? names : names + ["Переводы"]
         }
-        let slices: [ReportSlice] = presentation.value("filter-groups:\(interval.start):\(interval.end):\(ReportFilter.none.cacheKey)") {
-            ReportEngine.slices(presentation.inputs(browser.history), in: interval, mode: .income,
-                                grouping: .categories, taxonomy: browser.history.expenseTaxonomy, filter: .none)
+        let scoped = ReportFilter(scope: scope)
+        let slices: [ReportSlice] = presentation.value("filter-groups:\(interval.start):\(interval.end):\(scoped.cacheKey)") {
+            ReportEngine.slices(presentation.inputs(browser.history, scope: scope), in: interval, mode: .income,
+                                grouping: .categories, taxonomy: browser.history.expenseTaxonomy, filter: scoped)
         }
         return slices.map(\.title)
     }
 
     private func payees(_ mode: ReportMode) -> [ReportSlice] {
-        presentation.value("filter-payees:\(mode.rawValue):\(interval.start):\(interval.end):\(ReportFilter.none.cacheKey)") {
-            ReportEngine.slices(presentation.inputs(browser.history), in: interval, mode: mode,
-                                grouping: .payees, taxonomy: browser.history.expenseTaxonomy, filter: .none)
+        let scoped = ReportFilter(scope: scope)
+        return presentation.value("filter-payees:\(mode.rawValue):\(interval.start):\(interval.end):\(scoped.cacheKey)") {
+            ReportEngine.slices(presentation.inputs(browser.history, scope: scope), in: interval, mode: mode,
+                                grouping: .payees, taxonomy: browser.history.expenseTaxonomy, filter: scoped)
         }
     }
 
@@ -44,10 +48,10 @@ struct ReportFilterSheet: View {
         NavigationStack {
             List {
                 if bothModes {
-                    groupsSection("Категории расходов", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: .expenses))
-                    groupsSection("Категории доходов", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: .income))
+                    groupsSection("Категории расходов", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: .expenses, scope: scope))
+                    groupsSection("Категории доходов", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: .income, scope: scope))
                 } else {
-                    groupsSection("Категории", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: mode))
+                    groupsSection("Категории", Self.groups(browser: browser, presentation: presentation, interval: interval, mode: mode, scope: scope))
                 }
                 Section("Получатели") {
                     TextField("Поиск получателя", text: $search)
@@ -71,7 +75,7 @@ struct ReportFilterSheet: View {
             .navigationTitle(bothModes ? "Фильтр" : "Фильтр · \(mode.title)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Сбросить") { filter = .none } }
+                ToolbarItem(placement: .topBarLeading) { Button("Сбросить") { filter.excludedGroups = []; filter.excludedPayees = [] } }
                 ToolbarItem(placement: .topBarTrailing) { Button("Готово") { dismiss() } }
             }
         }

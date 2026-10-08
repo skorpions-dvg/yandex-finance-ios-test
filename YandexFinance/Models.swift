@@ -152,6 +152,8 @@ struct ManualOperation: Codable, Equatable, Identifiable {
     var note: String = ""
 
     static let identityPrefix = "manual:"
+    /// Stands for the account of a manual entry that has none (never a real account).
+    static let noAccountID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
     var bankOperation: BankOperation {
         let formatter = ISO8601DateFormatter()
@@ -425,9 +427,13 @@ struct ExpenseCategoryResolver {
     private var incomeRuleByKey: [String: String] = [:]
     private let incomeOverrides: [String: String]
     private let natures: [String: String]
+    private let manualAccounts: [String: UUID]
 
     init(_ history: SavedHistory) {
         natures = history.operationNatures ?? [:]
+        manualAccounts = Dictionary((history.manualOperations ?? []).map {
+            (ManualOperation.identityPrefix + $0.id.uuidString, $0.accountID ?? ManualOperation.noAccountID)
+        }, uniquingKeysWith: { first, _ in first })
         for group in history.categoryTree {
             for category in group.categories {
                 let path = group.name + "/" + category.name
@@ -450,6 +456,7 @@ struct ExpenseCategoryResolver {
     func input(_ operation: BankOperation) -> FinancialOperationInput {
         var input = operation.financialInput
         if let nature = natures[operation.identity] { input.confirmedNature = nature }
+        input.accountID = manualAccounts[operation.identity]
         return input
     }
 

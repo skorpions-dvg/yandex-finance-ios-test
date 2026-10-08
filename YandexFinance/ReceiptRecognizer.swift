@@ -22,7 +22,7 @@ enum ReceiptRecognizer {
             let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation(image.imageOrientation), options: [:])
             try? handler.perform([text, codes])
             if qr == nil {
-                for case let code as VNBarcodeObservation in codes.results ?? [] {
+                for code in codes.results ?? [] {
                     if let payload = code.payloadStringValue, let parsed = ReceiptParser.parseQR(payload) {
                         qr = parsed
                         break

@@ -52,6 +52,9 @@ struct FinancialOperationInput {
     /// What the owner confirmed about an incoming operation the engine could not name: "income", "refund" (the return
     /// of a purchase) or "own" (a move between own accounts). It decides only operations that would otherwise stay unknown.
     var confirmedNature: String? = nil
+    /// The account a manual entry belongs to (`ReportAccountScope.noAccount` when it has none); nil for bank rows,
+    /// which belong to the scanned card. Only the account selection of the reports reads it.
+    var accountID: UUID? = nil
 }
 
 /// The user's expense categories in display order. The built-in tree is used until the user edits it.

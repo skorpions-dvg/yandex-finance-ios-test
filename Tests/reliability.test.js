@@ -633,7 +633,7 @@ assert.match(projectV25, /FinanceEngine\.swift/);
 assert.match(appSwift, /\("Отчёты", "chart\.pie"\)/);
 const reportsSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/ReportsView.swift'), 'utf8');
 assert.match(reportsSwift, /case structure, dynamics, balances, flow/, 'the reports have four tabs');
-assert.match(reportsSwift, /\n\s*header\s*List \{/,
+assert.match(reportsSwift, /\n\s*header\(resolved\)\s*List \{/,
   'the tabs, the ribbon of months and the filters stay above the list, so the chart never moves when a period is chosen');
 assert.match(reportsSwift, /\.chartXScale\(domain: keys\)/, 'every bucket stays on the axis, with or without operations');
 assert.match(financeEngine, /case internalTransfer = "internal_transfer"/);
@@ -645,9 +645,9 @@ assert.match(financeEngine, /includingFractionalSeconds:\s*true/);
 assert.match(financeEngine, /date >= interval\.start && date < interval\.end/);
 assert.match(financeEngine, /Снятие наличных — перемещение денег, а не покупка/);
 assert.match(financeTests, /cash withdrawal/);
-assert.match(reportsSwift, /let report = presentation\.report\(browser\.history, interval: interval\)/);
+assert.match(reportsSwift, /let report = presentation\.report\(browser\.history, interval: interval, scope: filter\.scope\)/);
 const presentationCacheSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinancePresentationCache.swift'), 'utf8');
-assert.match(presentationCacheSwift, /FinancialEngine\.report\(inputs\(history\), in: interval, taxonomy: history\.expenseTaxonomy\)/);
+assert.match(presentationCacheSwift, /FinancialEngine\.report\(inputs\(history, scope: scope\), in: interval, taxonomy: history\.expenseTaxonomy\)/);
 assert.match(appSwift, /resetLocalStorage/);
 const vaultSwift = fs.readFileSync(path.join(__dirname, '../YandexFinance/Vault.swift'), 'utf8');
 assert.match(vaultSwift, /AES\.GCM\.open\(box, using: SymmetricKey\(data: bytes\)\)[\s\S]{0,120}remember\(bytes\)/,

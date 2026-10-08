@@ -34,9 +34,12 @@ enum ReportStep: String, CaseIterable, Identifiable {
 struct ReportFilter: Equatable {
     var excludedGroups: Set<String> = []
     var excludedPayees: Set<String> = []
+    /// Which accounts the report is about; every account unless the user chose one.
+    var scope: ReportAccountScope = .all
 
     static let none = ReportFilter()
 
+    /// Exclusions of categories and payees (the account selection is not one: it is a whole other set of operations).
     var isActive: Bool { !excludedGroups.isEmpty || !excludedPayees.isEmpty }
 
     func allows(group: String, payee: String) -> Bool {
@@ -45,7 +48,69 @@ struct ReportFilter: Equatable {
 
     /// A stable text for keys of the presentation cache.
     var cacheKey: String {
-        "g:" + excludedGroups.sorted().joined(separator: "|") + ";p:" + excludedPayees.sorted().joined(separator: "|")
+        "g:" + excludedGroups.sorted().joined(separator: "|") + ";p:" + excludedPayees.sorted().joined(separator: "|") + ";a:" + scope.cacheKey
+    }
+}
+
+/// The accounts a report is about. Bank rows belong to the scanned card, manual entries to the account they were
+/// entered for; a manual entry whose account is gone belongs to no account and shows only under «Все счета».
+struct ReportAccountScope: Equatable {
+    /// Stands for the account of a manual entry that has none (never a real account).
+    static let noAccount = ManualOperation.noAccountID
+
+    /// nil: every account. Otherwise the ids whose manual entries count.
+    var accountIDs: Set<UUID>?
+    /// Whether the scanned bank card is among the chosen accounts: then the bank rows count.
+    var includesBankCard = false
+
+    static let all = ReportAccountScope(accountIDs: nil)
+
+    var isAll: Bool { accountIDs == nil }
+
+    func includes(_ input: FinancialOperationInput) -> Bool {
+        guard let ids = accountIDs else { return true }
+        if let account = input.accountID { return ids.contains(account) }
+        return includesBankCard
+    }
+
+    var cacheKey: String {
+        guard let ids = accountIDs else { return "all" }
+        return ids.map(\.uuidString).sorted().joined(separator: ",") + (includesBankCard ? "+bank" : "")
+    }
+
+    static func accounts(_ chosen: [Account]) -> ReportAccountScope {
+        ReportAccountScope(accountIDs: Set(chosen.map(\.id)), includesBankCard: chosen.contains { $0.tracksBankCard })
+    }
+}
+
+/// What the user picked in the account menu of the reports.
+enum ReportAccountChoice: Hashable {
+    case all
+    case account(UUID)
+    case group(UUID)
+
+    struct Resolved: Equatable {
+        let scope: ReportAccountScope
+        let accounts: [Account]
+        let title: String
+        /// False when the chosen account or group no longer exists: the reports then show every account.
+        let isValid: Bool
+    }
+
+    /// The scope, the accounts and the title of the choice; a choice that points at something deleted means «all».
+    func resolve(accounts: [Account], groups: [AccountGroup]) -> Resolved {
+        let everything = Resolved(scope: .all, accounts: accounts, title: "Все счета", isValid: self == .all)
+        switch self {
+        case .all:
+            return everything
+        case .account(let id):
+            guard let account = accounts.first(where: { $0.id == id }) else { return everything }
+            return Resolved(scope: .accounts([account]), accounts: [account], title: account.name, isValid: true)
+        case .group(let id):
+            guard let group = groups.first(where: { $0.id == id }) else { return everything }
+            let members = accounts.filter { $0.groupID == id }
+            return Resolved(scope: .accounts(members), accounts: members, title: group.name, isValid: true)
+        }
     }
 }
 
@@ -184,6 +249,7 @@ enum ReportEngine {
     /// Whether an operation passes the filter: the list behind a report row shows exactly what its sum is made of.
     /// Operations that are neither expenses nor income of the reports (refunds, Split, transfers) are not filtered.
     static func isAllowed(_ input: FinancialOperationInput, by filter: ReportFilter) -> Bool {
+        guard filter.scope.includes(input) else { return false }
         guard filter.isActive else { return true }
         if let item = entry(input, mode: .expenses) { return filter.allows(group: item.group, payee: item.payee) }
         if let item = entry(input, mode: .income) { return filter.allows(group: item.group, payee: item.payee) }
@@ -218,7 +284,7 @@ enum ReportEngine {
                        grouping: ReportGrouping, taxonomy: ExpenseTaxonomy, filter: ReportFilter = .none) -> [ReportSlice] {
         var groups: [String: (title: String, amount: Int64, count: Int, subs: [String: (Int64, Int)])] = [:]
         for input in inputs {
-            guard let when = date(input), when >= interval.start, when < interval.end,
+            guard filter.scope.includes(input), let when = date(input), when >= interval.start, when < interval.end,
                   let item = entry(input, mode: mode), filter.allows(group: item.group, payee: item.payee) else { continue }
             let key: String
             let title: String
@@ -261,8 +327,8 @@ enum ReportEngine {
         guard let first = buckets.first?.start, let last = buckets.last?.end else { return [] }
         var sums: [Int: [String: Int64]] = [:]
         for input in inputs {
-            guard let when = date(input), when >= first, when < last, let item = entry(input, mode: mode),
-                  filter.allows(group: item.group, payee: item.payee) else { continue }
+            guard filter.scope.includes(input), let when = date(input), when >= first, when < last,
+                  let item = entry(input, mode: mode), filter.allows(group: item.group, payee: item.payee) else { continue }
             let owner = grouping == .categories ? item.group : (item.payee.isEmpty ? "—" : item.payee)
             if let focus, owner != focus { continue }
             let label = focus == nil ? (grouping == .categories ? item.group : (item.payee.isEmpty ? "Без названия" : item.title))
@@ -307,7 +373,8 @@ enum ReportEngine {
         var income = [Int64](repeating: 0, count: buckets.count)
         var expense = [Int64](repeating: 0, count: buckets.count)
         for input in inputs {
-            guard let when = date(input), when >= first, when < last, let index = bucketIndex(of: when, in: buckets) else { continue }
+            guard filter.scope.includes(input), let when = date(input), when >= first, when < last,
+                  let index = bucketIndex(of: when, in: buckets) else { continue }
             if filter.isActive {
                 if let item = entry(input, mode: .income), filter.allows(group: item.group, payee: item.payee) { income[index] += item.amount }
                 if let item = entry(input, mode: .expenses), filter.allows(group: item.group, payee: item.payee) { expense[index] += item.amount }

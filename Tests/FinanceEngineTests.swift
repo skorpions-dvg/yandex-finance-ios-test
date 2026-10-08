@@ -278,6 +278,88 @@ struct FinanceEngineTests {
         require((try! HistoryBackup.decode(HistoryBackup.encode(SavedHistory()))).receipts == nil, "an old backup without photos opens")
     }
 
+    /// The account selection of the reports (block 2): which operations belong to which account.
+    static func testReportAccountScope() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func day(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: 10))! }
+        let september = DateInterval(start: calendar.date(from: DateComponents(year: 2032, month: 9, day: 1))!,
+                                     end: calendar.date(from: DateComponents(year: 2032, month: 10, day: 1))!)
+        let taxonomy = ExpenseTaxonomy.builtin
+        let group = AccountGroup(name: "Наличные и кошельки")
+        let card = Account(name: "Яндекс банк", icon: "creditcard", color: "blue", startBalanceKopecks: 0, startDate: day(1, 1), tracksBankCard: true)
+        let cash = Account(name: "Наличные", icon: "banknote", color: "green", groupID: group.id, startBalanceKopecks: 0, startDate: day(1, 1))
+        let wallet = Account(name: "Кошелёк", icon: "wallet.pass", color: "orange", groupID: group.id, startBalanceKopecks: 0, startDate: day(1, 1))
+        var history = SavedHistory()
+        history.accountGroups = [group]
+        history.accounts = [card, cash, wallet]
+        history.operations = [
+            BankOperation(identity: "bank-1", occurredAt: "2032-09-03T10:00:00Z", timePrecision: "second", description: "Пятёрочка",
+                          amountKopecks: -30_000, currency: "RUB", status: "Выполнено", category: "Супермаркеты", mcc: nil, purpose: nil,
+                          paymentMethod: nil, providers: [], kind: "expense"),
+        ]
+        history.manualOperations = [
+            ManualOperation(kind: .expense, amountKopecks: 10_000, date: day(9, 4), accountID: cash.id, group: "Еда", subcategory: "Кафе и рестораны"),
+            ManualOperation(kind: .expense, amountKopecks: 5_000, date: day(9, 5), accountID: wallet.id, group: "Транспорт", subcategory: "Такси"),
+            ManualOperation(kind: .income, amountKopecks: 70_000, date: day(9, 6), accountID: cash.id, subcategory: "Другое"),
+            ManualOperation(kind: .expense, amountKopecks: 2_000, date: day(9, 7), accountID: nil, group: "Еда", subcategory: "Супермаркеты"),
+        ]
+        let inputs = history.financialInputs
+        require(inputs.count == 5, "every operation has an input")
+        require(inputs[0].accountID == nil, "a bank row belongs to no manual account")
+        require(inputs[1].accountID == cash.id && inputs[2].accountID == wallet.id, "a manual entry carries its account")
+        require(inputs[4].accountID == ReportAccountScope.noAccount, "a manual entry without an account gets the placeholder")
+
+        func total(_ scope: ReportAccountScope, _ mode: ReportMode = .expenses) -> Int64 {
+            ReportEngine.slices(inputs, in: september, mode: mode, grouping: .categories, taxonomy: taxonomy,
+                                filter: ReportFilter(scope: scope)).reduce(0) { $0 + $1.amountKopecks }
+        }
+        require(total(.all) == 47_000, "all accounts: everything, also the entry without an account")
+        require(total(.accounts([card])) == 30_000, "the card: the bank rows only")
+        require(total(.accounts([cash])) == 10_000, "one cash account: its manual entries only")
+        require(total(.accounts([cash, wallet])) == 15_000, "a group: the manual entries of its accounts")
+        require(total(.accounts([card, cash, wallet])) == 45_000, "every account chosen by hand leaves out the entry without an account")
+        require(total(.accounts([cash]), .income) == 70_000 && total(.accounts([wallet]), .income) == 0, "income follows the account too")
+        require(total(.accounts([])) == 0, "an empty group shows nothing")
+
+        // The flow and the bars use the same selection.
+        let buckets = [september]
+        let flow = ReportEngine.flow(inputs, buckets: buckets, filter: ReportFilter(scope: .accounts([cash])))
+        require(flow.first?.expenseKopecks == 10_000 && flow.first?.incomeKopecks == 70_000, "income and expenses of one account")
+        let bars = ReportEngine.bars(inputs, buckets: buckets, mode: .expenses, grouping: .categories, filter: ReportFilter(scope: .accounts([wallet])))
+        require(bars.map(\.amountKopecks) == [5_000], "the dynamics of one account")
+        let scopedOnly = ReportFilter(scope: .accounts([cash]))
+        require(!scopedOnly.isActive, "the choice of accounts is not an exclusion")
+        require(ReportEngine.isAllowed(inputs[1], by: scopedOnly) && !ReportEngine.isAllowed(inputs[2], by: scopedOnly)
+                && !ReportEngine.isAllowed(inputs[0], by: scopedOnly), "the list behind a row holds the chosen accounts only")
+        require(ReportFilter(scope: .accounts([cash])).cacheKey != ReportFilter(scope: .accounts([wallet])).cacheKey
+                && ReportFilter.none.cacheKey == ReportFilter(scope: .all).cacheKey, "the scope is part of the cache key")
+
+        // The menu: what a choice means, and what a deleted choice falls back to.
+        let accounts = history.accounts ?? []
+        let groups = history.accountGroups ?? []
+        let everything = ReportAccountChoice.all.resolve(accounts: accounts, groups: groups)
+        require(everything.scope.isAll && everything.title == "Все счета" && everything.accounts.count == 3 && everything.isValid, "all accounts")
+        let one = ReportAccountChoice.account(cash.id).resolve(accounts: accounts, groups: groups)
+        require(one.title == "Наличные" && one.accounts == [cash] && !one.scope.isAll && !one.scope.includesBankCard, "one account")
+        let bank = ReportAccountChoice.account(card.id).resolve(accounts: accounts, groups: groups)
+        require(bank.scope.includesBankCard, "the scanned card brings the bank rows")
+        let members = ReportAccountChoice.group(group.id).resolve(accounts: accounts, groups: groups)
+        require(members.title == group.name && members.accounts == [cash, wallet] && !members.scope.includesBankCard, "a group is its accounts")
+        let gone = ReportAccountChoice.account(UUID()).resolve(accounts: accounts, groups: groups)
+        require(gone.scope.isAll && !gone.isValid && gone.title == "Все счета", "a deleted account means all accounts")
+        let goneGroup = ReportAccountChoice.group(UUID()).resolve(accounts: accounts, groups: groups)
+        require(goneGroup.scope.isAll && !goneGroup.isValid, "a deleted group means all accounts")
+
+        // A manual entry of a deleted account still counts under «all accounts» and nowhere else.
+        history.accounts = [card, wallet]
+        let orphan = history.financialInputs
+        require(orphan[1].accountID == cash.id, "the entry keeps the id of the deleted account")
+        require(ReportEngine.slices(orphan, in: september, mode: .expenses, grouping: .categories, taxonomy: taxonomy,
+                                    filter: ReportFilter(scope: .accounts([wallet]))).reduce(0) { $0 + $1.amountKopecks } == 5_000,
+                "the orphan does not leak into another account")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -2330,6 +2412,7 @@ struct FinanceEngineTests {
         testOtherShrinks()
         testReserveAccounts()
         testReportEngine()
+        testReportAccountScope()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

@@ -66,6 +66,7 @@ struct ReportsView: View {
     @State private var showPeriodSheet = false
     @State private var filter: ReportFilter = .none
     @State private var showFilterSheet = false
+    @State private var accountChoice: ReportAccountChoice = .all
     @Environment(\.colorScheme) private var scheme
 
     /// The ink of the pills over the wallpaper: white on the dark theme, the usual text colour on the light one.
@@ -75,6 +76,13 @@ struct ReportsView: View {
 
     var body: some View {
         let _ = presentation.prepare(browser.history)
+        let resolved = accountChoice.resolve(accounts: browser.history.accounts ?? [], groups: browser.history.accountGroups ?? [])
+        // The exclusions of the filter sheet plus the chosen accounts: what the four reports are computed for.
+        let scopedFilter: ReportFilter = {
+            var scoped = filter
+            scoped.scope = resolved.scope
+            return scoped
+        }()
         // Not cached: the ribbon of months must follow the history the moment it is loaded.
         let first: Date? = browser.history.allOperations.compactMap { BankDateParser.parse($0.occurredAt) }.min()
         let interval = period.interval(firstDate: first)
@@ -88,19 +96,21 @@ struct ReportsView: View {
             ? DateInterval(start: shownBuckets[0].start, end: shownBuckets[shownBuckets.count - 1].end) : interval
         NavigationStack {
             VStack(spacing: 0) {
-                header
+                header(resolved)
                 List {
                     switch tab {
                     case .structure:
                         StructureContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
-                                         grouping: grouping, showsChart: true, buckets: buckets, filter: filter)
+                                         grouping: grouping, showsChart: true, buckets: buckets, filter: scopedFilter)
                     case .dynamics:
                         DynamicsContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
-                                        grouping: grouping, buckets: buckets, step: step, filter: filter)
+                                        grouping: grouping, buckets: buckets, step: step, filter: scopedFilter)
                     case .balances:
-                        BalancesContent(browser: browser, presentation: presentation, interval: shownInterval, buckets: shownBuckets, step: step, perAccount: perAccount)
+                        BalancesContent(browser: browser, presentation: presentation, interval: shownInterval, buckets: shownBuckets, step: step,
+                                        perAccount: perAccount, accounts: resolved.scope.isAll ? browser.history.reserveAccounts : resolved.accounts,
+                                        isScoped: !resolved.scope.isAll)
                     case .flow:
-                        FlowContent(presentation: presentation, browser: browser, interval: shownInterval, buckets: shownBuckets, step: step, filter: filter)
+                        FlowContent(presentation: presentation, browser: browser, interval: shownInterval, buckets: shownBuckets, step: step, filter: scopedFilter)
                     }
                 }
                 .appSurface()
@@ -112,10 +122,10 @@ struct ReportsView: View {
             }
             .sheet(isPresented: $showFilterSheet) {
                 ReportFilterSheet(browser: browser, presentation: presentation, interval: interval, mode: mode,
-                                  bothModes: tab == .flow, filter: $filter)
+                                  bothModes: tab == .flow, scope: resolved.scope, filter: $filter)
             }
             .onChange(of: mode) { _, newMode in
-                let groups = ReportFilterSheet.groups(browser: browser, presentation: presentation, interval: interval, mode: newMode)
+                let groups = ReportFilterSheet.groups(browser: browser, presentation: presentation, interval: interval, mode: newMode, scope: resolved.scope)
                 filter.excludedGroups.formIntersection(Set(groups))
             }
         }
@@ -123,10 +133,10 @@ struct ReportsView: View {
 
     // MARK: Header
 
-    private var header: some View {
+    private func header(_ resolved: ReportAccountChoice.Resolved) -> some View {
         VStack(spacing: 10) {
             tabBar
-            periodButton
+            periodAndAccount(resolved)
             filters
         }
         .padding(.vertical, 8)
@@ -150,9 +160,9 @@ struct ReportsView: View {
         }
     }
 
-    /// The chosen period; the sheet behind it lists every month of the history.
-    private var periodButton: some View {
-        HStack {
+    /// The chosen period (the sheet behind it lists every month of the history) and, next to it, the accounts.
+    private func periodAndAccount(_ resolved: ReportAccountChoice.Resolved) -> some View {
+        HStack(spacing: 8) {
             Button { showPeriodSheet = true } label: {
                 HStack(spacing: 4) {
                     Text(periodTitle).lineLimit(1)
@@ -164,9 +174,49 @@ struct ReportsView: View {
                 .background(Color.primary.opacity(0.1), in: Capsule())
             }
             .buttonStyle(.plain)
-            Spacer()
+            if !(browser.history.accounts ?? []).isEmpty { accountMenu(resolved) }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
+    }
+
+    /// «All accounts», one account or a group of accounts; the reports and the balances follow the choice.
+    private func accountMenu(_ resolved: ReportAccountChoice.Resolved) -> some View {
+        let groups = browser.history.accountGroups ?? []
+        let accounts = browser.history.accounts ?? []
+        let active = !resolved.scope.isAll
+        return Menu {
+            Button { accountChoice = .all } label: {
+                Label("Все счета", systemImage: active ? "wallet.pass" : "checkmark")
+            }
+            if !groups.isEmpty {
+                Section("Группы") {
+                    ForEach(groups) { group in
+                        Button { accountChoice = .group(group.id) } label: {
+                            Label(group.name, systemImage: accountChoice == .group(group.id) && resolved.isValid ? "checkmark" : "folder")
+                        }
+                    }
+                }
+            }
+            Section("Счета") {
+                ForEach(accounts) { account in
+                    Button { accountChoice = .account(account.id) } label: {
+                        Label(account.name, systemImage: accountChoice == .account(account.id) && resolved.isValid ? "checkmark" : account.icon)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "wallet.pass")
+                Text(resolved.title).lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down").font(.caption2)
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(active ? Color.white : ink)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(active ? Color.accentColor : Color.primary.opacity(0.1), in: Capsule())
+        }
+        .tint(active ? .white : ink)
     }
 
     private var filters: some View {
@@ -256,7 +306,7 @@ private struct StructureContent: View {
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, filter: filter)
-        let report = presentation.report(browser.history, interval: interval)
+        let report = presentation.report(browser.history, interval: interval, scope: filter.scope)
         let total = slices.reduce(Int64(0)) { $0 + $1.amountKopecks }
         let headline = mode == .expenses && !filter.isActive ? report.netExpenseKopecks : total
         if showsChart {
@@ -297,7 +347,7 @@ private struct StructureContent: View {
         }
         ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices, total: total, headline: headline,
                         refundsKopecks: mode == .expenses && !filter.isActive ? report.refundsKopecks : 0, filter: filter)
-        if mode == .expenses && !filter.isActive && needsCategoryReview(report) {
+        if mode == .expenses && !filter.isActive && filter.scope.isAll && needsCategoryReview(report) {
             let groups = QuickReviewCache.groups(browser.history, presentation: presentation)
             if !groups.isEmpty {
                 Section {
@@ -413,7 +463,7 @@ private struct ReportSliceList: View {
         // The history may have been loaded after this view was first built: never read a cache of the old one.
         presentation.prepare(browser.history)
         return presentation.value("slices:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(filter.cacheKey)") {
-            ReportEngine.slices(presentation.inputs(browser.history), in: interval, mode: mode, grouping: grouping,
+            ReportEngine.slices(presentation.inputs(browser.history, scope: filter.scope), in: interval, mode: mode, grouping: grouping,
                                 taxonomy: browser.history.expenseTaxonomy, filter: filter)
         }
     }
@@ -510,7 +560,7 @@ private struct ReportDetailView: View {
         let step = ReportEngine.step(stepChoice, for: interval)
         let buckets = ReportEngine.buckets(interval, step: step)
         let bars = presentation.value("detail-bars:\(mode.rawValue):\(grouping.rawValue):\(slice.id):\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
-            ReportEngine.bars(presentation.inputs(browser.history), buckets: buckets, mode: mode, grouping: grouping, focus: slice.id, filter: filter)
+            ReportEngine.bars(presentation.inputs(browser.history, scope: filter.scope), buckets: buckets, mode: mode, grouping: grouping, focus: slice.id, filter: filter)
         }
         List {
             Section {
@@ -627,13 +677,13 @@ private struct DynamicsContent: View {
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let bars = presentation.value("bars:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
-            ReportEngine.bars(presentation.inputs(browser.history), buckets: buckets, mode: mode, grouping: grouping, filter: filter)
+            ReportEngine.bars(presentation.inputs(browser.history, scope: filter.scope), buckets: buckets, mode: mode, grouping: grouping, filter: filter)
         }
         Section {
             StackedBarsChart(bars: bars, buckets: buckets, step: step)
         }.glassRows()
         let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, filter: filter)
-        let report = presentation.report(browser.history, interval: interval)
+        let report = presentation.report(browser.history, interval: interval, scope: filter.scope)
         let total = slices.reduce(Int64(0)) { $0 + $1.amountKopecks }
         ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices,
                         total: total, headline: mode == .expenses && !filter.isActive ? report.netExpenseKopecks : total,
@@ -650,23 +700,25 @@ private struct BalancesContent: View {
     let buckets: [DateInterval]
     let step: ReportStep
     let perAccount: Bool
-
-    /// The accounts of the reserve: the last figure of the forecast is then the reserve at the end of the month,
-    /// the same number as on the main screen. Money put aside is not counted.
-    private var accounts: [Account] { browser.history.reserveAccounts }
+    /// Under «All accounts» the accounts of the reserve: the last figure of the forecast is then the reserve at the end
+    /// of the month, the same number as on the main screen (money put aside is not counted). Otherwise the chosen ones.
+    let accounts: [Account]
+    /// A chosen account or group: the forecast is made for the reserve as a whole, so these balances end today.
+    let isScoped: Bool
 
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let accounts = self.accounts
         // The days to come: today's balance moves to the balance expected at the end of the month.
-        let change = FinancialEngine.monthReserve(balanceKopecks: 0, forecast: presentation.forecast(browser.history))
+        let change: Int64? = isScoped ? nil : FinancialEngine.monthReserve(balanceKopecks: 0, forecast: presentation.forecast(browser.history))
         let points = ReportEngine.balances(browser.history, accounts: accounts, buckets: buckets, forecastChangeKopecks: change)
         let facts = points.filter { $0.hasData && !$0.isForecast }
         let forecast = points.filter { $0.hasData && $0.isForecast }
         if accounts.isEmpty {
             Section {
-                ContentUnavailableView("Нет счетов в запасе", systemImage: "wallet.pass",
-                                       description: Text("Добавьте счета в панели «Счета» или включите их в настройке запаса."))
+                ContentUnavailableView(isScoped ? "В группе нет счетов" : "Нет счетов в запасе", systemImage: "wallet.pass",
+                                       description: Text(isScoped ? "Выберите другой счёт или группу в меню рядом с периодом."
+                                                                  : "Добавьте счета в панели «Счета» или включите их в настройке запаса."))
             }.glassRows()
         } else {
             Section {
@@ -763,7 +815,7 @@ private struct FlowContent: View {
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let points = presentation.value("flow:\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
-            ReportEngine.flow(presentation.inputs(browser.history), buckets: buckets, filter: filter)
+            ReportEngine.flow(presentation.inputs(browser.history, scope: filter.scope), buckets: buckets, filter: filter)
         }
         let income = points.reduce(Int64(0)) { $0 + $1.incomeKopecks }
         let expense = points.reduce(Int64(0)) { $0 + $1.expenseKopecks }
