@@ -208,6 +208,10 @@ struct AppSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .scrollContentBackground(.hidden)
+            // One spacing for every page and window (the owner found the system one too loose): 12 pt between blocks and
+            // a small margin above the first one, the same everywhere.
+            .listSectionSpacing(12)
+            .contentMargins(.top, 8, for: .scrollContent)
             // The last row stops above the floating tab bar instead of hiding under it.
             .contentMargins(.bottom, bottomBarSpace, for: .scrollContent)
             .containerBackground(Color.clear, for: .navigation)

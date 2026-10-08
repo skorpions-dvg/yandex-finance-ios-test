@@ -169,19 +169,11 @@ struct ReportsView: View {
 
     /// The chosen period (the sheet behind it lists every month of the history) and, next to it, the accounts.
     private func periodAndAccount(_ resolved: ReportAccountChoice.Resolved) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) {
-                periodButton.fixedSize(horizontal: true, vertical: false)
-                if !(browser.history.accounts ?? []).isEmpty || !resolved.isValid {
-                    accountMenu(resolved).fixedSize(horizontal: true, vertical: false)
-                }
-                Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                periodButton
-                if !(browser.history.accounts ?? []).isEmpty || !resolved.isValid { accountMenu(resolved) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        // The row of 46.16, known to draw correctly on the phone.
+        HStack(spacing: 8) {
+            periodButton
+            if !(browser.history.accounts ?? []).isEmpty || !resolved.isValid { accountMenu(resolved) }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
     }
@@ -194,12 +186,11 @@ struct ReportsView: View {
     private var periodButton: some View {
         Button { showPeriodSheet = true } label: {
             HStack(spacing: 4) {
-                Text(periodTitle).fixedSize(horizontal: false, vertical: true)
+                Text(periodTitle).lineLimit(1)
                 Image(systemName: "chevron.right").font(.caption2)
             }
             .font(.subheadline.weight(.medium)).foregroundStyle(ink)
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .frame(minHeight: 44)
             .background(Color.primary.opacity(0.1), in: Capsule())
         }
         .buttonStyle(.plain)
@@ -235,13 +226,12 @@ struct ReportsView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "wallet.pass")
-                Text(resolved.title).fixedSize(horizontal: false, vertical: true)
+                Text(resolved.title).lineLimit(1)
                 Image(systemName: "chevron.up.chevron.down").font(.caption2)
             }
             .font(.subheadline.weight(.medium))
             .foregroundStyle(active ? Color.white : ink)
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .frame(minHeight: 44)
             .background(active ? Color.accentColor : Color.primary.opacity(0.1), in: Capsule())
         }
         .tint(active ? .white : ink)

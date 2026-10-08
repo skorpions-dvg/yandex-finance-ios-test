@@ -44,6 +44,9 @@ struct AccountsView: View {
     @State private var confirmGroupDeletion = false
     @State private var showsInfo = true
     @State private var saveError = false
+    /// The eyes just tapped, shown at once while the change is being saved (saving and redrawing the balances takes a moment).
+    @State private var accountEyes: [UUID: Bool] = [:]
+    @State private var groupEyes: [UUID: Bool] = [:]
 
     private var accounts: [Account] { browser.history.accounts ?? [] }
     private var groups: [AccountGroup] { browser.history.accountGroups ?? [] }
@@ -271,23 +274,37 @@ struct AccountsView: View {
             .buttonStyle(.plain)
             .accessibilityValue(!editMode.isEditing && collapsed.contains(group.id) ? "Свёрнуто" : "Развёрнуто")
             if editMode.isEditing {
+                let included = groupEyes[group.id] ?? (group.includesInBalance != false)
                 Button { toggleGroupBalance(group) } label: {
-                    Image(systemName: group.includesInBalance == false ? "eye.slash" : "eye")
+                    Image(systemName: included ? "eye" : "eye.slash")
                         .font(.caption)
-                        .foregroundStyle(group.includesInBalance == false ? Color.secondary : Color.primary)
+                        .foregroundStyle(included ? Color.primary : Color.secondary)
                         .frame(width: 30, height: 44)
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel(group.includesInBalance == false ? "Учитывать группу в текущем остатке" : "Исключить группу из текущего остатка")
+                .accessibilityLabel(included ? "Исключить группу из текущего остатка" : "Учитывать группу в текущем остатке")
             }
         }
         .contextMenu { groupActions(group) }
     }
 
     private func toggleGroupBalance(_ group: AccountGroup) {
-        persist { history in
-            guard let index = history.accountGroups?.firstIndex(where: { $0.id == group.id }) else { return }
-            history.accountGroups?[index].includesInBalance = group.includesInBalance == false
+        let include = !(groupEyes[group.id] ?? (group.includesInBalance != false))
+        groupEyes[group.id] = include
+        afterRedraw {
+            persist { history in
+                guard let index = history.accountGroups?.firstIndex(where: { $0.id == group.id }) else { return }
+                history.accountGroups?[index].includesInBalance = include
+            }
+            groupEyes[group.id] = nil
+        }
+    }
+
+    /// Runs the saving after the tapped icon has been drawn: the tap answers at once, the balances follow.
+    private func afterRedraw(_ work: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            work()
         }
     }
 
@@ -328,19 +345,24 @@ struct AccountsView: View {
             }
             .buttonStyle(.plain)
             if editMode.isEditing {
+                let shows = accountEyes[account.id] ?? account.showsBalance
                 Button {
-                    persist { history in
-                        guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
-                        history.accounts?[index].showsBalance.toggle()
+                    accountEyes[account.id] = !shows
+                    afterRedraw {
+                        persist { history in
+                            guard let index = history.accounts?.firstIndex(where: { $0.id == account.id }) else { return }
+                            history.accounts?[index].showsBalance = !shows
+                        }
+                        accountEyes[account.id] = nil
                     }
                 } label: {
-                    Image(systemName: account.showsBalance ? "eye" : "eye.slash")
+                    Image(systemName: shows ? "eye" : "eye.slash")
                         .font(.caption)
-                        .foregroundStyle(account.showsBalance ? Color.primary : Color.secondary)
+                        .foregroundStyle(shows ? Color.primary : Color.secondary)
                         .frame(width: 30, height: 44)
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel(account.showsBalance ? "Исключить счёт из текущего остатка" : "Учитывать счёт в текущем остатке")
+                .accessibilityLabel(shows ? "Исключить счёт из текущего остатка" : "Учитывать счёт в текущем остатке")
             }
         }
     }
