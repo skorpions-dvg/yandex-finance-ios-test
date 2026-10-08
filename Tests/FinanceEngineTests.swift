@@ -1932,6 +1932,265 @@ struct FinanceEngineTests {
         require(ReportEngine.untilToday(tail, now: nowForecast, calendar: calendar).count == 2, "days to come are not shown in income and expenses")
     }
 
+    // MARK: Stage 49 audit (synthetic fixtures only)
+
+    static func testAuditReportBoundaries() {
+        let start = BankDateParser.parse("2032-02-29T00:00:00Z")!
+        let interval = DateInterval(start: start, end: start.addingTimeInterval(86400))
+        let inputs = [
+            op(-1_000_000_000_000, kind: "expense", date: "2032-02-29T03:00:00+03:00"),
+            op(400, kind: "refund", date: "2032-02-29T23:59:59.999Z"),
+            op(-700, kind: "expense", date: "2032-03-01T00:00:00Z"),
+            op(900, kind: "income", date: "2032-02-28T23:59:59Z"),
+            op(-800, kind: "expense", date: "damaged-date"),
+            op(0, kind: "income", date: "2032-02-29T12:00:00Z")
+        ]
+        let report = FinancialEngine.report(inputs, in: interval)
+        let summary = FinancialEngine.summarize(inputs, in: interval)
+        require(report.operationCount == 3 && report.invalidDateCount == 1, "audit: leap-day report uses half-open absolute date boundaries")
+        require(report.grossExpenseKopecks == 1_000_000_000_000 && report.refundsKopecks == 400 && report.incomeKopecks == 0,
+                "audit: a large exact amount, refund and zero do not acquire rounding or boundary income")
+        require(summary.netExpenseKopecks == 999_999_999_600 && summary.operationCount == 3 && summary.invalidDateCount == 1,
+                "audit: summary agrees with report at large amounts and invalid dates")
+        let reversed = FinancialEngine.report(Array(inputs.reversed()), in: interval)
+        require(reversed.netExpenseKopecks == report.netExpenseKopecks && reversed.bankDebitKopecks == report.bankDebitKopecks,
+                "audit: financial totals do not depend on input order")
+        let empty = FinancialEngine.report([], in: interval)
+        require(empty.operationCount == 0 && empty.netExpenseKopecks == 0 && empty.incomeLines.isEmpty && empty.expenseLines.isEmpty,
+                "audit: empty history has no invented totals or lines")
+        let refund = FinancialEngine.report([inputs[1]], in: interval)
+        require(refund.netExpenseKopecks == -400 && refund.incomeKopecks == 0, "audit: a refund-only period has negative net expense, no income")
+    }
+
+    static func testAuditCalendarTransitions() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        for (iso, expectedHours) in [("2024-03-10T16:00:00Z", 23.0), ("2024-11-03T17:00:00Z", 25.0)] {
+            let now = BankDateParser.parse(iso)!
+            let interval = ReportPeriod.lastDays(1).interval(now: now, calendar: calendar)
+            require(interval.duration == expectedHours * 3600, "audit: a local report day follows DST rather than fixed 86400 seconds")
+            let buckets = ReportEngine.buckets(interval, step: .day, calendar: calendar)
+            require(buckets == [interval], "audit: DST day is covered exactly once")
+            require(ReportPeriod.lastDays(0).interval(now: now, calendar: calendar) == interval,
+                    "audit: an invalid zero-day request safely becomes one day")
+        }
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let leap = BankDateParser.parse("2032-02-29T12:00:00Z")!
+        let month = ReportPeriod.month(leap).interval(now: leap, calendar: calendar)
+        let buckets = ReportEngine.buckets(month, step: .day, calendar: calendar)
+        require(buckets.count == 29 && buckets.first?.start == month.start && buckets.last?.end == month.end,
+                "audit: all leap-February days are present")
+        require(zip(buckets, buckets.dropFirst()).allSatisfy { $0.end == $1.start }, "audit: leap-day buckets have no gaps or overlap")
+        let same = ReportPeriod.custom(from: leap, through: leap).interval(now: leap, calendar: calendar)
+        require(same.duration == 86400 && same.start == calendar.startOfDay(for: leap), "audit: identical custom dates mean one complete day")
+        let zero = DateInterval(start: leap, end: leap)
+        require(ReportEngine.buckets(zero, step: .day, calendar: calendar).isEmpty, "audit: a zero-length interval creates no buckets")
+    }
+
+    static func testAuditReportFilterAndEmptyFlow() {
+        let first = BankDateParser.parse("2032-06-01T00:00:00Z")!
+        let interval = DateInterval(start: first, end: first.addingTimeInterval(86400))
+        let refund = op(800, kind: "refund", date: "2032-06-01T10:00:00Z")
+        require(ReportEngine.flow([refund], buckets: [interval]).first?.expenseKopecks == -800,
+                "audit: the unfiltered flow retains refund-only net expense")
+        require(ReportEngine.flow([], buckets: [interval]).first?.expenseKopecks == 0,
+                "audit: empty flow retains the selected bucket")
+        require(ReportEngine.slices([], in: interval, mode: .income, grouping: .payees, taxonomy: .builtin).isEmpty,
+                "audit: empty income structure has no placeholder payee")
+        require(ReportEngine.totals([], buckets: [interval]) == [0], "audit: an empty dynamics bucket has zero total")
+        let filter = ReportFilter(excludedGroups: ["Еда"], excludedPayees: ["—"])
+        require(!filter.allows(group: "Еда", payee: "audit shop") && !filter.allows(group: "Транспорт", payee: ""),
+                "audit: category and unnamed-payee exclusions are both respected")
+        require(filter.allows(group: "Транспорт", payee: "audit shop"), "audit: a filter leaves unrelated operations visible")
+        require(ReportFilter(excludedGroups: ["A", "B"]).cacheKey == ReportFilter(excludedGroups: ["B", "A"]).cacheKey,
+                "audit: set order does not change a normal filter key")
+    }
+
+    static func testAuditAccountMoments() {
+        let start = BankDateParser.parse("2032-06-01T00:00:00Z")!
+        let at = start.addingTimeInterval(86400)
+        let account = Account(name: "Audit cash", icon: "banknote", color: "green", startBalanceKopecks: 500, startDate: start)
+        var history = SavedHistory()
+        history.accounts = [account]
+        history.manualOperations = [
+            ManualOperation(kind: .expense, amountKopecks: 200, date: at, accountID: account.id),
+            ManualOperation(kind: .transfer, amountKopecks: 900, date: at, accountID: account.id, toAccountID: account.id),
+            ManualOperation(kind: .income, amountKopecks: 100, date: start.addingTimeInterval(-1), accountID: account.id)
+        ]
+        let moments = [at.addingTimeInterval(1), start, at, at.addingTimeInterval(1)]
+        require(history.accountBalances(account, at: moments) == [300, 500, 500, 300],
+                "audit: arbitrary repeated moments preserve order and exclude the exact endpoint")
+        require(history.accountBalancesReconstructed(account, at: [start.addingTimeInterval(-1), start, at.addingTimeInterval(1)]) == [nil, 500, 300],
+                "audit: manual accounts do not invent a balance before their anchor")
+        require(history.accountBalances(account, at: []).isEmpty, "audit: no requested balance moments, no results")
+        require(account.balance(bankOperations: [], manual: history.manualOperations!) == 300,
+                "audit: a transfer to the same account is neutral; pre-anchor entries do not change its starting balance")
+        let transfer = history.manualOperations![1].bankOperation.financialAssessment
+        require(transfer.expenseContributionKopecks == 0 && transfer.incomeContributionKopecks == 0,
+                "audit: same-account transfer cannot create report income or expense")
+    }
+
+    static func testAuditBackupAndReceiptReferences() throws {
+        var history = SavedHistory()
+        let entry = bankOp("audit-backup", -100, description: "AuditShop")
+        history.operations = [entry]
+        let file = ReceiptLogic.fileName(id: UUID(uuidString: "01234567-89ab-cdef-0123-456789abcdef")!)
+        history.addReceipt(file, toIdentity: entry.identity)
+        history.addReceipt(file, toIdentity: entry.identity)
+        history.addReceipt("../outside.jpg", toIdentity: entry.identity)
+        require(history.receiptFiles(forIdentity: entry.identity) == [file], "audit: duplicate or unsafe receipt references are ignored")
+        history.operationNatures = [entry.identity: "future-unknown-nature"]
+        history.categoryOverrides = [entry.identity: UncategorizedReview.otherExpenseID]
+        let exported = BankDateParser.parse("2032-06-03T00:00:00Z")!
+        let first = try HistoryBackup.encode(history, exportedAt: exported)
+        let restored = try HistoryBackup.decode(first)
+        let second = try HistoryBackup.encode(restored, exportedAt: exported)
+        require(first == second, "audit: repeated backup round trips retain optional metadata exactly")
+        require(restored.financialInputs[0].amountKopecks == -100, "audit: unrecognized future nature cannot alter an expense")
+        var withoutPhotos = restored
+        require(withoutPhotos.removeReceipts(forIdentity: entry.identity) == [file], "audit: removing receipt metadata returns only linked names")
+        require(withoutPhotos.removeReceipts(forIdentity: entry.identity).isEmpty && withoutPhotos.receipts == nil,
+                "audit: repeated receipt removal is harmless")
+        for invalid in [Data(), Data("[]".utf8), Data(first.prefix(first.count / 2))] {
+            do { _ = try HistoryBackup.decode(invalid); require(false, "audit: a damaged backup must be rejected") }
+            catch { require(history.operations.count == 1 && history.hasReceipt(entry), "audit: decode errors leave the original history unchanged") }
+        }
+        let empty = try HistoryBackup.decode(HistoryBackup.encode(SavedHistory()))
+        require(empty.operations.isEmpty && empty.accounts == nil && empty.manualOperations == nil,
+                "audit: an empty backup retains absent optional collections")
+    }
+
+    static func testAuditReceiptParsingEdges() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        require(ReceiptParser.kopecks(fromDecimal: "999999999.99") == 99_999_999_999, "audit: receipt amount at the supported upper bound is exact")
+        for invalid in ["", "-1.00", "1.001", "1000000000.00", "1.2.3", "NaN", "١٢.٣٤"] {
+            require(ReceiptParser.kopecks(fromDecimal: invalid) == nil, "audit: invalid or oversized decimal is not guessed")
+        }
+        require(ReceiptParser.amounts(in: "ИТОГО 1\u{00a0}234,56") == [123456], "audit: a nonbreaking thousands separator is recognized")
+        require(ReceiptParser.total(in: ["НДС 20,00", "СДАЧА 100,00"]) == nil, "audit: tax and change alone never become a receipt total")
+        require(ReceiptParser.parseText([]).isEmpty, "audit: no OCR lines produce no receipt fields")
+        for date in ["20310229T1200", "20321301T1200", "20320229T2460"] {
+            let parsed = ReceiptParser.parseQR("fn=123&t=\(date)&s=1.00", calendar: calendar)
+            require(parsed?.date == nil && parsed?.totalKopecks == 100, "audit: an impossible QR date leaves the valid amount available")
+        }
+        require(ReceiptParser.parseQR("fn=123&t=20320229T1200&s=bad", calendar: calendar)?.totalKopecks == nil,
+                "audit: invalid QR money does not become zero")
+        require(ReceiptParser.parseQR("t=20320229T1200&s=1.00", calendar: calendar) == nil, "audit: a QR without a fiscal marker is not a receipt")
+        let text = ParsedReceipt(totalKopecks: 500, date: nil, merchant: "AuditShop")
+        let qr = ParsedReceipt(totalKopecks: nil, date: BankDateParser.parse("2032-02-29T12:00:00Z"), merchant: nil)
+        let merged = ReceiptParser.merge(qr: qr, text: text)
+        require(merged.totalKopecks == 500 && merged.date == qr.date && merged.merchant == "AuditShop", "audit: partial QR data complements OCR without losing fields")
+    }
+
+    static func testAuditReceiptArchiveCorruption() {
+        require(ReceiptArchive.crc32(Data()) == 0, "audit: empty payload has the standard zero CRC")
+        let name = "audit.bin", payload = Data([1, 2, 3, 4])
+        let zip = ReceiptArchive.make([(name, payload)])
+        var damaged = zip
+        damaged[30 + name.utf8.count] ^= 0xff
+        require(ReceiptArchive.read(damaged) == nil, "audit: modified photo bytes fail CRC validation")
+        var compressed = zip
+        compressed[8] = 8
+        require(ReceiptArchive.read(compressed) == nil, "audit: an unsupported compressed archive is rejected")
+        var descriptor = zip
+        descriptor[6] |= 8
+        require(ReceiptArchive.read(descriptor) == nil, "audit: an unsupported data descriptor is rejected")
+        var unsafeName = zip
+        unsafeName[30] = 0xff
+        require(ReceiptArchive.read(unsafeName) == nil, "audit: malformed UTF-8 filename is rejected")
+        for size in [0, 1, 4, 21, 29, 30 + name.utf8.count + payload.count - 1] {
+            require(ReceiptArchive.read(Data(zip.prefix(size))) == nil, "audit: an incomplete local ZIP record is rejected")
+        }
+    }
+
+    static func testAuditRegularPaymentsEdges() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let last = BankDateParser.parse("2024-02-29T10:00:00Z")!
+        let pattern = FinancialEngine.RecurringPattern(title: "AuditAnnual", isIncome: false, intervalDays: 365,
+                                                      typicalAmountKopecks: 1_000_000_000_008, lastDate: last)
+        let now = BankDateParser.parse("2028-02-01T12:00:00Z")!
+        require(RegularPayments.nextDate(of: pattern, now: now, calendar: calendar) == BankDateParser.parse("2028-02-29T10:00:00Z"),
+                "audit: an annual leap-day payment returns to February 29 in a leap year")
+        require(RegularPayments.monthlyKopecks(of: pattern) == 83_333_333_334, "audit: a large annual estimate is rounded once in decimal arithmetic")
+        let zero = FinancialEngine.RecurringPattern(title: "AuditZero", isIncome: true, intervalDays: 0, typicalAmountKopecks: 0, lastDate: last)
+        require(RegularPayments.monthlyKopecks(of: zero) == 0 && RegularPayments.nextDate(of: zero, now: last, calendar: calendar) > last,
+                "audit: a malformed zero interval cannot divide by zero or loop without advancing")
+        require(FinancialEngine.recurringPatterns([], now: now, calendar: calendar).isEmpty, "audit: empty history creates no regular payments")
+        let emptyForecast = FinancialEngine.monthForecast([], now: now, calendar: calendar)
+        require(emptyForecast.spentKopecks == 0 && emptyForecast.incomeKopecks == 0 && emptyForecast.projectedExpenseKopecks == 0 &&
+                emptyForecast.historyMonths == 0 && emptyForecast.upcoming.isEmpty && emptyForecast.daysInMonth == 29,
+                "audit: empty history creates no spending, baseline or payments, and keeps the leap-month length")
+    }
+
+    static func testAuditSuggestionsAndLockEdges() {
+        var history = SavedHistory()
+        require(CategorySuggestions.suggestions(for: [], history: history).isEmpty && CategorySuggestions.ruleCandidates(history).isEmpty,
+                "audit: an empty history creates no category suggestions or rules")
+        let target = bankOp("audit-suggestion", -100, description: "AuditShop")
+        history.operations = [target]
+        history.categoryOverrides = [target.identity: UUID()]
+        let group = ReviewGroup(id: "audit-group", key: FinancialEngine.payeeRuleKey(target.description), kind: .expense, operations: [target])
+        require(CategorySuggestions.suggest(for: group, history: history).isEmpty, "audit: a deleted category cannot become suggestion evidence")
+        require(history.operations[0].amountKopecks == -100 && history.categoryOverrides?.count == 1,
+                "audit: computing suggestions cannot mutate history or erase stale metadata")
+        require(AppLockLogic.lockoutSeconds(afterFailures: Int.min) == 0 && AppLockLogic.lockoutSeconds(afterFailures: Int.max) == 900,
+                "audit: extreme failure counts have bounded lockout")
+        let at = Date(timeIntervalSince1970: 1000)
+        require(!AppLockLogic.shouldLock(backgroundedAt: at, now: at.addingTimeInterval(59.999), afterSeconds: 60), "audit: lock timeout does not round up")
+        require(AppLockLogic.shouldLock(backgroundedAt: at, now: at.addingTimeInterval(60), afterSeconds: 60), "audit: lock activates at the exact timeout")
+        require(AppLockLogic.shouldLock(backgroundedAt: at, now: at.addingTimeInterval(-0.001), afterSeconds: 60), "audit: even a small clock rollback locks the app")
+        for bad in ["0000\n", "\u{200b}0000", "00\u{00a0}0", "００００"] {
+            require(!AppLockLogic.isValid(pin: bad), "audit: invisible characters and full-width digits are not a PIN")
+        }
+    }
+
+    /// Reproductions intentionally excluded from main: stage 49 must not change application logic.
+    static func testKnownIssues() {
+        testKnownIssueArchiveTruncation()
+        testKnownIssueFilterKeyCollision()
+        testKnownIssuePayeeSeries()
+        testKnownIssueReceiptQRSeconds()
+        testKnownIssueMinimumAmount()
+    }
+
+    static func testKnownIssueArchiveTruncation() {
+        let name = "audit-first.bin", payload = Data([1, 2, 3])
+        let zip = ReceiptArchive.make([(name, payload), ("audit-second.bin", Data([4, 5]))])
+        let cut = Data(zip.prefix(30 + name.utf8.count + payload.count))
+        require(ReceiptArchive.read(cut) == nil, "known issue: a truncated archive must not silently restore only its first photo")
+    }
+
+    static func testKnownIssueFilterKeyCollision() {
+        let one = ReportFilter(excludedGroups: ["AuditA|AuditB"])
+        let two = ReportFilter(excludedGroups: ["AuditA", "AuditB"])
+        require(one != two && one.cacheKey != two.cacheKey, "known issue: distinct valid category filters need distinct cache keys")
+    }
+
+    static func testKnownIssuePayeeSeries() {
+        let start = BankDateParser.parse("2032-06-01T00:00:00Z")!
+        let interval = DateInterval(start: start, end: start.addingTimeInterval(86400))
+        let inputs = [op(-100, kind: "expense", description: "AuditShop 001", date: "2032-06-01T10:00:00Z"),
+                      op(-200, kind: "expense", description: "AuditShop 002", date: "2032-06-01T11:00:00Z")]
+        let slices = ReportEngine.slices(inputs, in: interval, mode: .expenses, grouping: .payees, taxonomy: .builtin)
+        let bars = ReportEngine.bars(inputs, buckets: [interval], mode: .expenses, grouping: .payees, focus: slices.first?.id)
+        require(slices.count == 1 && bars.count == 1 && bars.first?.amountKopecks == 300,
+                "known issue: a focused normalized payee must remain one dynamics series")
+    }
+
+    static func testKnownIssueReceiptQRSeconds() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let parsed = ReceiptParser.parseQR("fn=123&t=20320229T120159&s=1.00", calendar: calendar)
+        require(parsed?.date == BankDateParser.parse("2032-02-29T12:01:59Z"), "known issue: an exact QR date must retain its seconds")
+    }
+
+    static func testKnownIssueMinimumAmount() {
+        require(FinancialEngine.classify(op(Int64.min, kind: "expense")).type == .unknown,
+                "known issue: an unrepresentable positive expense magnitude must be rejected safely instead of trapping")
+    }
+
     static func main() {
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
@@ -2340,6 +2599,17 @@ struct FinanceEngineTests {
         testAccountMovements()
         testReportSeries()
         testAccountSeries()
+
+        testAuditReportBoundaries()
+        testAuditCalendarTransitions()
+        testAuditReportFilterAndEmptyFlow()
+        testAuditAccountMoments()
+        do { try testAuditBackupAndReceiptReferences() }
+        catch { require(false, "audit: valid synthetic backup round trip threw an error") }
+        testAuditReceiptParsingEdges()
+        testAuditReceiptArchiveCorruption()
+        testAuditRegularPaymentsEdges()
+        testAuditSuggestionsAndLockEdges()
 
         print("Finance engine tests passed")
     }
