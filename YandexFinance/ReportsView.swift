@@ -66,6 +66,10 @@ struct ReportsView: View {
     @State private var showPeriodSheet = false
     @State private var filter: ReportFilter = .none
     @State private var showFilterSheet = false
+    @Environment(\.colorScheme) private var scheme
+
+    /// The ink of the pills over the wallpaper: white on the dark theme, the usual text colour on the light one.
+    private var ink: Color { scheme == .dark ? Color.white : Color.primary }
 
     private var calendar: Calendar { .current }
 
@@ -155,7 +159,7 @@ struct ReportsView: View {
                     Image(systemName: "chevron.right").font(.caption2)
                 }
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(Color.white)
+                .foregroundStyle(ink)
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .background(Color.primary.opacity(0.1), in: Capsule())
             }
@@ -172,11 +176,11 @@ struct ReportsView: View {
                     Menu {
                         Picker("Тип", selection: $mode) { ForEach(ReportMode.allCases) { Text($0.title).tag($0) } }
                     } label: { pill(mode.title) }
-                    .tint(.white)
+                    .tint(ink)
                     Menu {
                         Picker("Группировка", selection: $grouping) { ForEach(ReportGrouping.allCases) { Text($0.title).tag($0) } }
                     } label: { pill(grouping.title) }
-                    .tint(.white)
+                    .tint(ink)
                 }
                 if tab == .balances {
                     Menu {
@@ -185,13 +189,13 @@ struct ReportsView: View {
                             Text("По счетам").tag(true)
                         }
                     } label: { pill(perAccount ? "По счетам" : "Одна линия") }
-                    .tint(.white)
+                    .tint(ink)
                 }
                 if tab != .structure {
                     Menu {
                         Picker("Шаг", selection: $stepChoice) { ForEach(ReportStep.allCases) { Text($0.title).tag($0) } }
                     } label: { pill(stepChoice == .automatic ? "Шаг" : stepChoice.title) }
-                    .tint(.white)
+                    .tint(ink)
                 }
                 if tab != .balances {
                     Button { showFilterSheet = true } label: {
@@ -200,7 +204,7 @@ struct ReportsView: View {
                             Text(filter.isActive ? "Фильтр · \(filter.excludedGroups.count + filter.excludedPayees.count)" : "Фильтр")
                         }
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(filter.isActive ? Color.white : ink)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(filter.isActive ? Color.accentColor : Color.primary.opacity(0.1), in: Capsule())
                     }
@@ -217,7 +221,7 @@ struct ReportsView: View {
             Image(systemName: "chevron.up.chevron.down").font(.caption2)
         }
         .font(.subheadline.weight(.medium))
-        .foregroundStyle(Color.white)
+        .foregroundStyle(ink)
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(Color.primary.opacity(0.1), in: Capsule())
     }
@@ -250,6 +254,7 @@ private struct StructureContent: View {
     let filter: ReportFilter
 
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         let slices = ReportSliceList.compute(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, filter: filter)
         let report = presentation.report(browser.history, interval: interval)
         let total = slices.reduce(Int64(0)) { $0 + $1.amountKopecks }
@@ -383,7 +388,9 @@ private struct ReportSliceList: View {
 
     static func compute(browser: BankBrowser, presentation: FinancePresentationCache, interval: DateInterval,
                         mode: ReportMode, grouping: ReportGrouping, filter: ReportFilter) -> [ReportSlice] {
-        presentation.value("slices:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(filter.cacheKey)") {
+        // The history may have been loaded after this view was first built: never read a cache of the old one.
+        presentation.prepare(browser.history)
+        return presentation.value("slices:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(filter.cacheKey)") {
             ReportEngine.slices(presentation.inputs(browser.history), in: interval, mode: mode, grouping: grouping,
                                 taxonomy: browser.history.expenseTaxonomy, filter: filter)
         }
@@ -477,6 +484,7 @@ private struct ReportDetailView: View {
     }
 
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         let step = ReportEngine.step(stepChoice, for: interval)
         let buckets = ReportEngine.buckets(interval, step: step)
         let bars = presentation.value("detail-bars:\(mode.rawValue):\(grouping.rawValue):\(slice.id):\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
@@ -595,6 +603,7 @@ private struct DynamicsContent: View {
     let filter: ReportFilter
 
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         let bars = presentation.value("bars:\(mode.rawValue):\(grouping.rawValue):\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
             ReportEngine.bars(presentation.inputs(browser.history), buckets: buckets, mode: mode, grouping: grouping, filter: filter)
         }
@@ -625,6 +634,7 @@ private struct BalancesContent: View {
     private var accounts: [Account] { browser.history.reserveAccounts }
 
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         let accounts = self.accounts
         // The days to come: today's balance moves to the balance expected at the end of the month.
         let change = FinancialEngine.monthReserve(balanceKopecks: 0, forecast: presentation.forecast(browser.history))
@@ -729,6 +739,7 @@ private struct FlowContent: View {
     let filter: ReportFilter
 
     var body: some View {
+        let _ = presentation.prepare(browser.history)
         let points = presentation.value("flow:\(interval.start):\(interval.end):\(step.rawValue):\(filter.cacheKey)") {
             ReportEngine.flow(presentation.inputs(browser.history), buckets: buckets, filter: filter)
         }
@@ -792,6 +803,8 @@ private struct ReportPeriodSheet: View {
     @Binding var period: ReportPeriod
     let first: Date?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
+    private var ink: Color { scheme == .dark ? Color.white : Color.primary }
     @State private var from = Date()
     @State private var through = Date()
     @State private var choosingDates = false
@@ -808,11 +821,11 @@ private struct ReportPeriodSheet: View {
                 Section {
                     ForEach([7, 14, 30, 90, 365], id: \.self) { days in
                         Button { choose(.lastDays(days)) } label: {
-                            Label("Последние \(days) дн.", systemImage: "calendar").foregroundStyle(Color.white)
+                            Label("Последние \(days) дн.", systemImage: "calendar").foregroundStyle(ink)
                         }
                     }
-                    Button { choosingDates = true } label: { Label("Выбрать даты", systemImage: "calendar.badge.clock").foregroundStyle(Color.white) }
-                    Button { choose(.allHistory) } label: { Label("Вся история", systemImage: "infinity").foregroundStyle(Color.white) }
+                    Button { choosingDates = true } label: { Label("Выбрать даты", systemImage: "calendar.badge.clock").foregroundStyle(ink) }
+                    Button { choose(.allHistory) } label: { Label("Вся история", systemImage: "infinity").foregroundStyle(ink) }
                     if let first {
                         Text("История с " + first.formatted(.dateTime.month(.wide).year())).font(.caption).foregroundStyle(.secondary)
                     }
@@ -822,7 +835,7 @@ private struct ReportPeriodSheet: View {
                         ForEach(months(of: year), id: \.self) { month in
                             Button { choose(.month(month)) } label: {
                                 HStack {
-                                    Text(month.formatted(.dateTime.month(.wide)).capitalized).foregroundStyle(Color.white)
+                                    Text(month.formatted(.dateTime.month(.wide)).capitalized).foregroundStyle(ink)
                                     Spacer()
                                     if period == .month(month) { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
                                 }
@@ -833,7 +846,7 @@ private struct ReportPeriodSheet: View {
                             Text(String(year))
                             Spacer()
                             Button("Весь год") { choose(.year(Calendar.current.date(from: DateComponents(year: year))!)) }
-                                .font(.caption).textCase(nil).foregroundStyle(Color.white)
+                                .font(.caption).textCase(nil).foregroundStyle(ink)
                         }
                     }.glassRows()
                 }

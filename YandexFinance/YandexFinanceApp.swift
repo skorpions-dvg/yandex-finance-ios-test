@@ -48,6 +48,7 @@ struct ContentView: View {
     @State private var tabProgress = TabBarProgress()
     @State private var tabSelection = TabBarSelection()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     /// Height the floating tab bar takes at the bottom of every page.
     static let barSpace: CGFloat = 56
     var body: some View {
@@ -75,7 +76,7 @@ struct ContentView: View {
                             AccountsView(browser: browser, onClose: closeAccounts, usesGlass: true)
                                 .frame(width: drawerWidth, height: max(0, height - Self.barSpace - 16), alignment: .top)
                                 // Clear glass with a grey haze: the wallpaper shows through, the rows stay readable.
-                                .glassEffect(.clear.tint(Color.black.opacity(0.45)), in: .rect(cornerRadius: 28))
+                                .glassEffect(.clear.tint(colorScheme == .dark ? Color.black.opacity(0.45) : Color.white.opacity(0.28)), in: .rect(cornerRadius: 28))
                                 .clipShape(.rect(cornerRadius: 28))
                                 .padding(.horizontal, 8)
                                 .padding(.top, 4)
@@ -171,7 +172,13 @@ struct ContentView: View {
     private func selectTab(_ tab: Int) {
         if selectedTab == tab && tab == 3 { settingsReset += 1 }
         selectedTab = tab
-        animate { page = tab }
+        if page == tab {
+            // The saved position can stay at a page the pager is no longer on; a repeated value would do nothing.
+            page = nil
+            DispatchQueue.main.async { animate { page = tab } }
+        } else {
+            animate { page = tab }
+        }
     }
 }
 
@@ -208,6 +215,7 @@ private struct LensTabBar: View {
     let select: (Int) -> Void
     @State private var drag = LensDrag()
     @State private var held = false
+    @Environment(\.colorScheme) private var colorScheme
     private let inset: CGFloat = 6
 
     var body: some View {
@@ -249,7 +257,7 @@ private struct LensTabBar: View {
         .frame(height: 50)
         .padding(inset)
         // Frosted glass with a dark haze, so a bright wallpaper or list under the bar does not wash out the labels.
-        .glassEffect(.regular.tint(Color.black.opacity(0.38)), in: .capsule)
+        .glassEffect(.regular.tint(colorScheme == .dark ? Color.black.opacity(0.38) : Color.white.opacity(0.22)), in: .capsule)
         .overlay { BubbleLayer(drag: drag, held: held, inset: inset, reduceMotion: reduceMotion) }
     }
 }

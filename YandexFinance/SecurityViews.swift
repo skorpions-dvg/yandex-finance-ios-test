@@ -1,13 +1,44 @@
 import SwiftUI
 
+/// A key: it darkens and shrinks a little while it is pressed.
+struct PinKeyStyle: ButtonStyle {
+    var filled = true
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.primary)
+            .background(Circle().fill(Color.primary.opacity(configuration.isPressed ? 0.34 : (filled ? 0.10 : 0))))
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Moves the view from side to side; every whole step of `shakes` is one shake.
+struct ShakeEffect: GeometryEffect {
+    var travel: CGFloat = 12
+    var shakes: CGFloat
+
+    var animatableData: CGFloat {
+        get { shakes }
+        set { shakes = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(CGAffineTransform(translationX: travel * sin(shakes * .pi * 4), y: 0))
+    }
+}
+
 /// A round keypad for four digits; the caller decides what a complete code means.
 struct PinPad: View {
     let title: String
     var message: String? = nil
     var showsFaceID = false
     var onFaceID: () -> Void = {}
+    /// Grows with every wrong code: the dots shake and the phone vibrates.
+    var errorCount = 0
     let onComplete: (String) -> Void
     @State private var entry = ""
+    @State private var shake: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 24) {
@@ -17,8 +48,11 @@ struct PinPad: View {
                     Circle()
                         .fill(index < entry.count ? Color.primary : Color.primary.opacity(0.2))
                         .frame(width: 14, height: 14)
+                        .scaleEffect(index < entry.count ? 1.25 : 1)
+                        .animation(.spring(response: 0.25, dampingFraction: 0.5), value: entry.count)
                 }
             }
+            .modifier(ShakeEffect(shakes: shake))
             Text(message ?? " ")
                 .font(.footnote).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -29,18 +63,25 @@ struct PinPad: View {
                     Button(action: onFaceID) {
                         Image(systemName: "faceid").font(.title2).frame(width: 76, height: 76)
                     }
-                    .buttonStyle(.plain).foregroundStyle(Color.primary)
+                    .buttonStyle(PinKeyStyle(filled: false))
                 } else {
                     Color.clear.frame(width: 76, height: 76)
                 }
                 key("0")
                 Button {
-                    if !entry.isEmpty { entry.removeLast() }
+                    if !entry.isEmpty {
+                        entry.removeLast()
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    }
                 } label: {
                     Image(systemName: "delete.left").font(.title3).frame(width: 76, height: 76)
                 }
-                .buttonStyle(.plain).foregroundStyle(Color.primary)
+                .buttonStyle(PinKeyStyle(filled: false))
             }
+        }
+        .onChange(of: errorCount) { _, _ in
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            withAnimation(.linear(duration: 0.45)) { shake += 1 }
         }
     }
 
@@ -49,13 +90,13 @@ struct PinPad: View {
             Text(digit)
                 .font(.title)
                 .frame(width: 76, height: 76)
-                .background(Color.primary.opacity(0.1), in: Circle())
         }
-        .buttonStyle(.plain).foregroundStyle(Color.primary)
+        .buttonStyle(PinKeyStyle())
     }
 
     private func press(_ digit: String) {
         guard entry.count < 4 else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         entry.append(digit)
         guard entry.count == 4 else { return }
         let code = entry
@@ -72,6 +113,7 @@ struct PinPad: View {
 struct LockScreenView: View {
     @ObservedObject var lock: AppLock
     @State private var message: String?
+    @State private var errors = 0
 
     var body: some View {
         ZStack {
@@ -81,11 +123,18 @@ struct LockScreenView: View {
                 PinPad(title: "Введите код", message: message,
                        showsFaceID: lock.biometricsEnabled && lock.biometricsAvailable,
                        onFaceID: { Task { await lock.unlockWithBiometrics() } },
+                       errorCount: errors,
                        onComplete: { code in
                     switch lock.check(code) {
-                    case .accepted: message = nil
-                    case .wrong(let left): message = "Неверный код. Осталось попыток до паузы: \(left)"
-                    case .lockedOut(let seconds): message = "Слишком много попыток. Подождите \(seconds) с."
+                    case .accepted:
+                        message = nil
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    case .wrong(let left):
+                        message = "Неверный код. Осталось попыток до паузы: \(left)"
+                        errors += 1
+                    case .lockedOut(let seconds):
+                        message = "Слишком много попыток. Подождите \(seconds) с."
+                        errors += 1
                     }
                 })
                 Button("Забыли код?") {
@@ -137,6 +186,7 @@ struct PinFlowView: View {
     @State private var step: Step
     @State private var firstEntry = ""
     @State private var message: String?
+    @State private var errors = 0
 
     init(lock: AppLock, flow: Flow) {
         self.lock = lock
@@ -154,7 +204,7 @@ struct PinFlowView: View {
 
     var body: some View {
         NavigationStack {
-            PinPad(title: title, message: message, onComplete: handle)
+            PinPad(title: title, message: message, errorCount: errors, onComplete: handle)
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(uiColor: .systemBackground))
@@ -178,8 +228,12 @@ struct PinFlowView: View {
                     step = .new
                     message = nil
                 }
-            case .wrong(let left): message = "Неверный код. Осталось попыток до паузы: \(left)"
-            case .lockedOut(let seconds): message = "Слишком много попыток. Подождите \(seconds) с."
+            case .wrong(let left):
+                message = "Неверный код. Осталось попыток до паузы: \(left)"
+                errors += 1
+            case .lockedOut(let seconds):
+                message = "Слишком много попыток. Подождите \(seconds) с."
+                errors += 1
             }
         case .new:
             firstEntry = pin
@@ -192,6 +246,7 @@ struct PinFlowView: View {
                 firstEntry = ""
                 step = .new
                 message = "Коды не совпали, введите заново."
+                errors += 1
             }
         }
     }

@@ -123,7 +123,12 @@ struct WallpaperBackground: View {
 }
 
 struct GlassRowBackground: View {
-    var body: some View { Rectangle().fill(.thinMaterial) }
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// On the light theme the rows are lighter and clearer, not a grey slab.
+    var body: some View {
+        if colorScheme == .dark { Rectangle().fill(.thinMaterial) } else { Rectangle().fill(.ultraThinMaterial) }
+    }
 }
 
 extension View {

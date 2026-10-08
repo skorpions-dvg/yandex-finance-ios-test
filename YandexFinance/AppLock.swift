@@ -65,6 +65,8 @@ final class AppLock: ObservableObject {
     @Published private(set) var coverSuppressed = false
     private var suppressTask: Task<Void, Never>?
     private var backgroundedAt: Date?
+    /// The Face ID request in progress; it is cancelled when the code is entered first, or it would pop up over the app.
+    private var biometricContext: LAContext?
 
     init() {
         let stored = PinKeychain.load() != nil
@@ -117,7 +119,10 @@ final class AppLock: ObservableObject {
             record.failures = 0
             record.lockedUntil = nil
             PinKeychain.save(record)
-            if unlock { isLocked = false }
+            if unlock {
+                cancelBiometrics()
+                isLocked = false
+            }
             return .accepted
         }
         record.failures += 1
@@ -142,7 +147,15 @@ final class AppLock: ObservableObject {
         let policy: LAPolicy = deviceOwner ? .deviceOwnerAuthentication : .deviceOwnerAuthenticationWithBiometrics
         var error: NSError?
         guard context.canEvaluatePolicy(policy, error: &error) else { return false }
-        return (try? await context.evaluatePolicy(policy, localizedReason: reason)) ?? false
+        if !deviceOwner { biometricContext = context }
+        let accepted = (try? await context.evaluatePolicy(policy, localizedReason: reason)) ?? false
+        if biometricContext === context { biometricContext = nil }
+        return accepted
+    }
+
+    func cancelBiometrics() {
+        biometricContext?.invalidate()
+        biometricContext = nil
     }
 
     func unlockWithBiometrics() async {
