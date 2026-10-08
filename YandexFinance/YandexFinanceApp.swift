@@ -183,6 +183,10 @@ struct ContentView: View {
             // Hide the login page while leaving the same WebView mounted for scanning.
             if busy && browser.signInRequested { browser.finishSignIn() }
         }
+        // The app's own window for the code the bank sent; the bank page stays hidden under it (46.28).
+        .sheet(isPresented: Binding(get: { browser.codeEntryVisible }, set: { _ in })) {
+            BankCodeEntryView(browser: browser)
+        }
     }
     private func animate(_ changes: () -> Void) {
         withAnimation(reduceMotion ? nil : .smooth(duration: 0.3), changes)
@@ -658,6 +662,108 @@ struct OperationLookView: View {
             history.setLook(title: title, icon: icon, for: operation, forPayee: forPayee)
         }
         if ok { dismiss() } else { error = browser.message }
+    }
+}
+
+/// The code the bank sent for a sign-in, typed in the app's own window: iPhone offers a code from SMS above the keyboard. The code
+/// goes into the hidden bank page, the bank's own sign-in goes on there.
+@MainActor
+struct BankCodeEntryView: View {
+    @ObservedObject var browser: BankBrowser
+    @State private var code = ""
+    @State private var secondsLeft = 0
+    @State private var countdown: Task<Void, Never>?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Код", text: $code)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                        .font(.system(.title, design: .monospaced))
+                        .multilineTextAlignment(.center)
+                        .focused($focused)
+                        .disabled(browser.codeSubmitting)
+                        .onChange(of: code) { _, value in
+                            let digits = String(value.filter(\.isNumber).prefix(6))
+                            if digits != value { code = digits; return }
+                            // The whole code typed or offered by iPhone: it goes to the bank at once.
+                            if digits.count == browser.codeLength { submit() }
+                        }
+                    if browser.codeSubmitting {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Проверяю код…").foregroundStyle(.secondary)
+                        }
+                    }
+                    if let error = browser.codeEntryError {
+                        Text(error).font(.footnote).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Код из пуша Яндекс Пэй или из SMS")
+                } footer: {
+                    Text("Код из SMS iPhone подскажет над клавиатурой. Код из пуша введите сами.")
+                }
+                Section {
+                    Button("Отправить") { submit() }
+                        .disabled(code.count < 4 || browser.codeSubmitting)
+                    Button(secondsLeft > 0 ? "Запросить новый код через \(secondsLeft) с" : "Запросить новый код") { requestNew() }
+                        .disabled(secondsLeft > 0 || browser.codeSubmitting)
+                    Button("Открыть страницу банка") { browser.showBankPageForSignIn() }
+                }
+            }
+            .navigationTitle("Вход в банк")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Отмена") { browser.cancelSignIn() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .interactiveDismissDisabled()
+        .onAppear {
+            focused = true
+            readWait(request: false)
+        }
+        .onDisappear { countdown?.cancel() }
+    }
+
+    private func submit() {
+        let typed = code
+        Task {
+            await browser.submitCode(typed)
+            // Not accepted: the field is cleared for the next try.
+            if browser.codeEntryError != nil {
+                code = ""
+                focused = true
+            }
+        }
+    }
+
+    private func requestNew() {
+        code = ""
+        readWait(request: true)
+    }
+
+    /// Reads the bank's wait for a new code (after asking for it, a moment later) and counts it down here.
+    private func readWait(request: Bool) {
+        countdown?.cancel()
+        countdown = Task {
+            var seconds = await browser.resendCode(request: request)
+            if request {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                seconds = await browser.resendCode(request: false)
+            }
+            secondsLeft = seconds
+            while secondsLeft > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+                secondsLeft -= 1
+            }
+        }
     }
 }
 

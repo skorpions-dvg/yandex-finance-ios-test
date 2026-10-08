@@ -14,6 +14,16 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// The bank page is in front because the bank asked to sign in (shows the code hint).
     @Published private(set) var signInRequested = false
     private var signInWatch: Task<Void, Never>?
+    /// The app's own window for the confirmation code is shown over the hidden bank page (46.28).
+    @Published private(set) var codeEntryVisible = false
+    /// Why the last code was not accepted, in the owner's words; nil when there is nothing to say.
+    @Published private(set) var codeEntryError: String?
+    /// The code is being put into the bank page and its answer awaited.
+    @Published private(set) var codeSubmitting = false
+    /// How many digits the bank's field takes (its group of fields or its length); 4 when the page does not say.
+    @Published private(set) var codeLength = 4
+    /// The owner chose the bank page itself for this sign-in: the code window does not come back over it.
+    private var preferBankPage = false
     @Published var busy = false
     @Published var message = ""
     @Published private(set) var statementPreview: StatementImportPreview?
@@ -143,12 +153,28 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     func requestSignIn() {
         message = Self.signInNeededMessage
         signInRequested = true
-        bankPageVisible = true
+        preferBankPage = false
         signInWatch?.cancel()
         signInWatch = Task { @MainActor [weak self] in
+            // The code window when the bank asks for a code; its own page for anything else (a phone number, a check).
+            guard let first = self else { return }
+            if await first.bankPageState() == .codeRequested { first.showCodeEntry() } else { first.bankPageVisible = true }
+            var otherSeconds = 0
             for _ in 0..<600 {
                 do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
                 guard let self, self.signInRequested else { return }
+                let state = await self.bankPageState()
+                if state == .codeRequested {
+                    otherSeconds = 0
+                    if !self.codeEntryVisible && !self.preferBankPage { self.showCodeEntry() }
+                } else if state == .other && self.codeEntryVisible && !self.codeSubmitting {
+                    // The bank moved on to something the window cannot do: its page takes over after a few seconds.
+                    otherSeconds += 1
+                    if otherSeconds >= 4 {
+                        self.codeEntryVisible = false
+                        self.bankPageVisible = true
+                    }
+                }
                 if self.webView.url?.host == "bank.yandex.ru", self.webView.url?.path != "/my/transactions-history", !self.webView.isLoading,
                    let path = self.webView.url?.path, path == "/" || path.hasPrefix("/my") {
                     // Signed in but landed elsewhere in the bank: go to the history the scanner reads.
@@ -169,6 +195,158 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         signInWatch?.cancel(); signInWatch = nil
         signInRequested = false
         bankPageVisible = false
+        codeEntryVisible = false
+        codeEntryError = nil
+        codeSubmitting = false
+        preferBankPage = false
+    }
+
+    // MARK: - The code window
+
+    /// The same search for the code field everywhere: one field marked for a one-time code, a group of one-digit fields, or one
+    /// numeric field of 4–6 digits; fields of a phone, a search, an e-mail or a password and hidden ones are never taken.
+    private static let codeFieldsJS = """
+    const visible = el => !!el && el.getClientRects().length > 0 && !el.disabled && !el.readOnly;
+    const meta = el => [el.name, el.id, el.placeholder, el.getAttribute('aria-label')].filter(Boolean).join(' ').toLowerCase();
+    const bad = el => ['search', 'email', 'password'].includes((el.type || '').toLowerCase()) || /phone|тел|поиск|search|mail/.test(meta(el));
+    const inputs = [...document.querySelectorAll('input')].filter(el => visible(el) && !bad(el));
+    const groupOf = el => {
+        const same = inputs.filter(other => other.parentElement === el.parentElement && other.maxLength === 1);
+        if (same.length >= 3 && same.length <= 8) return same;
+        const outer = inputs.filter(other => other.maxLength === 1 && other.parentElement && el.parentElement &&
+                                             other.parentElement.parentElement === el.parentElement.parentElement);
+        return outer.length >= 3 && outer.length <= 8 ? outer : null;
+    };
+    const findCodeFields = () => {
+        const marked = inputs.filter(el => (el.autocomplete || '').toLowerCase() === 'one-time-code');
+        if (marked.length) return marked[0].maxLength === 1 ? (groupOf(marked[0]) || [marked[0]]) : [marked[0]];
+        const single = inputs.find(el => el.maxLength === 1 && groupOf(el));
+        if (single) return groupOf(single);
+        const scored = inputs.map(el => {
+            let score = 0;
+            const mode = (el.inputMode || el.getAttribute('inputmode') || '').toLowerCase();
+            if (mode === 'numeric') score += 30;
+            if (el.maxLength >= 4 && el.maxLength <= 6) score += 40;
+            if (/код|code|otp|pin|смс|sms/.test(meta(el))) score += 50;
+            return { el, score };
+        }).filter(item => item.score > 40).sort((a, b) => b.score - a.score);
+        return scored.length ? [scored[0].el] : [];
+    };
+    """
+
+    private func showCodeEntry() {
+        codeEntryError = nil
+        codeEntryVisible = true
+        bankPageVisible = false
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let script = Self.codeFieldsJS + """
+            const fields = findCodeFields();
+            if (fields.length > 1) return fields.length;
+            if (fields.length === 1 && fields[0].maxLength >= 4 && fields[0].maxLength <= 6) return fields[0].maxLength;
+            return 4;
+            """
+            if let length = try? await self.webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient) as? Int,
+               (4...6).contains(length) {
+                self.codeLength = length
+            }
+        }
+    }
+
+    /// The owner chose the bank page for this sign-in: the window closes and does not come back until the next sign-in.
+    func showBankPageForSignIn() {
+        preferBankPage = true
+        codeEntryVisible = false
+        codeEntryError = nil
+        bankPageVisible = true
+    }
+
+    /// «Отмена» in the code window: no sign-in now.
+    func cancelSignIn() {
+        finishSignIn()
+        message = "Вход отменён. Обновите операции, когда будет удобно."
+    }
+
+    /// Puts the code the owner typed into the bank page (the bank's own sign-in goes on there) and waits for its answer: the
+    /// history (the watcher of the sign-in then finishes it), an error next to the field, or nothing for ten seconds.
+    func submitCode(_ code: String) async {
+        let digits = code.filter(\.isNumber)
+        guard !codeSubmitting, !digits.isEmpty else { return }
+        codeEntryError = nil
+        codeSubmitting = true
+        defer { codeSubmitting = false }
+        let fill = Self.codeFieldsJS + """
+        const fields = findCodeFields();
+        if (!fields.length) return { ok: false, reason: 'field_not_found' };
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        const put = (el, value) => {
+            el.focus();
+            setter.call(el, value);
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: value }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        if (fields.length === 1) { put(fields[0], code); return { ok: fields[0].value === code, mode: 'single' }; }
+        if (code.length < fields.length) return { ok: false, reason: 'code_too_short' };
+        // A group of one-digit fields: the bank often spreads a pasted code itself; if not, one digit into each field.
+        try {
+            const data = new DataTransfer();
+            data.setData('text/plain', code);
+            fields[0].focus();
+            fields[0].dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+        } catch (error) {}
+        if (fields.every((el, index) => el.value === code[index])) return { ok: true, mode: 'paste' };
+        fields.forEach((el, index) => {
+            put(el, code[index]);
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: code[index] }));
+        });
+        return { ok: fields.every((el, index) => el.value === code[index]), mode: 'digits' };
+        """
+        let result = try? await webView.callAsyncJavaScript(fill, arguments: ["code": digits], in: nil, contentWorld: .defaultClient)
+        guard let answer = result as? [String: Any], answer["ok"] as? Bool == true else {
+            codeEntryError = "Не получилось вписать код на странице банка. Откройте страницу банка и введите код там."
+            return
+        }
+        for _ in 0..<20 {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            // Signed in: the watcher has already finished the sign-in and started the refresh.
+            guard signInRequested else { return }
+            if await codeRejected() {
+                codeEntryError = "Банк не принял код. Проверьте цифры или запросите новый."
+                return
+            }
+            if await bankPageState() != .codeRequested { return }
+        }
+        codeEntryError = "Банк пока не ответил. Попробуйте ещё раз или откройте страницу банка."
+    }
+
+    /// An error next to the code field (not anywhere on the page: the word «ошибка» can be in any other text).
+    private func codeRejected() async -> Bool {
+        let script = Self.codeFieldsJS + """
+        const fields = findCodeFields();
+        if (!fields.length) return false;
+        let box = fields[0];
+        for (let step = 0; step < 4 && box.parentElement; step++) box = box.parentElement;
+        return /неверн|ошибк|некоррект|истёк|истек|не подходит/i.test(box.innerText || '');
+        """
+        return (try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient) as? Bool) ?? false
+    }
+
+    /// Seconds until the bank lets ask for a new code (its «Запросить другой через N секунд»); with `request` and no wait left
+    /// it taps the bank's button. The owner's tap in the window is what asks, never the app by itself.
+    func resendCode(request: Bool) async -> Int {
+        let script = """
+        const text = document.body ? document.body.innerText : '';
+        const wait = text.match(/через\\s*(\\d+)\\s*(мин)?/i);
+        const seconds = wait ? parseInt(wait[1], 10) * (wait[2] ? 60 : 1) : 0;
+        if (!request || seconds > 0) return seconds;
+        const button = [...document.querySelectorAll('button, a, [role="button"]')].find(node =>
+            node.getClientRects().length > 0 && !node.disabled && node.getAttribute('aria-disabled') !== 'true' &&
+            /запросить|отправить.*(ещё|еще|повторно|снова)|получить.*код|новый код/i.test((node.textContent || '').trim()));
+        if (button) button.click();
+        return 0;
+        """
+        let value = try? await webView.callAsyncJavaScript(script, arguments: ["request": request], in: nil, contentWorld: .defaultClient)
+        return (value as? Int) ?? 0
     }
 
     enum BankPageState { case history, codeRequested, other }

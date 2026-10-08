@@ -605,7 +605,13 @@ assert.match(swift, /if autoUpdate \{[\s\S]{0,200}if webView\.url == nil \{ open
   'switching the automatic update on opens the bank page');
 assert.match(appSwift, /Button\("Обновить новые операции"\) \{ browser\.refreshNewOperations\(\) \}/, 'manual refresh must go through the sign-in check');
 assert.match(swift, /guard ready else \{\s*self\.requestSignIn\(\)/, 'a signed-out bank must be reported and shown, not ignored');
-assert.match(swift, /func requestSignIn\(\) \{[\s\S]{0,200}signInNeededMessage[\s\S]{0,120}bankPageVisible = true/, 'sign-in request shows the bank page with the hint');
+assert.match(swift, /func requestSignIn\(\) \{[\s\S]{0,200}signInNeededMessage[\s\S]{0,700}== \.codeRequested \{ first\.showCodeEntry\(\) \} else \{ first\.bankPageVisible = true \}/,
+  'sign-in request shows the code window when the bank asks for a code, the bank page otherwise');
+// 46.28: the code window always has a way to the bank page and a cancel, and the field takes the code iPhone offers from SMS.
+assert.match(appSwift, /\.textContentType\(\.oneTimeCode\)/, 'the code field must accept the code iPhone offers from SMS');
+assert.match(appSwift, /Button\("Открыть страницу банка"\) \{ browser\.showBankPageForSignIn\(\) \}/, 'the code window must lead to the bank page');
+assert.match(appSwift, /Button\("Отмена"\) \{ browser\.cancelSignIn\(\) \}/, 'the code window must be cancellable');
+assert.match(swift, /func finishSignIn\(\) \{[\s\S]{0,200}codeEntryVisible = false/, 'finishing the sign-in closes the code window');
 assert.match(swift, /historyPageReady\(\) else \{ continue \}\s*self\.finishSignIn\(\)[\s\S]{0,120}self\.read\(mode: "history"/, 'after sign-in the page closes and the refresh continues');
 assert.match(appSwift, /ZStack\(alignment: \.top\) \{[\s\S]{0,200}BankWebView\(browser: browser\)/, 'bank page must stay in the window behind the tabs');
 assert.ok(!/Label\("Банк"/.test(appSwift), 'the bank page is no longer a tab');
