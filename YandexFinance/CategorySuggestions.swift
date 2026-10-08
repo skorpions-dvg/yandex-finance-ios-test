@@ -81,9 +81,45 @@ enum CategorySuggestions {
         let operation: BankOperation
         let key: String
         let categoryID: UUID
+        let word: String?
+    }
+
+    /// The sorted operations of the history, by payee and by the significant word of the title.
+    private struct Evidences {
+        let byKey: [String: [Evidence]]
+        let byWord: [String: [Evidence]]
+        static let empty = Evidences(byKey: [:], byWord: [:])
+    }
+
+    /// Resolving the category of every operation is what costs: it is done once for all the groups, not once per group.
+    private static func evidences(_ history: SavedHistory) -> Evidences {
+        let resolver = ExpenseCategoryResolver(history)
+        // resolve also excludes income, refunds, own transfers and unfinished operations.
+        let all: [Evidence] = history.allOperations.compactMap { item in
+            guard let id = resolver.resolve(item)?.id,
+                  id != UncategorizedReview.otherExpenseID,
+                  let category = history.expenseCategory(id: id),
+                  !(category.group.name == "Другое" && category.category.name == "Прочее") else { return nil }
+            return Evidence(operation: item, key: FinancialEngine.payeeRuleKey(item.description), categoryID: id,
+                            word: significantWord(item.description))
+        }
+        return Evidences(byKey: Dictionary(grouping: all, by: \.key),
+                         byWord: Dictionary(grouping: all.filter { $0.word != nil }, by: { $0.word ?? "" }))
     }
 
     static func suggest(for group: ReviewGroup, history: SavedHistory) -> [CategorySuggestion] {
+        suggestions(for: [group], history: history)[group.id] ?? []
+    }
+
+    /// Suggestions of every group, by the id of the group.
+    static func suggestions(for groups: [ReviewGroup], history: SavedHistory) -> [String: [CategorySuggestion]] {
+        let evidence = groups.contains { $0.kind == .expense && !$0.key.isEmpty } ? evidences(history) : Evidences.empty
+        var result: [String: [CategorySuggestion]] = [:]
+        for group in groups { result[group.id] = suggest(group, history: history, evidence: evidence) }
+        return result
+    }
+
+    private static func suggest(_ group: ReviewGroup, history: SavedHistory, evidence: Evidences) -> [CategorySuggestion] {
         guard group.kind == .expense, let operation = group.operations.first else { return [] }
         var result: [CategorySuggestion] = []
         func append(_ id: UUID, reason: CategorySuggestion.Reason, count: Int) {
@@ -96,17 +132,9 @@ enum CategorySuggestions {
         }
 
         let excluded = Set(group.operations.map(\.identity))
-        let resolver = ExpenseCategoryResolver(history)
-        // resolve also excludes income, refunds, own transfers and unfinished operations.
-        let evidence: [Evidence] = group.key.isEmpty ? [] : history.allOperations.compactMap { item in
-            guard !excluded.contains(item.identity), let id = resolver.resolve(item)?.id,
-                  id != UncategorizedReview.otherExpenseID,
-                  let category = history.expenseCategory(id: id),
-                  !(category.group.name == "Другое" && category.category.name == "Прочее") else { return nil }
-            return Evidence(operation: item, key: FinancialEngine.payeeRuleKey(item.description), categoryID: id)
-        }
-        if !group.key.isEmpty, let best = mostFrequent(evidence.filter({ $0.key == group.key })) {
-            append(best.id, reason: .history, count: best.count)
+        if !group.key.isEmpty {
+            let own = (evidence.byKey[group.key] ?? []).filter { !excluded.contains($0.operation.identity) }
+            if let best = mostFrequent(own) { append(best.id, reason: .history, count: best.count) }
         }
 
         if let words = ReceiptParser.keywordCategory(merchant: operation.description),
@@ -116,8 +144,8 @@ enum CategorySuggestions {
         }
 
         if !group.key.isEmpty, let word = significantWord(operation.description) {
-            let similar = evidence.filter {
-                !$0.key.isEmpty && $0.key != group.key && significantWord($0.operation.description) == word
+            let similar = (evidence.byWord[word] ?? []).filter {
+                !$0.key.isEmpty && $0.key != group.key && !excluded.contains($0.operation.identity)
             }
             if let best = mostFrequent(similar), best.count >= 2, best.count * 5 >= similar.count * 4 {
                 append(best.id, reason: .similarPayees, count: best.count)

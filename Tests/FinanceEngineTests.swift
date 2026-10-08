@@ -1197,6 +1197,26 @@ struct FinanceEngineTests {
         require(CategorySuggestions.suggest(for: unnamed, history: history).isEmpty, "word suggestion must exist in the user's tree")
     }
 
+    static func testSuggestionsInBatch() {
+        var history = SavedHistory()
+        let food = history.categoryTree.first { $0.name == "Еда" }!.categories.first { $0.name == "Супермаркеты" }!.id
+        let first = bankOp("batch-a1", -100, description: "ПолучательТест север")
+        let second = bankOp("batch-a2", -200, description: "ПолучательТест север")
+        let third = bankOp("batch-b1", -300, description: "АбстракцияТест юг")
+        history.operations = [first, second, third]
+        history.categoryOverrides = [first.identity: food, second.identity: UncategorizedReview.otherExpenseID,
+                                     third.identity: UncategorizedReview.otherExpenseID]
+        let groups = UncategorizedReview.groups(history)
+        require(groups.count == 2, "two payees are left to sort")
+        let batch = CategorySuggestions.suggestions(for: groups, history: history)
+        for group in groups {
+            require(batch[group.id] == CategorySuggestions.suggest(for: group, history: history), "the batch gives what one group gives")
+        }
+        let known = groups.first { $0.key == FinancialEngine.payeeRuleKey(second.description) }!
+        require(batch[known.id]?.first?.categoryID == food && batch[known.id]?.first?.reason == .history, "the earlier choice for the same payee is suggested")
+        require(CategorySuggestions.suggestions(for: [], history: history).isEmpty, "no groups, no suggestions")
+    }
+
     static func testRuleCandidates() {
         var history = SavedHistory()
         let food = history.categoryTree[0].categories[0].id
@@ -2241,6 +2261,7 @@ struct FinanceEngineTests {
         testUncategorizedReview()
         testCategorySuggestions()
         testRuleCandidates()
+        testSuggestionsInBatch()
         testExpenseReviewEdits()
         testManualExpenseReviewUndo()
         testFixedCostGroups()

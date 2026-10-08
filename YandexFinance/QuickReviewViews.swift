@@ -73,7 +73,7 @@ enum QuickReviewCache {
     static func suggestions(_ history: SavedHistory, presentation: FinancePresentationCache) -> [String: [CategorySuggestion]] {
         let pending = groups(history, presentation: presentation)
         return presentation.value("quick-review-suggestions") {
-            Dictionary(uniqueKeysWithValues: pending.map { ($0.id, CategorySuggestions.suggest(for: $0, history: history)) })
+            CategorySuggestions.suggestions(for: pending, history: history)
         }
     }
 
