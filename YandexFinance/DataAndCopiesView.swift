@@ -16,9 +16,10 @@ struct DataAndCopiesView: View {
     @State private var notice: String?
     /// The moment of the last tap here: only a message that follows a tap is shown, not the ones of the background sync.
     @State private var tappedAt: Date?
+    @State private var photos: Int?
+    @State private var photoError: String?
 
     var body: some View {
-        let photos = ReceiptStore.allFiles.count
         List {
             Section {
                 Button("Сохранить копию (JSON)") { run(exportBackup) }
@@ -31,20 +32,25 @@ struct DataAndCopiesView: View {
                 Text("Операции, счета, категории и правила. Фото чеков в неё не входят.")
             }.glassRows()
             Section {
-                LabeledContent("Фото на телефоне", value: String(photos))
+                LabeledContent("Фото на телефоне", value: photos.map { String($0) } ?? (photoError == nil ? "Проверяем…" : "Ошибка чтения"))
+                if photoError != nil { Button("Повторить чтение списка фото") { refreshPhotos() } }
                 Button("Сохранить архив (ZIP)") { run(exportReceipts) }
-                    .disabled(photos == 0 || browser.busy)
+                    .disabled(photos == nil || photos == 0 || browser.busy)
                 Button("Восстановить фото из архива") { run(restoreReceipts) }
                     .disabled(browser.busy)
             } header: {
                 Text("Фото чеков")
             } footer: {
-                Text(photos == 0 ? "Фото ещё нет: их добавляют в операции, в разделе «Чек»."
-                                 : "ZIP сохраняйте рядом с JSON: iCloud Drive → Finance Test.")
+                if let photoError {
+                    Text(photoError).foregroundStyle(.primary)
+                } else {
+                    Text(photos == 0 ? "Фото ещё нет: их добавляют в операции, в разделе «Чек»."
+                                     : "ZIP сохраняйте рядом с JSON: iCloud Drive → Finance Test.")
+                }
             }.glassRows()
             Section {
                 Button("Собрать чеки для проверки") { run(collectReceipts) }
-                    .disabled(photos == 0 || browser.busy)
+                    .disabled(photos == nil || photos == 0 || browser.busy)
             } header: {
                 Text("Улучшение чтения чеков")
             } footer: {
@@ -64,7 +70,10 @@ struct DataAndCopiesView: View {
         .appSurface()
         .navigationTitle("Данные и копии")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { refreshPhotos() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in refreshPhotos() }
         .onChange(of: browser.message) { _, text in
+            refreshPhotos()
             guard !text.isEmpty, let tappedAt, Date().timeIntervalSince(tappedAt) < 180 else { return }
             notice = text
         }
@@ -77,5 +86,15 @@ struct DataAndCopiesView: View {
         tappedAt = Date()
         browser.message = ""
         action()
+    }
+
+    private func refreshPhotos() {
+        do {
+            photos = try ReceiptStore.photoFiles().count
+            photoError = nil
+        } catch {
+            photos = nil
+            photoError = "Не удалось прочитать список фото чеков. Разблокируйте телефон и попробуйте ещё раз."
+        }
     }
 }

@@ -2806,7 +2806,270 @@ struct FinanceEngineTests {
         require(status.remainingKopecks >= 0, "known issue50: a large limit with net refunds must not crash calculating remaining")
     }
 
+    // MARK: - Stage 52: synthetic receipt layouts and deterministic printed-text noise
+
+    struct Audit52Receipt {
+        let id: String
+        let title: String
+        let lines: [String]
+        let total: Int64
+        let date: Date
+        let merchant: String
+        let goods: [ReceiptGood]
+    }
+
+    enum Audit52Noise: String, CaseIterable { case none, light, strong }
+
+    struct Audit52Random {
+        var state: UInt64
+        mutating func number(_ limit: Int) -> Int {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Int((state >> 16) % UInt64(limit))
+        }
+    }
+
+    static func audit52Calendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    static func audit52Receipts() -> [Audit52Receipt] {
+        let calendar = audit52Calendar()
+        var fixtures: [Audit52Receipt] = []
+        func add(_ id: String, _ title: String, _ merchant: String, _ body: [String],
+                 _ total: Int64, _ goods: [ReceiptGood], electronic: Bool = false) {
+            let day = fixtures.count + 1
+            let date = calendar.date(from: DateComponents(year: 2032, month: 5, day: day, hour: 14, minute: 25))!
+            let stamp = electronic ? [String(format: "Дата: 2032-05-%02d", day), "Время: 14:25"]
+                                   : [String(format: "%02d.05.2032 14:25", day)]
+            let lines = ["ООО «" + merchant + "»", "КАССОВЫЙ ЧЕК"] + stamp + body
+            fixtures.append(Audit52Receipt(id: id, title: title, lines: lines, total: total, date: date, merchant: merchant, goods: goods))
+        }
+        add("discount-table", "Таблица: название и числа раздельно", "Магазин Астра Тест",
+            ["ЦЕНА / ЦЕНА СО СКИДКОЙ / КОЛ-ВО / ИТОГ", "Молоко учебное", "70.00 59.00 2ШТ. 118.00",
+             "Хлеб учебный", "50.00 46.50 1ШТ. 46.50", "ИТОГ БЕЗ СКИДОК 190.00", "ИТОГ 164.50"], 16_450,
+            [ReceiptGood(name: "Молоко учебное", kopecks: 11_800), ReceiptGood(name: "Хлеб учебный", kopecks: 4_650)])
+        add("inline", "Название, количество и сумма в строке", "Маркет Маяк Тест",
+            ["Молоко 2 x 65.00 130.00", "Хлеб 1 x 45.50 45.50", "ИТОГО 175.50"], 17_550,
+            [ReceiptGood(name: "Молоко", kopecks: 13_000), ReceiptGood(name: "Хлеб", kopecks: 4_550)])
+        add("wrapped-name", "Название товара на двух строках", "Магазин Ирис Тест",
+            ["ЦЕНА КОЛ-ВО СУММА", "Йогурт натуральный", "с ягодами 2 x 89.00 178.00", "ИТОГО 178.00"], 17_800,
+            [ReceiptGood(name: "Йогурт натуральный с ягодами", kopecks: 17_800)])
+        add("cafe", "Кафе: обслуживание и чаевые в счёте", "Кафе Кедр Тест",
+            ["Кофе учебный 1 x 250.00 250.00", "Пирог учебный 1 x 320.00 320.00",
+             "Обслуживание 57.00", "Чаевые 40.00", "ИТОГО 667.00"], 66_700,
+            [ReceiptGood(name: "Кофе учебный", kopecks: 25_000), ReceiptGood(name: "Пирог учебный", kopecks: 32_000),
+             ReceiptGood(name: "Обслуживание", kopecks: 5_700), ReceiptGood(name: "Чаевые", kopecks: 4_000)])
+        add("fuel", "АЗС: литры, цена за литр и колонка", "АЗС Орбита Тест",
+            ["Колонка: 3", "ЦЕНА КОЛ-ВО СУММА", "Бензин тестовый 95 20.00 л 55.50 1110.00", "ИТОГО 1110.00"], 111_000,
+            [ReceiptGood(name: "Бензин тестовый 95", kopecks: 111_000)])
+        add("pharmacy", "Аптека", "Аптека Лира Тест",
+            ["Витамины тестовые 1 x 240.00 240.00", "Бинт учебный 2 x 35.00 70.00", "ИТОГО 310.00"], 31_000,
+            [ReceiptGood(name: "Витамины тестовые", kopecks: 24_000), ReceiptGood(name: "Бинт учебный", kopecks: 7_000)])
+        add("vat", "НДС по двум ставкам", "Магазин Парус Тест",
+            ["Хлеб учебный 1 x 110.00 110.00", "Альбом учебный 1 x 240.00 240.00",
+             "НДС 10% 10.00", "НДС 20% 40.00", "ИТОГО 350.00"], 35_000,
+            [ReceiptGood(name: "Хлеб учебный", kopecks: 11_000), ReceiptGood(name: "Альбом учебный", kopecks: 24_000)])
+        add("points-card", "Баллы как скидка и оплата картой", "Маркет Лотос Тест",
+            ["ЦЕНА ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ", "Фрукты учебные", "450.00 350.00 1ШТ. 350.00",
+             "Сыр учебный", "450.00 350.00 1ШТ. 350.00", "ИТОГ БЕЗ СКИДОК 900.00",
+             "Списано баллов 200.00", "ИТОГ 700.00", "БЕЗНАЛИЧНЫМИ 700.00"], 70_000,
+            [ReceiptGood(name: "Фрукты учебные", kopecks: 35_000), ReceiptGood(name: "Сыр учебный", kopecks: 35_000)])
+        add("cash-change", "Наличные и сдача", "Магазин Роса Тест",
+            ["Молоко 2 x 65.00 130.00", "Хлеб 1 x 45.50 45.50", "ИТОГО 175.50", "НАЛИЧНЫМИ 200.00", "СДАЧА 24.50"], 17_550,
+            [ReceiptGood(name: "Молоко", kopecks: 13_000), ReceiptGood(name: "Хлеб", kopecks: 4_550)])
+        add("return", "Возврат: положительный модуль суммы чека", "Магазин Вега Тест",
+            ["ВОЗВРАТ ПРИХОДА", "Шарф учебный 1 x 200.00 200.00", "ИТОГО 200.00", "БЕЗНАЛИЧНЫМИ 200.00"], 20_000,
+            [ReceiptGood(name: "Шарф учебный", kopecks: 20_000)])
+        add("electronic", "Электронный чек: итог на следующей строке", "Магазин Цифра Тест",
+            ["Книга учебная 1 x 300.00 300.00", "ИТОГ", "300.00"], 30_000,
+            [ReceiptGood(name: "Книга учебная", kopecks: 30_000)], electronic: true)
+        var longLines = ["ЦЕНА КОЛ-ВО ИТОГ"]
+        var longGoods: [ReceiptGood] = []
+        for index in 1...40 {
+            let name = String(format: "Позиция тестовая %02d", index)
+            let price = Int64(index * 137)
+            let money = String(format: "%lld.%02lld", price / 100, price % 100)
+            longLines.append(name + " 1 x " + money + " " + money)
+            longGoods.append(ReceiptGood(name: name, kopecks: price))
+        }
+        let longTotal = longGoods.reduce(Int64(0)) { $0 + $1.kopecks! }
+        longLines.append(String(format: "ИТОГО %lld.%02lld", longTotal / 100, longTotal % 100))
+        add("long-40", "Длинный чек на сорок позиций", "Магазин Кварц Тест", longLines, longTotal, longGoods)
+        add("two-cards", "Один чек с двумя оплатами", "Магазин Атлас Тест",
+            ["Карандаши учебные 2 x 150.00 300.00", "Блокнот учебный 1 x 300.00 300.00", "ИТОГО 600.00",
+             "БЕЗНАЛИЧНЫМИ КАРТА А 350.00", "БЕЗНАЛИЧНЫМИ КАРТА Б 250.00"], 60_000,
+            [ReceiptGood(name: "Карандаши учебные", kopecks: 30_000), ReceiptGood(name: "Блокнот учебный", kopecks: 30_000)])
+        add("repeated-good", "Две реальные позиции с одинаковым названием", "Магазин Спектр Тест",
+            ["Блокнот учебный 1 x 60.00 60.00", "Блокнот учебный 1 x 100.00 100.00", "ИТОГО 160.00"], 16_000,
+            [ReceiptGood(name: "Блокнот учебный", kopecks: 6_000), ReceiptGood(name: "Блокнот учебный", kopecks: 10_000)])
+        return fixtures
+    }
+
+    /// This simulates OCR text, not image recognition. No corrections from the tested parser are applied here.
+    static func audit52Noisy(_ lines: [String], level: Audit52Noise, seed: UInt64 = 0x52A7) -> (lines: [String], events: [String: Int]) {
+        guard level != .none else { return (lines, [:]) }
+        var random = Audit52Random(state: seed)
+        var events: [String: Int] = [:]
+        let strong = level == .strong
+        let alternatives: [Character: [Character]] = ["0": ["О", "O", "D"], "О": ["0"], "O": ["0"], "D": ["0"],
+                                                      "1": ["l", "I"], "l": ["1"], "I": ["1"], "5": ["S"], "S": ["5"], "8": ["B"], "B": ["8"]]
+        var changed: [String] = []
+        for raw in lines {
+            if random.number(100) < (strong ? 10 : 1) { events["drop", default: 0] += 1; continue }
+            var line = raw
+            if random.number(100) < (strong ? 30 : 5) {
+                let replaced = line.replacingOccurrences(of: #"(?<=\d)[.,](?=\d{2}(?!\d))"#, with: " ", options: .regularExpression)
+                if replaced != line { events["decimal", default: 0] += 1; line = replaced }
+            }
+            if line.range(of: #"\d{1,2}\.\d{1,2}\.\d{4}"#, options: .regularExpression) != nil,
+               random.number(100) < (strong ? 70 : 20) {
+                line = line.replacingOccurrences(of: ".", with: strong ? "  .  " : " . ")
+                events["date-spaces", default: 0] += 1
+            }
+            var letters = ""
+            for character in line {
+                if let choices = alternatives[character], random.number(100) < (strong ? 8 : 1) {
+                    letters.append(choices[random.number(choices.count)])
+                    events["glyph", default: 0] += 1
+                } else { letters.append(character) }
+            }
+            line = letters
+            if random.number(100) < (strong ? 35 : 10) { line = "‹«" + line + "»›"; events["quotes", default: 0] += 1 }
+            if line.count > 18, random.number(100) < (strong ? 25 : 3) {
+                let spaces = line.indices.filter { line[$0].isWhitespace }
+                if let at = spaces.min(by: { abs(line.distance(from: line.startIndex, to: $0) - line.count / 2) < abs(line.distance(from: line.startIndex, to: $1) - line.count / 2) }) {
+                    changed += [String(line[..<at]), String(line[line.index(after: at)...])]
+                    events["split", default: 0] += 1
+                    continue
+                }
+            }
+            changed.append(line)
+        }
+        var merged: [String] = []
+        var index = 0
+        while index < changed.count {
+            if index + 1 < changed.count, random.number(100) < (strong ? 20 : 2) {
+                merged.append(changed[index] + " " + changed[index + 1]); index += 2
+                events["join", default: 0] += 1
+            } else { merged.append(changed[index]); index += 1 }
+        }
+        return (merged, events)
+    }
+
+    static func audit52Fields(_ read: ParsedReceipt, expected: Audit52Receipt) -> [(String, Bool)] {
+        [("total", read.totalKopecks == expected.total),
+         ("datetime", read.date == expected.date && read.dateHasTime),
+         ("merchant", read.merchant == expected.merchant),
+         ("count", read.goods.count == expected.goods.count),
+         ("goods", read.goods.map(\.name) == expected.goods.map(\.name)),
+         ("prices", read.goods.map(\.kopecks) == expected.goods.map(\.kopecks))]
+    }
+
+    // Desired results stay in the fixtures. These clean-input failures are exercised separately
+    // by testKnownIssues52(), so the normal run can verify every other field without freezing bugs.
+    static let audit52KnownFields: [String: Set<String>] = [
+        "wrapped-name": ["count", "goods", "prices"],
+        "fuel": ["goods"],
+        "two-cards": ["total"],
+        "repeated-good": ["count", "goods", "prices"]
+    ]
+
+    static func audit52Parse(_ lines: [String]) -> ParsedReceipt {
+        let calendar = audit52Calendar()
+        let now = calendar.date(from: DateComponents(year: 2032, month: 6, day: 1, hour: 20))!
+        return ReceiptParser.parseText(lines, now: now, calendar: calendar)
+    }
+
+    static func testAudit52ReceiptLayouts(assertClean: Bool = true) {
+        let start = Date()
+        let fixtures = audit52Receipts()
+        require(fixtures.count >= 13 && Set(fixtures.map(\.id)).count == fixtures.count, "audit52: distinct receipt layouts")
+        var totals: [String: [String: Int]] = [:]
+        var allEvents: Set<String> = []
+        for (index, fixture) in fixtures.enumerated() {
+            require(fixture.goods.reduce(Int64(0), { $0 + ($1.kopecks ?? 0) }) == fixture.total,
+                    "audit52: independent expected goods reconcile with total for \(fixture.id)")
+            for level in Audit52Noise.allCases {
+                let seed = UInt64(0x52A7) &+ UInt64(index) &* 0x9E37
+                let noisy = audit52Noisy(fixture.lines, level: level, seed: seed)
+                let repeatNoise = audit52Noisy(fixture.lines, level: level, seed: seed)
+                require(noisy.lines == repeatNoise.lines && noisy.events == repeatNoise.events, "audit52: repeatable noise")
+                if level == .none { require(noisy.lines == fixture.lines && noisy.events.isEmpty, "audit52: clean text unchanged") }
+                allEvents.formUnion(noisy.events.keys)
+                let read = audit52Parse(noisy.lines)
+                let fields = audit52Fields(read, expected: fixture)
+                for (field, correct) in fields {
+                    if correct { totals[level.rawValue, default: [:]][field, default: 0] += 1 }
+                    if level == .none, assertClean, !(audit52KnownFields[fixture.id]?.contains(field) ?? false) {
+                        require(correct, "audit52: clean \(fixture.id) \(field); got \(read.goods.map(\.line)), total \(String(describing: read.totalKopecks)), merchant \(read.merchant ?? "nil")")
+                    }
+                }
+                let json: [String: Any] = ["layout": fixture.id, "title": fixture.title, "level": level.rawValue,
+                    "checks": Dictionary(uniqueKeysWithValues: fields), "events": noisy.events, "lines": noisy.lines,
+                    "expectedTotal": fixture.total, "actualTotal": read.totalKopecks.map { $0 as Any } ?? NSNull(),
+                    "expectedDate": fixture.date.timeIntervalSince1970, "actualDate": read.date.map { $0.timeIntervalSince1970 as Any } ?? NSNull(),
+                    "dateHasTime": read.dateHasTime, "expectedMerchant": fixture.merchant, "actualMerchant": read.merchant ?? "nil",
+                    "expectedGoods": fixture.goods.map { ["name": $0.name, "kopecks": $0.kopecks.map { $0 as Any } ?? NSNull()] },
+                    "actualGoods": read.goods.map { ["name": $0.name, "kopecks": $0.kopecks.map { $0 as Any } ?? NSNull()] }]
+                let encoded = try! JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+                print("RECEIPT52\t" + String(data: encoded, encoding: .utf8)!)
+            }
+        }
+        require(allEvents == ["drop", "decimal", "date-spaces", "glyph", "quotes", "split", "join"], "audit52: all requested noise forms exercised")
+        for level in Audit52Noise.allCases {
+            for field in ["total", "datetime", "merchant", "count", "goods", "prices"] {
+                print("METRIC52\t\(level.rawValue)\t\(field)\t\(totals[level.rawValue]?[field] ?? 0)\t\(fixtures.count)")
+            }
+        }
+        print("RUNTIME52\t\(Date().timeIntervalSince(start))")
+    }
+
+    /// Desired clean answers: deliberately not called by main until the parser issues have been resolved.
+    static func testKnownIssues52(layoutID: String? = nil) {
+        for fixture in audit52Receipts() where audit52KnownFields[fixture.id] != nil && (layoutID == nil || layoutID == fixture.id) {
+            let read = audit52Parse(fixture.lines)
+            for (field, correct) in audit52Fields(read, expected: fixture) {
+                require(correct, "known issue52: clean \(fixture.id) \(field); total \(String(describing: read.totalKopecks)); goods \(read.goods.map(\.line))")
+            }
+        }
+    }
+
+    static func testAudit52PhotoListing() throws {
+        let first = ReceiptLogic.fileName(id: UUID(uuidString: "00000001-0000-0000-0000-000000000001")!)
+        let second = ReceiptLogic.fileName(id: UUID(uuidString: "00000002-0000-0000-0000-000000000002")!)
+        let names = try ReceiptArchive.photoFileNames { [first, "other.txt", "../outside.jpg", second] }
+        require(names == [first, second], "audit52: only valid photo names are listed")
+        let empty = try ReceiptArchive.photoFileNames { [] }
+        require(empty.isEmpty, "audit52: existing empty directory has no photos")
+        for code in [NSFileNoSuchFileError, NSFileReadNoSuchFileError] {
+            let missing = try ReceiptArchive.photoFileNames { throw NSError(domain: NSCocoaErrorDomain, code: code) }
+            require(missing.isEmpty, "audit52: absent directory is empty")
+        }
+        for error in [NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError),
+                      NSError(domain: NSPOSIXErrorDomain, code: 13), NSError(domain: "SyntheticIO", code: 1)] {
+            do {
+                _ = try ReceiptArchive.photoFileNames { throw error }
+                require(false, "audit52: unreadable directory must not become zero photos")
+            } catch let actual as NSError {
+                require(actual.domain == error.domain && actual.code == error.code, "audit52: listing error preserved")
+            }
+        }
+        var unavailable = true
+        let read: () throws -> [String] = {
+            if unavailable { throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError) }
+            return [first, second]
+        }
+        do { _ = try ReceiptArchive.photoFileNames(read: read); require(false, "audit52: initial access failure") } catch { }
+        unavailable = false
+        let recovered = try ReceiptArchive.photoFileNames(read: read)
+        require(recovered == [first, second], "audit52: retry restores photo count after access recovers")
+    }
+
     static func main() {
+        testAudit52ReceiptLayouts()
+        do { try testAudit52PhotoListing() } catch { require(false, "audit52: photo listing fixture failed: \(error)") }
         testKnownIssues50()
         testBudgetLargestAmount()
         testAudit50ReceiptResults()

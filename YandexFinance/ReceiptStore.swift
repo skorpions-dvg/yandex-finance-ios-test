@@ -35,14 +35,14 @@ enum ReceiptStore {
     }
 
     /// The names of the photo files on this phone.
-    static var allFiles: [String] {
-        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { ReceiptLogic.isValid(fileName: $0) }
+    static func photoFiles() throws -> [String] {
+        try ReceiptArchive.photoFileNames { try FileManager.default.contentsOfDirectory(atPath: folder.path) }
     }
 
     /// All photos as one ZIP, for a backup; nil when there are none.
-    static func exportArchive() -> (data: Data, count: Int, skipped: Int)? {
+    static func exportArchive() throws -> (data: Data, count: Int, skipped: Int)? {
         var entries: [(name: String, data: Data)] = []
-        let names = allFiles.sorted()
+        let names = try photoFiles().sorted()
         guard !names.isEmpty else { return nil }
         for name in names {
             if let data = try? Data(contentsOf: folder.appendingPathComponent(name)) { entries.append((name, data)) }

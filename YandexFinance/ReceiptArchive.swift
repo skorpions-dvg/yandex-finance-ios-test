@@ -3,6 +3,17 @@ import Foundation
 /// The photos of receipts as one ordinary ZIP file (stored, not compressed: they are JPEG already), made and read by the
 /// app itself. It opens on any computer, and the app restores its own archives from it.
 enum ReceiptArchive {
+    /// An absent photo directory is empty; a protected or unreadable one is an error, never "no photos".
+    /// The injected read keeps these states testable without UIKit or access to any user's photo folder.
+    static func photoFileNames(read: () throws -> [String]) throws -> [String] {
+        do {
+            return try read().filter { ReceiptLogic.isValid(fileName: $0) }
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
+            return []
+        }
+    }
+
     private static let crcTable: [UInt32] = (0..<256).map { index -> UInt32 in
         var value = UInt32(index)
         for _ in 0..<8 { value = (value & 1) != 0 ? (0xEDB88320 ^ (value >> 1)) : (value >> 1) }

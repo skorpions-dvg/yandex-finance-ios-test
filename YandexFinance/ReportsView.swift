@@ -138,6 +138,13 @@ struct ReportsView: View {
             tabBar
             periodAndAccount(resolved)
             filters
+            if !resolved.isValid {
+                Label(accountChoiceIsGroup ? "Группа удалена, показаны все счета" : "Счёт удалён, показаны все счета",
+                      systemImage: "exclamationmark.circle")
+                    .font(.footnote).foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+            }
         }
         .padding(.vertical, 8)
     }
@@ -162,22 +169,42 @@ struct ReportsView: View {
 
     /// The chosen period (the sheet behind it lists every month of the history) and, next to it, the accounts.
     private func periodAndAccount(_ resolved: ReportAccountChoice.Resolved) -> some View {
-        HStack(spacing: 8) {
-            Button { showPeriodSheet = true } label: {
-                HStack(spacing: 4) {
-                    Text(periodTitle).lineLimit(1)
-                    Image(systemName: "chevron.right").font(.caption2)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                periodButton.fixedSize(horizontal: true, vertical: false)
+                if !(browser.history.accounts ?? []).isEmpty || !resolved.isValid {
+                    accountMenu(resolved).fixedSize(horizontal: true, vertical: false)
                 }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(ink)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color.primary.opacity(0.1), in: Capsule())
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            if !(browser.history.accounts ?? []).isEmpty { accountMenu(resolved) }
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 8) {
+                periodButton
+                if !(browser.history.accounts ?? []).isEmpty || !resolved.isValid { accountMenu(resolved) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16)
+    }
+
+    private var accountChoiceIsGroup: Bool {
+        if case .group = accountChoice { return true }
+        return false
+    }
+
+    private var periodButton: some View {
+        Button { showPeriodSheet = true } label: {
+            HStack(spacing: 4) {
+                Text(periodTitle).fixedSize(horizontal: false, vertical: true)
+                Image(systemName: "chevron.right").font(.caption2)
+            }
+            .font(.subheadline.weight(.medium)).foregroundStyle(ink)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .frame(minHeight: 44)
+            .background(Color.primary.opacity(0.1), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Период отчёта")
+        .accessibilityValue(periodTitle)
     }
 
     /// «All accounts», one account or a group of accounts; the reports and the balances follow the choice.
@@ -208,15 +235,18 @@ struct ReportsView: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "wallet.pass")
-                Text(resolved.title).lineLimit(1)
+                Text(resolved.title).fixedSize(horizontal: false, vertical: true)
                 Image(systemName: "chevron.up.chevron.down").font(.caption2)
             }
             .font(.subheadline.weight(.medium))
             .foregroundStyle(active ? Color.white : ink)
             .padding(.horizontal, 12).padding(.vertical, 8)
+            .frame(minHeight: 44)
             .background(active ? Color.accentColor : Color.primary.opacity(0.1), in: Capsule())
         }
         .tint(active ? .white : ink)
+        .accessibilityLabel("Счета отчёта")
+        .accessibilityValue(resolved.isValid ? resolved.title : "Выбранный счёт или группа удалены, показаны все счета")
     }
 
     private var filters: some View {
@@ -496,15 +526,24 @@ private struct ReportSliceList: View {
     }
 
     private func budgetBar(_ status: BudgetStatus) -> some View {
-        VStack(spacing: 4) {
-            BudgetBar(fraction: status.fraction, level: status.level)
-            HStack {
-                Text("Бюджет: \(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
-                Spacer()
-                Text(status.caption).foregroundStyle(status.level == .calm ? Color.secondary : status.level.color)
+        VStack(alignment: .leading, spacing: 4) {
+            BudgetBar(fraction: status.fraction, level: status.level, status: status).accessibilityHidden(true)
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("Бюджет: \(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
+                    Spacer()
+                    Text(status.caption)
+                }.fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Бюджет: \(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
+                    Text(status.caption)
+                }.fixedSize(horizontal: false, vertical: true)
             }
-            .font(.caption2).foregroundStyle(.secondary)
+            .font(.caption).foregroundStyle(.primary)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Бюджет: " + status.title)
+        .accessibilityValue(BudgetBar.accessibilityValue(status))
     }
 
     static func compute(browser: BankBrowser, presentation: FinancePresentationCache, interval: DateInterval,
@@ -525,11 +564,17 @@ private struct ReportSliceList: View {
                                                   selection: mode == .expenses ? .allExpenses : .allIncome, filter: filter)
                 } label: {
                     VStack(spacing: 6) {
-                        HStack {
-                            Image(systemName: "sum").foregroundStyle(.secondary).frame(width: 28)
-                            Text(mode == .expenses ? "Все расходы" : "Все доходы").font(.headline)
-                            Spacer()
-                            Text(reportRubles(headline)).font(.headline).monospacedDigit()
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                Image(systemName: "sum").foregroundStyle(.secondary).frame(width: 28)
+                                Text(mode == .expenses ? "Все расходы" : "Все доходы").font(.headline)
+                                Spacer()
+                                Text(reportRubles(headline)).font(.headline).monospacedDigit()
+                            }.fixedSize(horizontal: true, vertical: false)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label(mode == .expenses ? "Все расходы" : "Все доходы", systemImage: "sum").font(.headline)
+                                Text(reportRubles(headline)).font(.headline).monospacedDigit()
+                            }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                         }
                         ShareBar(fraction: 1, color: .accentColor)
                         if mode == .expenses, let monthBudget = budgets.first(where: { $0.group == nil }) { budgetBar(monthBudget) }
@@ -540,12 +585,22 @@ private struct ReportSliceList: View {
                         ReportDetailView(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slice: slice, filter: filter)
                     } label: {
                         VStack(spacing: 6) {
-                            HStack {
-                                Circle().fill(ReportPalette.color(slice.title)).frame(width: 12, height: 12).frame(width: 28)
-                                Text(slice.title).lineLimit(1)
-                                Spacer()
-                                Text(percent(slice.amountKopecks)).font(.caption).foregroundStyle(.secondary)
-                                Text(reportRubles(slice.amountKopecks)).monospacedDigit()
+                            ViewThatFits(in: .horizontal) {
+                                HStack {
+                                    Circle().fill(ReportPalette.color(slice.title)).frame(width: 12, height: 12).frame(width: 28)
+                                    Text(slice.title)
+                                    Spacer()
+                                    Text(percent(slice.amountKopecks)).font(.caption).foregroundStyle(.secondary)
+                                    Text(reportRubles(slice.amountKopecks)).monospacedDigit()
+                                }.fixedSize(horizontal: true, vertical: false)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Circle().fill(ReportPalette.color(slice.title)).frame(width: 12, height: 12)
+                                        Text(slice.title).fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Text(reportRubles(slice.amountKopecks)).monospacedDigit()
+                                    Text(percent(slice.amountKopecks)).font(.caption).foregroundStyle(.secondary)
+                                }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
                             }
                             ShareBar(fraction: total > 0 ? Double(slice.amountKopecks) / Double(total) : 0, color: ReportPalette.color(slice.title))
                             if let own = budgets.first(where: { $0.group == slice.title }) { budgetBar(own) }
@@ -579,10 +634,13 @@ private struct ShareBar: View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.1))
-                Capsule().fill(color).frame(width: max(4, geometry.size.width * min(1, max(0, fraction))))
+                if fraction > 0 {
+                    Capsule().fill(color).frame(width: max(4, geometry.size.width * min(1, fraction)))
+                }
             }
         }
         .frame(height: 4)
+        .accessibilityHidden(true)
     }
 }
 
@@ -994,16 +1052,19 @@ private struct ReportPeriodSheet: View {
                     .navigationTitle("Выбрать даты")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
-                        ToolbarItem(placement: .topBarLeading) { Button("Отмена", systemImage: "xmark") { choosingDates = false } }
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Отмена", systemImage: "xmark") { choosingDates = false }.accessibilityLabel("Закрыть")
+                        }
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("Готово", systemImage: "checkmark") {
                                 choosingDates = false
                                 choose(.custom(from: from, through: through))
                             }
+                            .accessibilityLabel("Применить")
                         }
                     }
                 }
-                .presentationDetents([.medium])
+                .presentationDetents([.medium, .large])
             }
         }
     }
