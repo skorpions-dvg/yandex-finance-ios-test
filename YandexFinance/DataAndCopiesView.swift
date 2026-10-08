@@ -55,7 +55,7 @@ struct DataAndCopiesView: View {
         .navigationTitle("Данные и копии")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: browser.message) { _, text in
-            guard !text.isEmpty, let tappedAt, Date().timeIntervalSince(tappedAt) < 8 else { return }
+            guard !text.isEmpty, let tappedAt, Date().timeIntervalSince(tappedAt) < 180 else { return }
             notice = text
         }
         .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {

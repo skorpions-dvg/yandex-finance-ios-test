@@ -64,7 +64,8 @@ enum ReceiptParser {
         if digits.count == 12 || digits.count == 14 {
             let n = Array(digits).map { Int(String($0)) ?? 0 }
             func number(_ from: Int, _ count: Int) -> Int { n[from..<(from + count)].reduce(0) { $0 * 10 + $1 } }
-            receipt.date = makeDate(year: number(0, 4), month: number(4, 2), day: number(6, 2), hour: number(8, 2), minute: number(10, 2), calendar: calendar)
+            receipt.date = makeDate(year: number(0, 4), month: number(4, 2), day: number(6, 2), hour: number(8, 2), minute: number(10, 2),
+                                    second: digits.count == 14 ? number(12, 2) : 0, calendar: calendar)
         }
         return receipt.isEmpty ? nil : receipt
     }
@@ -182,11 +183,11 @@ enum ReceiptParser {
 
     // MARK: Helpers
 
-    private static func makeDate(year: Int, month: Int, day: Int, hour: Int, minute: Int, calendar: Calendar) -> Date? {
-        let components = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute)
+    private static func makeDate(year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int = 0, calendar: Calendar) -> Date? {
+        let components = DateComponents(year: year, month: month, day: day, hour: hour, minute: minute, second: second)
         guard let date = calendar.date(from: components) else { return nil }
-        let back = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
-        return back.year == year && back.month == month && back.day == day && back.hour == hour && back.minute == minute ? date : nil
+        let back = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        return back.year == year && back.month == month && back.day == day && back.hour == hour && back.minute == minute && back.second == second ? date : nil
     }
 
     /// The capture groups of every match of the pattern.

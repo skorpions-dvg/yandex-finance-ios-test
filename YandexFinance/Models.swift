@@ -1045,13 +1045,23 @@ enum HistoryBackup {
     static func encode(_ history: SavedHistory, exportedAt: Date = Date()) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        // Fractions of a second are kept: an account's balance starts from an exact moment.
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            // The format cuts the milliseconds off (…00.9 would be written as …00.899): half a millisecond is added first.
+            try container.encode(Date.ISO8601FormatStyle(timeZoneSeparator: .colon, includingFractionalSeconds: true).format(date.addingTimeInterval(0.0005)))
+        }
         return try encoder.encode(Envelope(format: formatVersion, exportedAt: exportedAt, history: history))
     }
 
     static func decode(_ data: Data) throws -> SavedHistory {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        // Copies made before 46.7 hold whole seconds only; both forms open.
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let text = try decoder.singleValueContainer().decode(String.self)
+            if let date = BankDateParser.parse(text) { return date }
+            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Не дата: \(text)"))
+        }
         guard let envelope = try? decoder.decode(Envelope.self, from: data) else {
             throw AppFailure(message: "Это не резервная копия Horizon или файл повреждён.")
         }

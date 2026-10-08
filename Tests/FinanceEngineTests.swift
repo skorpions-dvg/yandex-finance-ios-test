@@ -181,7 +181,7 @@ struct FinanceEngineTests {
         let qr = ReceiptParser.parseQR("t=20321008T1425&s=175.50&fn=12345&i=12345&fp=1234567890&n=1", calendar: calendar)
         require(qr?.totalKopecks == 17_550 && qr?.date == date(2032, 10, 8, 14, 25), "the QR code gives the sum and the moment")
         let qrSeconds = ReceiptParser.parseQR("t=20321008T142507&s=1200&fn=1&i=2&fp=3&n=1", calendar: calendar)
-        require(qrSeconds?.totalKopecks == 120_000 && qrSeconds?.date == date(2032, 10, 8, 14, 25), "a sum without kopecks, a time with seconds")
+        require(qrSeconds?.totalKopecks == 120_000 && qrSeconds?.date == date(2032, 10, 8, 14, 25).addingTimeInterval(7), "a sum without kopecks, a time with seconds (kept)")
         require(ReceiptParser.parseQR("https://example.com/page?a=1", calendar: calendar) == nil, "a link is not a receipt")
         require(ReceiptParser.parseQR("t=20321308T1425&s=10.00&fn=1", calendar: calendar)?.date == nil, "an impossible date is dropped")
 
@@ -2822,6 +2822,7 @@ struct FinanceEngineTests {
         testAuditReceiptArchiveCorruption()
         testAuditRegularPaymentsEdges()
         testAuditSuggestionsAndLockEdges()
+        testKnownIssues()
 
         print("Finance engine tests passed")
     }

@@ -759,7 +759,7 @@ struct SettingsView: View {
                         Text("Последнее сохранение: \(date.formatted(date: .abbreviated, time: .shortened))")
                     }
                     Text(browser.bootstrapComplete ? "Архив и текущая история подготовлены" : "Архив до 01.10.2026 ещё не импортирован")
-                    Text("Не разобрано: \(browser.history.unresolvedIssues?.count ?? 0)")
+                    Text("Ошибок чтения: \(browser.history.unresolvedIssues?.count ?? 0)")
                     if let date = browser.history.lastCompletedSync {
                         Text("Проверено: \(date.formatted(date: .abbreviated, time: .shortened))")
                     }

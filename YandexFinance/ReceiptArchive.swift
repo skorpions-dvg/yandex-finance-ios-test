@@ -72,10 +72,15 @@ enum ReceiptArchive {
             entries.append((name, data))
             position = end
         }
-        if entries.isEmpty {
-            // An archive without files is only the closing record.
-            guard bytes.count >= 22, long(0) == 0x06054B50 else { return nil }
+        // The central directory follows, one record per file, and then the closing record that counts them: an archive
+        // cut short (a download or a copy that stopped half way) has no such end and is refused as a whole.
+        var cursor = position
+        var listed = 0
+        while cursor + 46 <= bytes.count, long(cursor) == 0x02014B50 {
+            cursor += 46 + short(cursor + 28) + short(cursor + 30) + short(cursor + 32)
+            listed += 1
         }
+        guard listed == entries.count, cursor + 22 <= bytes.count, long(cursor) == 0x06054B50, short(cursor + 10) == entries.count else { return nil }
         return entries
     }
 }

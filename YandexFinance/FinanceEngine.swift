@@ -257,6 +257,11 @@ enum FinancialEngine {
         let kind = normalized(operation.kind)
         let amount = operation.amountKopecks
 
+        // The smallest Int64 has no positive twin (it cannot be negated): that is damaged data, never an amount to count.
+        if amount == Int64.min {
+            return FinancialAssessment(type: .unknown, reason: "Сумма вне допустимого диапазона: операция не учитывается.", originalAmountKopecks: 0, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
+
         if containsAny(status, ["отмен", "отклон", "аннулир", "не выполн", "cancelled", "canceled"]) {
             return FinancialAssessment(type: .cancelled, reason: "Банк пометил операцию как отменённую/не выполненную.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }

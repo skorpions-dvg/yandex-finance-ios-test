@@ -48,7 +48,9 @@ struct ReportFilter: Equatable {
 
     /// A stable text for keys of the presentation cache.
     var cacheKey: String {
-        "g:" + excludedGroups.sorted().joined(separator: "|") + ";p:" + excludedPayees.sorted().joined(separator: "|") + ";a:" + scope.cacheKey
+        // Every name carries its length, so «A|B» as one name and «A», «B» as two names never give the same key.
+        func part(_ names: Set<String>) -> String { names.sorted().map { "\($0.count):\($0)" }.joined() }
+        return "g:" + part(excludedGroups) + ";p:" + part(excludedPayees) + ";a:" + scope.cacheKey
     }
 }
 
@@ -326,13 +328,20 @@ enum ReportEngine {
                      grouping: ReportGrouping, focus: String? = nil, filter: ReportFilter = .none) -> [ReportBar] {
         guard let first = buckets.first?.start, let last = buckets.last?.end else { return [] }
         var sums: [Int: [String: Int64]] = [:]
+        // One payee is one series even when its titles differ («Магазин 001», «Магазин 002»): the first title names it,
+        // as in the structure report.
+        var titleByPayee: [String: String] = [:]
         for input in inputs {
             guard filter.scope.includes(input), let when = date(input), when >= first, when < last,
                   let item = entry(input, mode: mode), filter.allows(group: item.group, payee: item.payee) else { continue }
             let owner = grouping == .categories ? item.group : (item.payee.isEmpty ? "—" : item.payee)
             if let focus, owner != focus { continue }
-            let label = focus == nil ? (grouping == .categories ? item.group : (item.payee.isEmpty ? "Без названия" : item.title))
-                                     : (grouping == .categories ? item.sub : item.title)
+            var payeeTitle = item.title
+            if !item.payee.isEmpty {
+                if let known = titleByPayee[item.payee] { payeeTitle = known } else { titleByPayee[item.payee] = item.title }
+            }
+            let label = focus == nil ? (grouping == .categories ? item.group : (item.payee.isEmpty ? "Без названия" : payeeTitle))
+                                     : (grouping == .categories ? item.sub : payeeTitle)
             guard let index = bucketIndex(of: when, in: buckets) else { continue }
             sums[index, default: [:]][label, default: 0] += item.amount
         }

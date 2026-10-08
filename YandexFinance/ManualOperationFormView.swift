@@ -281,14 +281,16 @@ struct ManualOperationFormView: View {
     private func recognize(_ images: [UIImage]) {
         recognizing = true
         recognition = nil
+        let dateAtStart = date
         Task {
             let parsed = await ReceiptRecognizer.recognize(images)
-            apply(parsed)
+            apply(parsed, dateAtStart: dateAtStart)
             recognizing = false
         }
     }
 
-    private func apply(_ parsed: ParsedReceipt) {
+    /// `dateAtStart`: the date of the form when the reading began; a date the user changed meanwhile is not overwritten.
+    private func apply(_ parsed: ParsedReceipt, dateAtStart: Date) {
         guard !parsed.isEmpty else {
             recognition = "Чек не распознан: введите данные вручную. Фото останется приложенным."
             return
@@ -315,7 +317,7 @@ struct ManualOperationFormView: View {
                 filled.append("счёт")
             }
         }
-        if let when = parsed.date, when <= Date() {
+        if let when = parsed.date, when <= Date(), date == dateAtStart {
             date = when
             filled.append("дата")
         }

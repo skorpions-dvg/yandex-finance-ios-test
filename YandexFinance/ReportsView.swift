@@ -733,7 +733,11 @@ private struct BalancesContent: View {
         let accounts = self.accounts
         // The days to come: today's balance moves to the balance expected at the end of the month.
         let change: Int64? = isScoped ? nil : FinancialEngine.monthReserve(balanceKopecks: 0, forecast: presentation.forecast(browser.history))
-        let points = ReportEngine.balances(browser.history, accounts: accounts, buckets: buckets, forecastChangeKopecks: change)
+        // The balances go back through every operation of every account: counted once per history, period and choice.
+        let balancesKey = "balances:\(interval.start):\(interval.end):\(step.rawValue):\(change ?? 0):\(accounts.map { $0.id.uuidString }.joined(separator: ","))"
+        let points: [ReportBalancePoint] = presentation.value(balancesKey) {
+            ReportEngine.balances(browser.history, accounts: accounts, buckets: buckets, forecastChangeKopecks: change)
+        }
         let facts = points.filter { $0.hasData && !$0.isForecast }
         let forecast = points.filter { $0.hasData && $0.isForecast }
         if accounts.isEmpty {

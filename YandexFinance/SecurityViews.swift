@@ -64,6 +64,7 @@ struct PinPad: View {
                         Image(systemName: "faceid").font(.title2).frame(width: 76, height: 76)
                     }
                     .buttonStyle(PinKeyStyle(filled: false))
+                    .accessibilityLabel("Войти по Face ID")
                 } else {
                     Color.clear.frame(width: 76, height: 76)
                 }
@@ -77,6 +78,7 @@ struct PinPad: View {
                     Image(systemName: "delete.left").font(.title3).frame(width: 76, height: 76)
                 }
                 .buttonStyle(PinKeyStyle(filled: false))
+                .accessibilityLabel("Стереть последнюю цифру")
             }
         }
         .onChange(of: errorCount) { _, _ in

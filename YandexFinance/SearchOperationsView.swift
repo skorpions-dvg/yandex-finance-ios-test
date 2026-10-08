@@ -26,15 +26,16 @@ struct SearchOperationsView: View {
     }
 
     var body: some View {
+        // Computed once per redraw: the search goes through the whole history.
+        let found = results
         NavigationStack {
             List {
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     ContentUnavailableView("Используйте любые атрибуты", systemImage: "magnifyingglass",
                                            description: Text("Название, категория, назначение или сумма: «пятёрочка», «такси», «1555»."))
-                } else if results.isEmpty {
+                } else if found.isEmpty {
                     ContentUnavailableView.search(text: query)
                 } else {
-                    let found = results
                     Section("Найдено: \(found.count)") {
                         ForEach(found.prefix(300)) { operation in
                             if operation.isManual {
@@ -64,7 +65,8 @@ struct SearchOperationsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                    Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Закрыть")
                 }
             }
         }

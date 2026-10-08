@@ -41,7 +41,7 @@ struct OperationsHomeView: View {
     private var historyCount: Int {
         presentation.value("count:\(interval.start):\(interval.end)") {
             browser.history.allOperations.reduce(0) { sum, op in
-                if let date = BankDateParser.parse(op.occurredAt), interval.contains(date) {
+                if let date = BankDateParser.parse(op.occurredAt), date >= interval.start, date < interval.end {
                     return sum + 1
                 }
                 return sum
@@ -431,7 +431,7 @@ struct OperationsHomeView: View {
     private var dayGroups: [(day: Date, operations: [BankOperation])] {
         presentation.value("days:\(interval.start):\(interval.end)") {
             let dated = browser.history.allOperations.compactMap { op -> (BankOperation, Date)? in
-                guard let date = BankDateParser.parse(op.occurredAt), interval.contains(date) else { return nil }
+                guard let date = BankDateParser.parse(op.occurredAt), date >= interval.start, date < interval.end else { return nil }
                 return (op, date)
             }
             let byDay = Dictionary(grouping: dated) { Calendar.current.startOfDay(for: $0.1) }

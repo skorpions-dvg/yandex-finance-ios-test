@@ -126,9 +126,10 @@ struct ReceiptSection: View {
                         Button { showFiles = true } label: { Label("Документ", systemImage: "doc") }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .frame(width: 44, height: 32)
+                            .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
+                    .accessibilityLabel("Добавить чек")
                 }
                 if !files.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -293,6 +294,8 @@ private struct ReceiptViewer: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // The dark backdrop is always dark: the texts on it must be light on the light theme too.
+            .environment(\.colorScheme, .dark)
             .background(Color.black.opacity(0.9))
             .navigationTitle("Чек")
             .navigationBarTitleDisplayMode(.inline)
