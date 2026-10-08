@@ -30,6 +30,28 @@ struct FinanceEngineTests {
         require(!AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(86_400), afterSeconds: -1), "only at launch: a day away does not lock")
     }
 
+    static func testReceiptArchive() {
+        require(ReceiptArchive.crc32(Data("123456789".utf8)) == 0xCBF43926, "the standard CRC-32 check value")
+        let photo = Data([0xFF, 0xD8, 0x00, 0x01, 0x02, 0xFF, 0xD9])
+        let big = Data((0..<70_000).map { UInt8($0 % 251) })
+        let first = ReceiptLogic.fileName(id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!)
+        let second = ReceiptLogic.fileName(id: UUID(uuidString: "aaaaaaaa-2222-3333-4444-555555555555")!)
+        let zip = ReceiptArchive.make([(first, photo), (second, big), ("empty.bin", Data())])
+        let back = ReceiptArchive.read(zip)
+        require(back?.map(\.name) == [first, second, "empty.bin"], "the names come back in order")
+        require(back?[0].data == photo && back?[1].data == big && back?[2].data.isEmpty == true, "the contents come back exactly")
+        require(ReceiptArchive.read(ReceiptArchive.make([]))?.isEmpty == true, "an archive without files is valid and empty")
+        require(ReceiptArchive.read(Data("not a zip at all, just text".utf8)) == nil, "a text is not an archive")
+        require(ReceiptArchive.read(Data()) == nil, "an empty file is not an archive")
+        var damaged = zip
+        damaged[30 + first.count] ^= 0xFF
+        require(ReceiptArchive.read(damaged) == nil, "a changed byte is found by the checksum")
+        require(ReceiptArchive.read(zip.prefix(60)) == nil, "a cut file is refused")
+        // the closing record points at the right places (an ordinary ZIP reader needs it)
+        let tail = [UInt8](zip.suffix(22))
+        require(tail[0] == 0x50 && tail[1] == 0x4B && tail[2] == 0x05 && tail[3] == 0x06 && tail[10] == 3, "the closing record with three files")
+    }
+
     static func testReceiptParser() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -1955,6 +1977,7 @@ struct FinanceEngineTests {
         testRegularPayments()
         testReceipts()
         testReceiptParser()
+        testReceiptArchive()
         testAppLockLogic()
         testAccountMovements()
         testReportSeries()

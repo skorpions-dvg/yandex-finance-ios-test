@@ -611,6 +611,9 @@ struct SettingsView: View {
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
     @State private var exportedBackup: BackupDocument?
+    @State private var exportedType: UTType = .json
+    @State private var exportedName = ""
+    @State private var showReceiptsImporter = false
     @State private var showBackupImporter = false
     @State private var showCategoryImporter = false
     @State private var importedCategoryPlan: ExpenseCategoryImport?
@@ -710,12 +713,38 @@ struct SettingsView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 2) {
                         Button("Экспортировать резервную копию (JSON)") {
-                            do { exportedBackup = BackupDocument(data: try browser.backupData()) }
-                            catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
+                            do {
+                                let data = try browser.backupData()
+                                exportedType = .json
+                                exportedName = "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))"
+                                exportedBackup = BackupDocument(data: data)
+                            } catch { browser.message = "Не удалось подготовить копию: \(error.localizedDescription)" }
                         }
                         .disabled(!browser.storageAvailable || browser.busy)
                             .lineLimit(1).minimumScaleFactor(0.8)
                         Text("Операции, счета и правила в JSON.").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Button("Сохранить архив фото чеков (ZIP)") {
+                            if let archive = ReceiptStore.exportArchive() {
+                                exportedType = .zip
+                                exportedName = "FinanceTest-receipts-\(Date().formatted(.iso8601.year().month().day()))"
+                                exportedBackup = BackupDocument(data: archive.data)
+                            } else {
+                                browser.message = "Фото чеков на этом телефоне пока нет."
+                            }
+                        }
+                        .disabled(browser.busy)
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                        Text("Фото чеков одним файлом ZIP: в JSON они не входят.").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Button("Восстановить фото из архива") { showReceiptsImporter = true }
+                            .disabled(browser.busy)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Text("Вернуть фото чеков из ZIP, сделанного приложением.").font(.caption2).foregroundStyle(.secondary)
                     }
                     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                     VStack(alignment: .leading, spacing: 2) {
@@ -786,9 +815,19 @@ struct SettingsView: View {
         .id(resetToken)
         .onChange(of: resetToken) { _, _ in navigationPath = NavigationPath() }
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
-                      document: exportedBackup, contentType: .json,
-                      defaultFilename: "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))") { result in
+                      document: exportedBackup, contentType: exportedType,
+                      defaultFilename: exportedName) { result in
             if case .success = result { browser.message = "Резервная копия сохранена." }
+        }
+        .fileImporter(isPresented: $showReceiptsImporter, allowedContentTypes: [.zip]) { result in
+            guard case .success(let url) = result else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url), let added = ReceiptStore.restoreArchive(data) else {
+                browser.message = "Это не архив фото чеков, сделанный приложением."
+                return
+            }
+            browser.message = added == 0 ? "Все фото из архива уже есть на этом телефоне." : "Фото чеков восстановлено: \(added)."
         }
         .alert("Импорт PDF-выписок", isPresented: Binding(get: { browser.statementPreview != nil }, set: { _ in })) {
             Button("Применить") { browser.applyStatementImport() }
@@ -1011,7 +1050,7 @@ struct FinanceCategoryOperationsView: View {
 }
 
 struct BackupDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.json] }
+    static var readableContentTypes: [UTType] { [.json, .zip] }
     let data: Data
     init(data: Data) { self.data = data }
     init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }

@@ -34,6 +34,34 @@ enum ReceiptStore {
         return UIImage(contentsOfFile: folder.appendingPathComponent(name).path)
     }
 
+    /// The names of the photo files on this phone.
+    static var allFiles: [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { ReceiptLogic.isValid(fileName: $0) }
+    }
+
+    /// All photos as one ZIP, for a backup; nil when there are none.
+    static func exportArchive() -> (data: Data, count: Int)? {
+        var entries: [(name: String, data: Data)] = []
+        for name in allFiles.sorted() {
+            if let data = try? Data(contentsOf: folder.appendingPathComponent(name)) { entries.append((name, data)) }
+        }
+        return entries.isEmpty ? nil : (ReceiptArchive.make(entries), entries.count)
+    }
+
+    /// Puts the photos of an archive back; files that are already here stay. Returns how many were added, nil when the
+    /// file is not an archive of this app.
+    static func restoreArchive(_ zip: Data) -> Int? {
+        guard let entries = ReceiptArchive.read(zip) else { return nil }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var added = 0
+        for entry in entries where ReceiptLogic.isValid(fileName: entry.name) && UIImage(data: entry.data) != nil {
+            let url = folder.appendingPathComponent(entry.name)
+            if FileManager.default.fileExists(atPath: url.path) { continue }
+            if (try? entry.data.write(to: url, options: [.atomic, .completeFileProtection])) != nil { added += 1 }
+        }
+        return added
+    }
+
     static func delete(_ names: [String]) {
         for name in names where ReceiptLogic.isValid(fileName: name) {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))

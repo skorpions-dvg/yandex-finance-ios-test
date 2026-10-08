@@ -715,7 +715,9 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.match(settings, /Button\("Импортировать PDF-выписки"\)\s*\{ browser\.syncSixMonthsHistory\(\) \}/);
   assert.match(swift, /UIDocumentPickerViewController\(forOpeningContentTypes: \[\.pdf\], asCopy: true\)/);
   assert.match(swift, /picker\.allowsMultipleSelection = true/);
-  assert.match(settings, /document: exportedBackup, contentType: \.json/);
+  assert.match(settings, /document: exportedBackup, contentType: exportedType/);
+  assert.match(settings, /exportedType = \.json/);
+  assert.match(settings, /fileImporter\(isPresented: \$showReceiptsImporter, allowedContentTypes: \[\.zip\]\)/);
   assert.match(settings, /fileImporter\(isPresented: \$showBackupImporter, allowedContentTypes: \[\.json\]\)/);
   assert.match(settings, /fileImporter\(isPresented: \$showCategoryImporter, allowedContentTypes: \[\.json\]\)/);
   console.log('Stage 41.13: four Settings actions use PDF selection and JSON backup/category files.');
