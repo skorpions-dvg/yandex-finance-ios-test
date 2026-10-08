@@ -21,6 +21,9 @@ struct ManualOperationFormView: View {
     @State private var saved = false
     /// Photos of a receipt added to an operation that is not saved yet; they are attached when it is saved.
     @State private var pendingReceipts: [String] = []
+    /// What the reading of a receipt did, shown above the fields; `recognizing` while it is being read.
+    @State private var recognition: String?
+    @State private var recognizing = false
     @State private var showDateTime = false
     @State private var selectsTime = false
 
@@ -77,9 +80,23 @@ struct ManualOperationFormView: View {
                     ContentUnavailableView("Счетов пока нет", systemImage: "wallet.pass",
                                            description: Text("Добавьте счёт на главном экране в разделе «Все счета»."))
                 } else {
+                    if operation == nil {
+                        // A new operation starts with the receipt: scan it and the fields below are filled in.
+                        ReceiptSection(browser: browser, identity: ManualOperation.identityPrefix + operationID.uuidString,
+                                       pending: $pendingReceipts, onAdded: recognize)
+                        if recognizing || recognition != nil {
+                            Section {
+                                HStack(spacing: 10) {
+                                    if recognizing { ProgressView() }
+                                    Text(recognizing ? "Читаю чек…" : (recognition ?? "")).font(.footnote)
+                                }
+                            }.glassRows()
+                        }
+                    }
                     fields
-                    ReceiptSection(browser: browser, identity: ManualOperation.identityPrefix + operationID.uuidString,
-                                   pending: operation == nil ? $pendingReceipts : nil)
+                    if operation != nil {
+                        ReceiptSection(browser: browser, identity: ManualOperation.identityPrefix + operationID.uuidString)
+                    }
                 }
                 if operation != nil {
                     Section {
@@ -258,6 +275,53 @@ struct ManualOperationFormView: View {
         case "Переводы": return ("person.2.fill", .indigo)
         default: return ("square.grid.2x2.fill", .gray)
         }
+    }
+
+    /// Reads the pictures of a receipt and fills the empty fields of the form; the user checks them and saves.
+    private func recognize(_ images: [UIImage]) {
+        recognizing = true
+        recognition = nil
+        Task {
+            let parsed = await ReceiptRecognizer.recognize(images)
+            apply(parsed)
+            recognizing = false
+        }
+    }
+
+    private func apply(_ parsed: ParsedReceipt) {
+        guard !parsed.isEmpty else {
+            recognition = "Чек не распознан: введите данные вручную. Фото останется приложенным."
+            return
+        }
+        var filled: [String] = []
+        if kind == .expense {
+            if let total = parsed.totalKopecks, amountText.filter({ !$0.isWhitespace }).isEmpty {
+                amountText = (Decimal(total) / 100).description.replacingOccurrences(of: ".", with: ",")
+                filled.append("сумма")
+            }
+            if let merchant = parsed.merchant {
+                if note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    note = merchant
+                    filled.append("магазин")
+                }
+                if group == nil, let guess = browser.history.suggestedExpenseCategory(forMerchant: merchant) {
+                    group = guess.group
+                    subcategory = guess.subcategory
+                    filled.append("категория")
+                }
+            }
+            if accountID == nil, let id = browser.history.lastManualAccountID, eligibleAccounts.contains(where: { $0.id == id }) {
+                accountID = id
+                filled.append("счёт")
+            }
+        }
+        if let when = parsed.date, when <= Date() {
+            date = when
+            filled.append("дата")
+        }
+        var message = filled.isEmpty ? "Ничего нового не нашлось." : "Заполнено: " + filled.joined(separator: ", ") + ". Проверьте и сохраните."
+        if parsed.totalKopecks == nil { message += " Сумму не удалось прочитать: введите её вручную." }
+        recognition = message
     }
 
     private func save() {

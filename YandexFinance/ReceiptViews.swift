@@ -96,6 +96,8 @@ struct ReceiptSection: View {
     let identity: String
     /// Photos of an operation that is not saved yet; nil for an operation that exists.
     var pending: Binding<[String]>? = nil
+    /// Called with the pictures that were just added: the form of a new operation reads the receipt from them.
+    var onAdded: (([UIImage]) -> Void)? = nil
     @State private var screen: ReceiptScreen?
     @State private var showGallery = false
     @State private var showFiles = false
@@ -197,7 +199,7 @@ struct ReceiptSection: View {
                 ReceiptStore.delete([name])
             }
         }
-        if added == 0 && !images.isEmpty { failed = true }
+        if added == 0 && !images.isEmpty { failed = true } else if added > 0 { onAdded?(images) }
     }
 
     private func remove(_ name: String) {

@@ -30,6 +30,76 @@ struct FinanceEngineTests {
         require(!AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(86_400), afterSeconds: -1), "only at launch: a day away does not lock")
     }
 
+    static func testReceiptParser() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int = 12, _ min: Int = 0) -> Date {
+            calendar.date(from: DateComponents(year: y, month: m, day: d, hour: h, minute: min))!
+        }
+        let now = date(2032, 10, 8, 18, 0)
+
+        // The QR code of a cash receipt
+        let qr = ReceiptParser.parseQR("t=20321008T1425&s=175.50&fn=12345&i=12345&fp=1234567890&n=1", calendar: calendar)
+        require(qr?.totalKopecks == 17_550 && qr?.date == date(2032, 10, 8, 14, 25), "the QR code gives the sum and the moment")
+        let qrSeconds = ReceiptParser.parseQR("t=20321008T142507&s=1200&fn=1&i=2&fp=3&n=1", calendar: calendar)
+        require(qrSeconds?.totalKopecks == 120_000 && qrSeconds?.date == date(2032, 10, 8, 14, 25), "a sum without kopecks, a time with seconds")
+        require(ReceiptParser.parseQR("https://example.com/page?a=1", calendar: calendar) == nil, "a link is not a receipt")
+        require(ReceiptParser.parseQR("t=20321308T1425&s=10.00&fn=1", calendar: calendar)?.date == nil, "an impossible date is dropped")
+
+        // Money in text
+        require(ReceiptParser.amounts(in: "ИТОГО 1 234,56") == [123_456], "a space between thousands, a comma")
+        require(ReceiptParser.amounts(in: "ИТОГО 1234.56") == [123_456], "a point")
+        require(ReceiptParser.amounts(in: "Молоко 2 x 65.00 130.00") == [6_500, 13_000], "several sums in a line")
+        require(ReceiptParser.amounts(in: "К оплате 1 500 руб") == [150_000], "whole roubles with a word")
+        require(ReceiptParser.amounts(in: "ИНН 7700000000").isEmpty, "a long number is not a sum")
+
+        // A whole receipt (an invented one)
+        let receipt = ["ООО \"Ромашка Тест\"", "КАССОВЫЙ ЧЕК", "г. Тестоград, ул. Придуманная, 1", "Молоко 2 x 65.00 130.00",
+                       "Хлеб 1 x 45.50 45.50", "ИТОГО 175.50", "НДС 10% 15.95", "Наличные 200.00", "Сдача 24.50", "08.10.2032 14:25"]
+        let parsed = ReceiptParser.parseText(receipt, now: now, calendar: calendar)
+        require(parsed.totalKopecks == 17_550, "the total is the ИТОГО line, not the VAT, the cash or the change")
+        require(parsed.date == date(2032, 10, 8, 14, 25), "the date and the time")
+        require(parsed.merchant == "Ромашка Тест", "the shop without the legal form and quotes")
+
+        require(ReceiptParser.parseText(["Магазин Тест", "ИТОГО 1 200,00", "СКИДКА 100,00", "К ОПЛАТЕ 1 100,00"], now: now, calendar: calendar).totalKopecks == 110_000,
+                "the sum to pay wins over the sum before the discount")
+        require(ReceiptParser.parseText(["Магазин Тест", "ИТОГО", "2 345,00"], now: now, calendar: calendar).totalKopecks == 234_500, "the sum on the next line")
+        require(ReceiptParser.parseText(["Магазин Тест", "08.10.32 09:05", "ИТОГО 10.00"], now: now, calendar: calendar).date == date(2032, 10, 8, 9, 5), "a two-digit year")
+        require(ReceiptParser.parseText(["Магазин Тест", "08.10.2040 09:05", "ИТОГО 10.00"], now: now, calendar: calendar).date == nil, "a date from the future is not taken")
+        require(ReceiptParser.parseText(["Магазин Тест", "07.10.2032", "ИТОГО 10.00"], now: now, calendar: calendar).date == date(2032, 10, 7, 12, 0), "no time: noon")
+        require(ReceiptParser.parseText(["Магазин Тест", "08.10.2032", "ИТОГО 10.00"], now: now, calendar: calendar).date == now, "no time on a receipt of today: now")
+        require(ReceiptParser.parseText(["случайный текст"], now: now, calendar: calendar).totalKopecks == nil, "no sum in a text without one")
+        require(ReceiptParser.parseText(["АО Тандер", "ИТОГО 99.00"], now: now, calendar: calendar).merchant == "Магнит", "a chain by its legal name")
+        require(ReceiptParser.parseText(["КАССОВЫЙ ЧЕК", "МАГАЗИН ПРОДУКТЫ", "ИТОГО 99.00"], now: now, calendar: calendar).merchant == "Магазин Продукты", "capital letters become a name")
+        let merged = ReceiptParser.merge(qr: qr, text: ParsedReceipt(totalKopecks: 17_000, date: nil, merchant: "Тест"))
+        require(merged.totalKopecks == 17_550 && merged.date == date(2032, 10, 8, 14, 25) && merged.merchant == "Тест", "the QR wins for the sum and the date")
+
+        // The category and the account for the form
+        require(ReceiptParser.keywordCategory(merchant: "Магазин Продукты")?.subcategory == "Супермаркеты", "a grocery shop")
+        require(ReceiptParser.keywordCategory(merchant: "Кофейня Тест")?.subcategory == "Кафе и рестораны", "a coffee shop")
+        require(ReceiptParser.keywordCategory(merchant: "Ромашка Тест") == nil, "an unknown shop has no guess")
+        var history = SavedHistory()
+        let tree = history.categoryTree
+        let category = tree[1].categories[0]
+        history.categoryRules = [CategoryRule(payeeKey: FinancialEngine.payeeRuleKey("Ромашка Тест"), title: "Ромашка Тест", categoryID: category.id)]
+        let byRule = history.suggestedExpenseCategory(forMerchant: "Ромашка Тест")
+        require(byRule?.group == tree[1].name && byRule?.subcategory == category.name, "the rule of the user wins")
+        require(SavedHistory().suggestedExpenseCategory(forMerchant: "Кофейня Тест")?.group == "Еда", "the words work without rules")
+        require(SavedHistory().suggestedExpenseCategory(forMerchant: "Ромашка Тест") == nil, "nothing is guessed for an unknown shop")
+        let cash = Account(name: "Наличные", icon: "banknote", color: "green", startBalanceKopecks: 0, startDate: date(2032, 1, 1))
+        let card = Account(name: "Карта", icon: "creditcard", color: "blue", startBalanceKopecks: 0, startDate: date(2032, 1, 1), tracksBankCard: true)
+        var withAccounts = SavedHistory()
+        withAccounts.accounts = [cash, card]
+        require(withAccounts.lastManualAccountID == nil, "no manual operations, no account")
+        withAccounts.manualOperations = [
+            ManualOperation(kind: .expense, amountKopecks: 100, date: date(2032, 5, 1), accountID: card.id, group: "Еда", subcategory: "Супермаркеты"),
+            ManualOperation(kind: .expense, amountKopecks: 200, date: date(2032, 5, 2), accountID: cash.id, group: "Еда", subcategory: "Супермаркеты"),
+        ]
+        require(withAccounts.lastManualAccountID == cash.id, "the account of the latest manual operation")
+        withAccounts.manualOperations?.removeLast()
+        require(withAccounts.lastManualAccountID == nil, "a card account is not kept by hand")
+    }
+
     static func testReceipts() {
         let first = ReceiptLogic.fileName(id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!)
         let second = ReceiptLogic.fileName()
@@ -1884,6 +1954,7 @@ struct FinanceEngineTests {
         testReportEngine()
         testRegularPayments()
         testReceipts()
+        testReceiptParser()
         testAppLockLogic()
         testAccountMovements()
         testReportSeries()
