@@ -361,17 +361,15 @@ struct OperationsHomeView: View {
         return Button { showBudgets = true } label: {
             VStack(alignment: .leading, spacing: 6) {
                 if let total {
-                    ViewThatFits(in: .horizontal) {
-                        HStack {
-                            Label("Бюджет месяца: потрачено \(total.percent) %", systemImage: "target")
-                            Spacer()
-                            Text(total.caption)
-                        }.fixedSize(horizontal: true, vertical: false)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label("Бюджет месяца: потрачено \(total.percent) %", systemImage: "target")
-                            Text(total.caption)
-                        }.fixedSize(horizontal: false, vertical: true)
+                    // A plain row (a ViewThatFits here stretched the card and hid the title on the phone, 46.18): the texts wrap
+                    // under a large font instead of switching layouts.
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "target")
+                        Text("Бюджет месяца: потрачено \(total.percent) %")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(total.caption).multilineTextAlignment(.trailing)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                     .font(.caption).foregroundStyle(.primary)
                     BudgetBar(fraction: total.fraction, level: total.level, status: total).accessibilityHidden(true)
                 }

@@ -120,7 +120,7 @@ struct ManualOperationFormView: View {
                                         VStack(alignment: .leading, spacing: 6) {
                                             TextEditor(text: $itemsText)
                                                 .font(.caption)
-                                                .frame(height: 140)
+                                                .frame(height: min(380, max(140, CGFloat(goods) * 28 + 16)))
                                                 .scrollContentBackground(.hidden)
                                                 .padding(6)
                                                 .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 10))
