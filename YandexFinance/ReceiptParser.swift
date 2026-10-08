@@ -5,8 +5,8 @@ struct ParsedReceipt: Equatable {
     var totalKopecks: Int64?
     var date: Date?
     var merchant: String?
-    /// The rows the phone read from the pictures, top to bottom: shown in the form so that a wrong reading can be seen.
-    var readLines: [String] = []
+    /// The goods of the receipt, one name each (without prices): the owner corrects them in the form.
+    var items: [String] = []
 
     var isEmpty: Bool { totalKopecks == nil && date == nil && merchant == nil }
 }
@@ -76,12 +76,13 @@ enum ReceiptParser {
 
     /// The lines of a receipt from top to bottom, as they were read.
     static func parseText(_ lines: [String], now: Date = Date(), calendar: Calendar = .current) -> ParsedReceipt {
-        ParsedReceipt(totalKopecks: total(in: lines), date: date(in: lines, now: now, calendar: calendar), merchant: merchant(in: lines))
+        ParsedReceipt(totalKopecks: total(in: lines), date: date(in: lines, now: now, calendar: calendar), merchant: merchant(in: lines),
+                      items: items(in: lines))
     }
 
     /// The QR code is exact for the sum and the date; the text gives what it lacks and the shop.
     static func merge(qr: ParsedReceipt?, text: ParsedReceipt) -> ParsedReceipt {
-        ParsedReceipt(totalKopecks: qr?.totalKopecks ?? text.totalKopecks, date: qr?.date ?? text.date, merchant: text.merchant)
+        ParsedReceipt(totalKopecks: qr?.totalKopecks ?? text.totalKopecks, date: qr?.date ?? text.date, merchant: text.merchant, items: text.items)
     }
 
     /// What is looked for, in order: the sum to pay, what was paid by card (it is what the bank charges), the total.
@@ -139,11 +140,22 @@ enum ReceiptParser {
     }
 
     private static let skippedLines = ["кассовый", "чек", "добро пожаловать", "приход", "товарный", "спасибо", "ккт", "смена", "инн",
+                                       "цена", "кол-во", "итог",
                                        "тел.", "тел:", "tel", "www", "http", "касс", "адрес", "продажа", "оплата", "сайт", "email", "e-mail"]
     private static let chains: [(contains: String, name: String)] = [("тандер", "Магнит"), ("агроторг", "Пятёрочка")]
+    /// Shops known by their name anywhere on the receipt (the head of the table or the logo may be read badly).
+    private static let namedChains: [(words: [String], name: String)] = [
+        (["магнит", "тандер"], "Магнит"), (["пятёрочка", "пятерочка", "агроторг"], "Пятёрочка"),
+        (["перекрёсток", "перекресток"], "Перекрёсток"), (["ашан"], "Ашан"), (["дикси"], "Дикси"),
+        (["вкусвилл"], "ВкусВилл"), (["лукойл"], "Лукойл"), (["спар "], "Spar"),
+    ]
 
     /// The first line of the top of the receipt that looks like the name of a shop.
     static func merchant(in lines: [String]) -> String? {
+        for line in lines {
+            let lower = line.lowercased()
+            if let chain = namedChains.first(where: { $0.words.contains(where: { lower.contains($0) }) }) { return chain.name }
+        }
         for raw in lines.prefix(8) {
             let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             let lower = line.lowercased()
@@ -166,6 +178,53 @@ enum ReceiptParser {
         text = text.trimmingCharacters(in: CharacterSet(charactersIn: " \"«»“”'`.,:;-"))
         if text.uppercased() == text, text.contains(where: { $0.isLetter }) { text = text.lowercased().capitalized }
         return text
+    }
+
+    // MARK: Goods
+
+    /// The goods of a receipt: the lines between the head of the table and the first line of totals, without prices,
+    /// quantities and codes. A best effort on a printed text that is often read badly: the owner sees the result and
+    /// corrects it.
+    static func items(in lines: [String]) -> [String] {
+        let endWords = ["итого", "итог", "к оплате", "безналичн", "карта №", "карта n", "скидка", "ндс", "наличн", "сдача", "всего"]
+        let serviceWords = ["кассир", "смена", "ккт", "инн", "спасибо", "место расчет", "адрес", "тел.", "тел:", "чек", "приход", "www", "http"]
+        func letters(_ line: String) -> Int { line.filter { $0.isLetter }.count }
+        var start = 0
+        if let header = lines.firstIndex(where: { line in
+            let lower = line.lowercased()
+            return lower.contains("цена") && (lower.contains("кол") || lower.contains("итог") || lower.contains("сумма"))
+        }) {
+            start = header + 1
+        } else if let firstPrice = lines.firstIndex(where: { !amounts(in: $0).isEmpty }) {
+            start = (letters(lines[firstPrice]) < 3 && firstPrice > 0) ? firstPrice - 1 : firstPrice
+        } else {
+            return []
+        }
+        var result: [String] = []
+        for line in lines.dropFirst(start) {
+            let lower = line.lowercased()
+            if endWords.contains(where: { lower.contains($0) }) { break }
+            if serviceWords.contains(where: { lower.contains($0) }) { continue }
+            guard let name = itemName(line), result.last != name else { continue }
+            result.append(name)
+            if result.count >= 60 { break }
+        }
+        return result
+    }
+
+    /// The name of a good on a printed line: without the sum, the quantity, the code before the name and the number after it.
+    private static func itemName(_ raw: String) -> String? {
+        var text = raw
+        for (pattern, replacement) in [(#"\d+[.,]\d{2}"#, " "),
+                                       (#"(?i)(?<![\p{L}\d])\d+\s*шт\.?"#, " "),
+                                       (#"(?<![\p{L}\d])\d+\s*[xх×]\s"#, " "),
+                                       (#"^\s*\d{3,}\s+"#, ""),
+                                       (#"[:;]\s*\d+\s*$"#, "")] {
+            text = text.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+        }
+        text = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        text = text.trimmingCharacters(in: CharacterSet(charactersIn: " .,:;-–_*"))
+        return text.filter { $0.isLetter }.count >= 3 ? text : nil
     }
 
     // MARK: Category guess by words

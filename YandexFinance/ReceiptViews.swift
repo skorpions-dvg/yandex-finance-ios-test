@@ -107,34 +107,59 @@ struct ReceiptSection: View {
 
     private var files: [String] { pending?.wrappedValue ?? browser.history.receiptFiles(forIdentity: identity) }
 
+    /// The ways to add a receipt: the popover closes first, then the chosen screen opens (two presentations at once clash).
+    private var sourceChoices: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if VNDocumentCameraViewController.isSupported {
+                sourceRow("Сканировать", "doc.viewfinder") { screen = .scanner }
+            }
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                sourceRow("Камера", "camera") { screen = .camera }
+            }
+            sourceRow("Из галереи", "photo.on.rectangle") { showGallery = true }
+            sourceRow("Документ", "doc") { showFiles = true }
+        }
+        .padding(.vertical, 6)
+        .frame(minWidth: 230)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    private func sourceRow(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button {
+            showSources = false
+            Task {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                action()
+            }
+        } label: {
+            Label(title, systemImage: icon)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     var body: some View {
         let files = self.files
         Section {
             VStack(alignment: .leading, spacing: 12) {
-                // The whole row opens a sheet of choices from the bottom: a menu fastened to the row cut its title off while
-                // it closed, and a menu on the dots alone left the row itself dead.
+                // The whole row is the button, and the choices come out of the dots: the popover is fastened to them, and the
+                // title of the row is not part of it (a menu on the whole row cut the title off while it closed).
                 Button { showSources = true } label: {
                     HStack {
                         Label("Добавить чек", systemImage: "doc.badge.plus")
                         Spacer()
                         Image(systemName: "ellipsis").foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44)
+                            .popover(isPresented: $showSources, arrowEdge: .top) { sourceChoices }
                     }
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Добавить чек")
-                .confirmationDialog("Добавить чек", isPresented: $showSources, titleVisibility: .visible) {
-                    if VNDocumentCameraViewController.isSupported {
-                        Button("Сканировать") { screen = .scanner }
-                    }
-                    if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                        Button("Камера") { screen = .camera }
-                    }
-                    Button("Из галереи") { showGallery = true }
-                    Button("Документ") { showFiles = true }
-                    Button("Отмена", role: .cancel) {}
-                }
                 if !files.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {

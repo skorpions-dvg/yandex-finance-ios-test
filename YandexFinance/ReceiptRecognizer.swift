@@ -11,16 +11,23 @@ enum ReceiptRecognizer {
     nonisolated private static func read(_ images: [UIImage]) -> ParsedReceipt {
         var qr: ParsedReceipt?
         var lines: [String] = []
+        var nameLines: [String] = []
         for image in images {
             guard let cgImage = image.cgImage else { continue }
             let text = VNRecognizeTextRequest()
             text.recognitionLevel = .accurate
             text.recognitionLanguages = ["ru-RU", "en-US"]
             text.usesLanguageCorrection = false
+            // The goods are words: a second pass with the correction of words reads their names better than the exact pass,
+            // which is kept for the digits.
+            let words = VNRecognizeTextRequest()
+            words.recognitionLevel = .accurate
+            words.recognitionLanguages = ["ru-RU", "en-US"]
+            words.usesLanguageCorrection = true
             let codes = VNDetectBarcodesRequest()
             codes.symbologies = [.qr]
             let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation(image.imageOrientation), options: [:])
-            try? handler.perform([text, codes])
+            try? handler.perform([text, words, codes])
             if qr == nil {
                 for code in codes.results ?? [] {
                     if let payload = code.payloadStringValue, let parsed = ReceiptParser.parseQR(payload) {
@@ -31,9 +38,11 @@ enum ReceiptRecognizer {
             }
             if qr == nil { qr = qrInParts(of: cgImage) }
             lines += rows(from: text.results ?? [])
+            nameLines += rows(from: words.results ?? [])
         }
         var result = ReceiptParser.merge(qr: qr, text: ReceiptParser.parseText(lines))
-        result.readLines = lines
+        let corrected = ReceiptParser.items(in: nameLines)
+        if !corrected.isEmpty { result.items = corrected }
         return result
     }
 

@@ -554,6 +554,26 @@ struct FinanceEngineTests {
         require(held.lastManualAccountID == nil, "no manual account to suggest: Save follows the bank")
     }
 
+    /// The goods of a receipt and the shop found anywhere on it (stage 46.12).
+    static func testReceiptItems() {
+        let table = ["МАГАЗИН ТЕСТ", "ЦЕНА ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ", "СКРЕПЫШ Сахарная вата шарик 16г(Россия):10", "36.99 29.99 1ШТ. 29.99",
+                     "4895 BLANCHE BIERE Пиво нап тёмн 174.99", "174.99 174.99 1ШТ. 174.99", "Карта № ****-0000", "Скидка по карте Магнит 107.00",
+                     "ИТОГ БЕЗ СКИДОК 1763.87", "ИТОГ 1656.87"]
+        require(ReceiptParser.items(in: table) == ["СКРЕПЫШ Сахарная вата шарик 16г(Россия)", "BLANCHE BIERE Пиво нап тёмн"],
+                "the goods of a table with a head: no prices, quantities, codes or the numbers after the name")
+        require(ReceiptParser.items(in: ["МАГАЗИН ТЕСТ", "Молоко 2 x 65.00 130.00", "Хлеб 1 x 45.50 45.50", "ИТОГО 175.50", "Наличные 200.00"]) == ["Молоко", "Хлеб"],
+                "the goods of a list without a head: from the first line with a price to the totals")
+        require(ReceiptParser.items(in: ["случайный текст"]).isEmpty && ReceiptParser.items(in: []).isEmpty, "no goods in a text without prices")
+        require(ReceiptParser.items(in: ["Товар один 10.00", "Товар один 10.00", "Товар два 20.00", "ИТОГО 40.00"]) == ["Товар один", "Товар два"],
+                "a line read twice in a row is one good")
+        require(ReceiptParser.merchant(in: table) == "Магнит", "the shop is found by its name on a line below the head")
+        require(ReceiptParser.merchant(in: ["ЦЕНА СО СКИДКОЙ КОЛ-ВО", "Товар 1.00", "ИТОГ 1.00"]) == nil, "the head of a table is not the name of a shop")
+        require(ReceiptParser.merchant(in: ["КАССОВЫЙ ЧЕК", "МАГАЗИН ПРОДУКТЫ", "ИТОГО 99.00"]) == "Магазин Продукты", "an unknown shop keeps its printed name")
+        let history = SavedHistory()
+        require(history.suggestedExpenseCategory(forMerchant: "", text: "Молоко Хлеб")?.group == "Еда", "the goods tell the category when the shop does not")
+        require(history.suggestedExpenseCategory(forMerchant: "Магнит")?.group == "Еда", "the category of a known chain")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3103,6 +3123,7 @@ struct FinanceEngineTests {
         testHistoryPeriodStorage()
         testReceiptTotals()
         testSaveAccountAndOtherSides()
+        testReceiptItems()
         testRegularPayments()
         testReceipts()
         testReceiptParser()
