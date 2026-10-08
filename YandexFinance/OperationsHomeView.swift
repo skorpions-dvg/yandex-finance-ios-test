@@ -250,16 +250,18 @@ struct OperationsHomeView: View {
                 if let icon = icon {
                     Image(systemName: icon)
                 }
-                Text(title)
+                Text(title).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             .font(.subheadline)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+            .frame(minHeight: 44)
             .foregroundStyle(selected ? Color.accentColor : Color.primary)
             .background(selected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.15),
                         in: Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
     
     // MARK: - Summary
@@ -353,22 +355,30 @@ struct OperationsHomeView: View {
     private func budgetLine(_ statuses: [BudgetStatus]) -> some View {
         let total = statuses.first { $0.group == nil }
         let notices = BudgetEngine.notices(statuses)
+        var spoken = total.map { [BudgetBar.accessibilityValue($0)] } ?? []
+        spoken += notices.map(\.text)
+        if spoken.isEmpty { spoken = ["Всё в пределах лимитов"] }
         return Button { showBudgets = true } label: {
             VStack(alignment: .leading, spacing: 6) {
                 if let total {
-                    HStack {
-                        Image(systemName: "target")
-                        Text("Бюджет месяца: потрачено \(total.percent) %")
-                        Spacer()
-                        Text(total.caption).foregroundStyle(total.level == .calm ? Color.secondary : total.level.color)
+                    ViewThatFits(in: .horizontal) {
+                        HStack {
+                            Label("Бюджет месяца: потрачено \(total.percent) %", systemImage: "target")
+                            Spacer()
+                            Text(total.caption)
+                        }.fixedSize(horizontal: true, vertical: false)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Бюджет месяца: потрачено \(total.percent) %", systemImage: "target")
+                            Text(total.caption)
+                        }.fixedSize(horizontal: false, vertical: true)
                     }
-                    .font(.caption).foregroundStyle(.secondary)
-                    BudgetBar(fraction: total.fraction, level: total.level)
+                    .font(.caption).foregroundStyle(.primary)
+                    BudgetBar(fraction: total.fraction, level: total.level, status: total).accessibilityHidden(true)
                 }
                 ForEach(notices) { notice in
                     HStack {
                         if total == nil { Image(systemName: "target") }
-                        Text(notice.text).foregroundStyle(notice.level.color)
+                        Text(notice.text).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                     }
                     .font(.caption)
                 }
@@ -384,6 +394,10 @@ struct OperationsHomeView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Бюджет месяца")
+        .accessibilityValue(spoken.joined(separator: ". "))
+        .accessibilityHint("Открыть бюджеты")
     }
 
     private func reserveColor(_ reserve: Int64) -> Color {
@@ -601,6 +615,7 @@ private struct CustomDatesSheet: View {
                     } label: {
                         Image(systemName: "xmark")
                     }
+                    .accessibilityLabel("Закрыть")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -615,9 +630,10 @@ private struct CustomDatesSheet: View {
                         Image(systemName: "checkmark")
                             .foregroundStyle(Color.accentColor)
                     }
+                    .accessibilityLabel("Применить")
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 }

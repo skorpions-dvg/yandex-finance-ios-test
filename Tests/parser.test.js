@@ -6,6 +6,59 @@ const source = fs.readFileSync(path.join(__dirname, '../YandexFinance/Collector.
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 new AsyncFunction('mode', source); // Validate the entire injected async function.
 const parse = new Function(source.split('\nconst found = new Map();')[0] + '\nreturn parseCard;')();
+
+// Stage 53: fictional independent cases. Run --known53 separately for desired behaviour that currently fails.
+function audit53BankRows(knownOnly = false) {
+  const makeCard = (title, amount, details = '') => `${title}\nСегодня, 10:30\n${amount} ₽\nПодробнее\nСтатус\nВыполнено\n${details}`;
+  const cases = [
+    ['interest-row', 'Выплата процентов Тест', '+2,03', 'Выплата процентов Тест +2,03 ₽ Счёт в Сейвах', '', 'Счёт в Сейвах', 'interest_income'],
+    ['interest-destination', 'Начислены проценты Тест', '+3,17', 'Начислены проценты Тест +3,17 ₽', 'Пополнение\nНа счёт в Сейвах', 'Счёт в Сейвах', 'interest_income'],
+    ['to-card-leg', 'Карта Пэй → Счёт в Сейвах', '−200,00', 'Счёт в Сейвах −200,00 ₽ Карта Пэй', '', 'Карта Пэй', 'internal_transfer'],
+    ['to-save-leg', 'Карта Пэй → Счёт в Сейвах', '+200,00', 'Счёт в Сейвах +200,00 ₽ Счёт в Сейвах', '', 'Счёт в Сейвах', 'internal_transfer'],
+    ['from-save-leg', 'Счёт в Сейвах → Карта Пэй', '−75,00', 'Карта Пэй −75,00 ₽ Счёт в Сейвах', '', 'Счёт в Сейвах', 'internal_transfer'],
+    ['from-card-leg', 'Счёт в Сейвах → Карта Пэй', '+75,00', 'Карта Пэй +75,00 ₽ Карта Пэй', '', 'Карта Пэй', 'internal_transfer'],
+    ['split-shop', 'Магазин Рассвет Тест', '−90,00', 'Магазин Рассвет Тест −90,00 ₽ Сплит', '', 'Сплит', 'expense'],
+    ['points-shop', 'Магазин Радуга Тест', '−12,00', 'Магазин Радуга Тест −12,00 ₽ Баллы Плюса', '', 'Баллы Плюса', 'expense'],
+    ['refund', 'Возврат покупки Тест', '+10,00', 'Возврат покупки Тест +10,00 ₽ Карта Пэй', 'Категория\nВозврат', 'Карта Пэй', 'refund'],
+    ['bonus-icon', 'Магазин Рассвет Тест', '−83,00', 'Магазин Рассвет Тест −83,00 ₽ +60 Карта Пэй', '', 'Карта Пэй', 'expense'],
+    ['explicit-card', 'Магазин Север Тест', '−80,00', 'Магазин Север Тест −80,00 ₽ Сплит', 'Способ оплаты\nКарта *2733', 'Карта *2733', 'expense'],
+    ['explicit-save', 'Выплата процентов Тест', '+1,00', 'Выплата процентов Тест +1,00 ₽ Карта Пэй', 'Способ оплаты\nСчёт в Сейвах', 'Счёт в Сейвах', 'interest_income'],
+    ['unlabelled', 'Магазин Север Тест', '−9,00', 'Магазин Север Тест −9,00 ₽', '', null, 'expense'],
+    ['missing-row-sum', 'Магазин Север Тест', '−9,01', 'Магазин Север Тест', '', null, 'expense'],
+    ['merchant-split-before-sum', 'Магазин Тест Сплит', '−19,00', 'Магазин Тест Сплит −19,00 ₽', '', null, 'expense'],
+    ['merchant-card-before-sum', 'Магазин Тест Карта Пэй', '−18,00', 'Магазин Тест Карта Пэй −18,00 ₽', '', null, 'expense'],
+    ['merchant-points-before-sum', 'Магазин Тест Баллы Плюса', '−17,00', 'Магазин Тест Баллы Плюса −17,00 ₽', '', null, 'expense'],
+    ['merchant-split-no-sum', 'Магазин Тест Сплит', '−19,01', 'Магазин Тест Сплит', '', null, 'expense', true],
+    ['merchant-card-no-sum', 'Магазин Тест Карта Пэй', '−18,01', 'Магазин Тест Карта Пэй', '', null, 'expense', true],
+    ['merchant-points-no-sum', 'Магазин Тест Баллы Плюса', '−17,01', 'Магазин Тест Баллы Плюса', '', null, 'expense', true],
+  ];
+  let passed = 0;
+  const failures = [];
+  for (const [id, title, sum, row, details, method, kind, known] of cases) {
+    if (!!known !== knownOnly) continue;
+    const reference = {type: 'DEPOT', chainId: `audit53-${id}`, operationId: `audit53-${id}`, operationTimestamp: '2033-03-10T10:30:00Z'};
+    const address = 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify([reference]));
+    const actual = parse(address, makeCard(title, sum, details), row, new Date('2033-03-11T12:00:00Z'));
+    try {
+      assert.equal(actual.paymentMethod, method, id + ': account label must not come from the merchant name');
+      assert.equal(actual.kind, kind, id + ': financial nature');
+      assert.equal(actual.description, title, id + ': title is preserved');
+      assert.equal(actual.amountKopecks, Math.round(Number(sum.replace('−', '-').replace(',', '.')) * 100), id + ': exact amount');
+      passed++;
+    } catch (error) {
+      if (!knownOnly) throw error;
+      failures.push({id, expected: method, actual: actual.paymentMethod, row, card: makeCard(title, sum, details)});
+    }
+  }
+  console.log('BANK53 ' + JSON.stringify({passed, failures}));
+  return failures;
+}
+if (process.argv.includes('--known53')) {
+  const failures = audit53BankRows(true);
+  process.exitCode = failures.length ? 1 : 0;
+} else {
+  audit53BankRows();
+}
 const url = refs => 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify(refs));
 const ref = {type: 'DEPOT', chainId: 'test-chain', operationId: 'test-operation', operationTimestamp: '2026-09-18T08:15:31.705Z', chainVersionIds: ['v1']};
 const purchase = 'Тестовый магазин\nСегодня, 06:11\n−1 234,56 ₽\nПодробнее\nКатегория\nРазвлечения\nMCC\n5816\nСтатус\nВыполнено';

@@ -16,15 +16,16 @@ struct DataAndCopiesView: View {
     @State private var notice: String?
     /// The moment of the last tap here: only a message that follows a tap is shown, not the ones of the background sync.
     @State private var tappedAt: Date?
+    /// The names of the photo files, nil while they are being read or when reading failed.
+    @State private var photoNames: [String]?
+    @State private var photoError: String?
     @State private var confirmOrphans = false
-    /// Changes when files were deleted: the folder is not observed, so the screen is asked to count again.
-    @State private var photoRefresh = 0
+
+    private var photos: Int? { photoNames?.count }
+    /// Photos that no operation points to.
+    private var orphans: [String] { photoNames.map { ReceiptLogic.orphanFiles(all: $0, referenced: browser.history.receipts) } ?? [] }
 
     var body: some View {
-        let _ = photoRefresh
-        let allPhotos = ReceiptStore.allFiles
-        let photos = allPhotos.count
-        let orphans = ReceiptLogic.orphanFiles(all: allPhotos, referenced: browser.history.receipts)
         List {
             Section {
                 Button("Сохранить копию (JSON)") { run(exportBackup) }
@@ -37,24 +38,29 @@ struct DataAndCopiesView: View {
                 Text("Операции, счета, категории и правила. Фото чеков в неё не входят.")
             }.glassRows()
             Section {
-                LabeledContent("Фото на телефоне", value: String(photos))
+                LabeledContent("Фото на телефоне", value: photos.map { String($0) } ?? (photoError == nil ? "Проверяем…" : "Ошибка чтения"))
+                if photoError != nil { Button("Повторить чтение списка фото") { refreshPhotos() } }
                 if !orphans.isEmpty {
-                    LabeledContent("Привязано к операциям", value: String(photos - orphans.count))
+                    LabeledContent("Привязано к операциям", value: String((photos ?? 0) - orphans.count))
                     Button("Удалить фото без операции (\(orphans.count))", role: .destructive) { confirmOrphans = true }
                 }
                 Button("Сохранить архив (ZIP)") { run(exportReceipts) }
-                    .disabled(photos == 0 || browser.busy)
+                    .disabled(photos == nil || photos == 0 || browser.busy)
                 Button("Восстановить фото из архива") { run(restoreReceipts) }
                     .disabled(browser.busy)
             } header: {
                 Text("Фото чеков")
             } footer: {
-                Text(photos == 0 ? "Фото ещё нет: их добавляют в операции, в разделе «Чек»."
-                                 : "ZIP сохраняйте рядом с JSON: iCloud Drive → Finance Test.")
+                if let photoError {
+                    Text(photoError).foregroundStyle(.primary)
+                } else {
+                    Text(photos == 0 ? "Фото ещё нет: их добавляют в операции, в разделе «Чек»."
+                                     : "ZIP сохраняйте рядом с JSON: iCloud Drive → Finance Test.")
+                }
             }.glassRows()
             Section {
                 Button("Собрать чеки для проверки") { run(collectReceipts) }
-                    .disabled(photos == 0 || browser.busy)
+                    .disabled(photos == nil || photos == 0 || browser.busy)
             } header: {
                 Text("Улучшение чтения чеков")
             } footer: {
@@ -74,7 +80,7 @@ struct DataAndCopiesView: View {
         .confirmationDialog("Удалить фото без операции?", isPresented: $confirmOrphans, titleVisibility: .visible) {
             Button("Удалить \(orphans.count)", role: .destructive) {
                 ReceiptStore.delete(orphans)
-                photoRefresh += 1
+                refreshPhotos()
             }
             Button("Отмена", role: .cancel) {}
         } message: {
@@ -83,7 +89,10 @@ struct DataAndCopiesView: View {
         .appSurface()
         .navigationTitle("Данные и копии")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { refreshPhotos() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in refreshPhotos() }
         .onChange(of: browser.message) { _, text in
+            refreshPhotos()
             guard !text.isEmpty, let tappedAt, Date().timeIntervalSince(tappedAt) < 180 else { return }
             notice = text
         }
@@ -96,5 +105,15 @@ struct DataAndCopiesView: View {
         tappedAt = Date()
         browser.message = ""
         action()
+    }
+
+    private func refreshPhotos() {
+        do {
+            photoNames = try ReceiptStore.photoFiles()
+            photoError = nil
+        } catch {
+            photoNames = nil
+            photoError = "Не удалось прочитать список фото чеков. Разблокируйте телефон и попробуйте ещё раз."
+        }
     }
 }
