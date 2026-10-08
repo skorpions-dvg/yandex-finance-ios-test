@@ -92,7 +92,7 @@ struct ForecastDetailView: View {
                 // A hint, not the reserve: the smallest irregular income of the last full months that has not come yet.
                 if forecast.cautiousIrregularLeftKopecks > 0 {
                     let withIncome = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: forecast, includeIrregular: true)
-                    let month = forecast.cautiousIrregularMonth.map { " (как в \($0.formatted(.dateTime.month(.wide))))" } ?? ""
+                    let month = forecast.cautiousIrregularMonth.map { " (как в \(Self.monthInPrepositional($0)))" } ?? ""
                     Label("Если придёт хотя бы минимум обычных поступлений\(month): ≈ \(signedRubles(withIncome))", systemImage: "arrow.down.circle")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -254,6 +254,12 @@ struct ForecastDetailView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.glassRows()
+    }
+
+    /// «в августе»: the month in the prepositional case (the formatter gives «август»).
+    static func monthInPrepositional(_ date: Date, calendar: Calendar = .current) -> String {
+        let names = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре", "октябре", "ноябре", "декабре"]
+        return names[(calendar.component(.month, from: date) - 1 + 12) % 12]
     }
 
     /// The line of the range: «весь прошлый разброс за N мес.: от … до …», or why there is none yet.
