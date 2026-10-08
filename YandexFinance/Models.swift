@@ -121,8 +121,8 @@ struct SavedHistory: Codable {
     /// Photos of receipts: operation identity -> names of the files in the receipts folder. The photos themselves stay
     /// on the device (they are not part of the JSON backup); a name whose file is missing is shown as unavailable.
     var receipts: [String: [String]]?
-    /// What the owner confirmed about incoming operations the engine left «unknown»: operation identity -> "income"
-    /// or "own". It never changes an operation that is already named.
+    /// What the owner confirmed about incoming operations the engine left «unknown»: operation identity -> "income",
+    /// "refund" or "own". It never changes an operation that is already named.
     var operationNatures: [String: String]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
@@ -900,9 +900,16 @@ extension SavedHistory {
 
 enum ConfirmedNature: String, CaseIterable {
     case income
+    case refund
     case own
 
-    var title: String { self == .income ? "Это доход" : "Перемещение между своими счетами" }
+    var title: String {
+        switch self {
+        case .income: return "Это доход"
+        case .refund: return "Возврат покупки"
+        case .own: return "Перемещение между своими счетами"
+        }
+    }
 }
 
 extension SavedHistory {

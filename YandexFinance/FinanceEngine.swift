@@ -49,8 +49,8 @@ struct FinancialOperationInput {
     var incomeCategoryName: String? = nil
     /// Statement source marker; deposit rows never move the bank card.
     var paymentMethod: String? = nil
-    /// What the owner confirmed about an incoming operation the engine could not name: "income" or "own" (a move
-    /// between own accounts). It decides only operations that would otherwise stay unknown.
+    /// What the owner confirmed about an incoming operation the engine could not name: "income", "refund" (the return
+    /// of a purchase) or "own" (a move between own accounts). It decides only operations that would otherwise stay unknown.
     var confirmedNature: String? = nil
 }
 
@@ -280,7 +280,8 @@ enum FinancialEngine {
             return FinancialAssessment(type: .income, reason: "Внесение наличных считается доходом (пополнение), а не возвратом покупки.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
         let refundText = !transferHint && containsAny([description, purpose].joined(separator: " "),
-                                     ["возврат покупки", "возврат средств", "возврат оплаты", "возврат платежа", "возврат по операции"])
+                                     ["возврат покупки", "возврат средств", "возврат оплаты", "возврат платежа", "возврат по операции",
+                                      "отмена оплаты", "отмена покупки", "отмена платежа"])
         let explicitRefund = kind == "refund" || category == "возврат" || category.contains("возврат покупки") || refundText
         if explicitRefund && amount > 0 && !split {
             return FinancialAssessment(type: .refund, reason: "Возврат уменьшает расходы, а не считается заработком.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: amount)
@@ -369,6 +370,9 @@ enum FinancialEngine {
         if amount > 0, let confirmed = operation.confirmedNature {
             if confirmed == "income" {
                 return FinancialAssessment(type: .income, reason: "Вы подтвердили, что это доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+            }
+            if confirmed == "refund" {
+                return FinancialAssessment(type: .refund, reason: "Вы подтвердили, что это возврат покупки: он уменьшает расходы.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: amount)
             }
             if confirmed == "own" {
                 return FinancialAssessment(type: .internalTransfer, reason: "Вы подтвердили, что это перемещение между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)

@@ -100,6 +100,18 @@ struct FinanceEngineTests {
         asOwn.confirmedNature = "own"
         let own = FinancialEngine.classify(asOwn)
         require(own.type == .internalTransfer && own.incomeContributionKopecks == 0 && own.expenseContributionKopecks == 0, "confirmed as own: a move, not income")
+        var asRefund = plain
+        asRefund.confirmedNature = "refund"
+        let refund = FinancialEngine.classify(asRefund)
+        require(refund.type == .refund && refund.refundContributionKopecks == 5_100 && refund.incomeContributionKopecks == 0, "confirmed as a refund: it reduces the expenses")
+        // a cancelled payment: the money was taken and came back
+        let cancelled = op(22_700, kind: "unclassified_income", description: "Отмена оплаты услуг SHOP*4215*DOSTAVKA", date: "2032-06-02T12:00:00Z")
+        let charge = op(-22_700, kind: "expense", category: "Тест", description: "Оплата услуг SHOP*4215*DOSTAVKA", date: "2032-06-02T11:00:00Z")
+        require(FinancialEngine.classify(cancelled).type == .refund, "a cancellation of a payment is a refund without any confirmation")
+        let net = FinancialEngine.report([charge, cancelled], in: DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, end: BankDateParser.parse("2032-07-01T00:00:00Z")!))
+        require(net.netExpenseKopecks == 0 && net.incomeKopecks == 0, "the charge and its cancellation cancel out and are not income")
+        require(FinancialEngine.classify(op(-3_000, kind: "expense", category: "Тест", description: "Отмена оплаты услуг SHOP", date: "2032-06-02T12:00:00Z")).type == .expense,
+                "only an incoming cancellation is a refund")
         // it never changes what the engine already named
         var salary = op(5_200, kind: "unclassified_income", category: "Зарплата", description: "Зарплата за месяц", date: "2032-06-02T10:00:00Z")
         salary.confirmedNature = "own"
@@ -120,6 +132,9 @@ struct FinanceEngineTests {
         let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, end: BankDateParser.parse("2032-07-01T00:00:00Z")!)
         require(FinancialEngine.report(inputs, in: interval, taxonomy: history.expenseTaxonomy).incomeKopecks == 5_100, "the confirmed income is in the report")
         require(history.setIncomeCategory("Прочие доходы", for: unknown, forSender: false), "a confirmed income can be given an income category")
+        require(history.confirmNature(.refund, for: unknown), "it can be confirmed as a refund")
+        let refundReport = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
+        require(refundReport.incomeKopecks == 0 && refundReport.refundsKopecks == 5_100, "a confirmed refund reduces the expenses, it is not income")
         require(history.confirmNature(.own, for: unknown), "the choice can be changed")
         let ownReport = FinancialEngine.report(history.financialInputs, in: interval, taxonomy: history.expenseTaxonomy)
         require(ownReport.incomeKopecks == 0, "confirmed as own: nothing comes into the income")
