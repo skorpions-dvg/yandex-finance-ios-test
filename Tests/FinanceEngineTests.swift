@@ -1042,9 +1042,9 @@ struct FinanceEngineTests {
     }
 
     /// A large synthetic history (12 000 rows over 13 months): the forecast must come out the same however it is computed, and
-    /// its time is printed (the speed is a goal of the forecast block, not a hard limit of this test). The expected numbers changed
-    /// once on purpose, in 46.22: the pace and the baseline are built from purchases, not from spending net of refunds (this
-    /// history has refunds), so the variable part is a little higher than before.
+    /// its time is printed (the speed is a goal of the forecast block, not a hard limit of this test). In 46.22 the numbers rose a
+    /// little (the pace from purchases, not net of refunds); since 46.23 they are those of 46.20 again: every refund of this history
+    /// returns a purchase of the same shop and month, and such a pair leaves the pace altogether.
     static func testForecastSpeed() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -1084,7 +1084,7 @@ struct FinanceEngineTests {
                          forecast.typicalIrregularIncomeKopecks, forecast.irregularIncomeSoFarKopecks, forecast.oneOffKopecks,
                          Int64(forecast.upcoming.count), Int64(forecast.historyMonths), Int64(forecast.baselineMonths.count)]
         print("FORECAST-SPEED: \(history.count) rows, best of 3 = \(Int(best * 1000)) ms, signature \(signature)")
-        require(signature == [173380000, 300000000, 259858000, 257309050, 261610300, 300000000, 300000000, 300000000, 300000000, 0, 0, 6, 6], "the forecast of a large history is unchanged by speed-ups: \(signature)")
+        require(signature == [173380000, 300000000, 259228000, 256469050, 260875300, 300000000, 300000000, 300000000, 300000000, 0, 0, 6, 6], "the forecast of a large history is unchanged by speed-ups: \(signature)")
     }
 
     static func testMonthForecast() {
@@ -1334,6 +1334,49 @@ struct FinanceEngineTests {
         let small = FinancialEngine.monthForecast(current + [op(300, kind: "refund", category: "Возврат", description: "Возврат учебный", date: iso(4, 2))],
                                                   now: at(4, 10), calendar: calendar)
         require(small.projectedExpenseKopecks == small.spentKopecks + small.futureExpenseKopecks, "a refund smaller than the purchases leaves the total as spent plus future")
+    }
+
+    /// A purchase returned in the same month leaves the pace (decision A); a month saved only from its second half is not
+    /// history, and with fewer than two full months there is «мало данных» (decision 3); the line of a baseline month adds up.
+    static func testForecastCompletenessAndReturns() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: 12))! }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2032-%02d-%02dT12:00:00Z", month, day) }
+        func buy(_ month: Int, _ day: Int, _ amount: Int64, _ shop: String = "Продукты учебные") -> FinancialOperationInput {
+            op(-amount, kind: "expense", category: "Супермаркеты", description: shop, date: iso(month, day))
+        }
+        // decision 3: a lone old row and two sparse months before a complete one (the case of GPT, stage 54)
+        var sparse = [buy(1, 1, 1_000, "Начало учебного архива")]
+        for month in [2, 3] { sparse += [20, 21, 22].map { buy(month, $0, 1_000) } }
+        sparse += stride(from: 1, through: 29, by: 2).map { buy(4, $0, 1_000) }
+        let early = FinancialEngine.monthForecast(sparse, now: at(5, 1), calendar: calendar)
+        require(early.historyMonths == 1 && !early.hasEnoughHistory, "months saved only from their second half are not history: \(early.historyMonths)")
+        let steady = (1...4).flatMap { month in stride(from: 1, through: 28, by: 3).map { buy(month, $0, 1_000) } }
+        let full = FinancialEngine.monthForecast(steady, now: at(5, 10), calendar: calendar)
+        require(full.historyMonths == 4 && full.hasEnoughHistory, "a continuous history counts every full month")
+        // decision A: a purchase returned in the same month does not raise the pace
+        let base = steady + [buy(5, 2, 1_000)]
+        let returned = base + [buy(5, 3, 30_000, "Магазин техники учебный"),
+                               op(30_000, kind: "refund", category: "Возврат", description: "Магазин техники учебный", date: iso(5, 6))]
+        let plain = FinancialEngine.monthForecast(base, now: at(5, 10), calendar: calendar)
+        let back = FinancialEngine.monthForecast(returned, now: at(5, 10), calendar: calendar)
+        require(back.futureExpenseKopecks == plain.futureExpenseKopecks, "a purchase returned the same month leaves the pace: \(back.futureExpenseKopecks) vs \(plain.futureExpenseKopecks)")
+        require(back.spentKopecks == plain.spentKopecks && back.refundsKopecks == 30_000, "it is spent and returned, the refund is shown")
+        // a refund of a purchase made in another month leaves the pace as it is
+        let older = base + [op(5_000, kind: "refund", category: "Возврат", description: "Продукты учебные", date: iso(5, 6))]
+        let olderForecast = FinancialEngine.monthForecast(older, now: at(5, 10), calendar: calendar)
+        require(olderForecast.futureExpenseKopecks <= plain.futureExpenseKopecks, "a refund never raises the spending still expected")
+        // the line of every baseline month adds up to its net expense
+        let withRefunds = steady + [op(500, kind: "refund", category: "Возврат", description: "Другой магазин учебный", date: iso(3, 10)),
+                                    buy(2, 14, 2_000, "Обувь учебная"),
+                                    op(2_000, kind: "refund", category: "Возврат", description: "Обувь учебная", date: iso(2, 16))]
+        let explained = FinancialEngine.monthForecast(withRefunds, now: at(5, 10), calendar: calendar)
+        for month in explained.baselineMonths {
+            require(month.variableKopecks + month.recurringKopecks + month.oneOffKopecks - month.otherRefundsKopecks == month.netExpenseKopecks,
+                    "the line of \(month.month) adds up to the net expense")
+        }
+        require(explained.baselineMonths.contains { $0.otherRefundsKopecks == 500 }, "a refund of an older purchase is shown apart")
     }
 
     static func testMonthReserve() {
@@ -3871,6 +3914,7 @@ struct FinanceEngineTests {
         testReceiptRepairs()
         testForecastSpeed()
         testForecastRefunds()
+        testForecastCompletenessAndReturns()
         testKnownIssues52()
         testKnownIssues53()
         testKnownAccountIssues53()

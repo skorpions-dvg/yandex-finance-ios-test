@@ -776,6 +776,9 @@ enum FinancialEngine {
         let variableKopecks: Int64
         /// What the one-off purchases of the month were, by category group («Переводы 66 000 ₽»), never by operation.
         let largestOneOffs: [String]
+        /// Refunds of the month that are not returns of its own purchases (those leave the pace altogether):
+        /// `variable + recurring + oneOff − otherRefunds = netExpense`.
+        var otherRefundsKopecks: Int64 = 0
         var id: Date { month }
     }
 
@@ -811,6 +814,10 @@ enum FinancialEngine {
         var futureExpenseKopecks: Int64 = 0
         var futureExpenseLowKopecks: Int64 = 0
         var futureExpenseHighKopecks: Int64 = 0
+
+        /// Two full months of history at least: with fewer the forecast is only the pace of this month and is shown as facts,
+        /// with «мало данных», without a range.
+        var hasEnoughHistory: Bool { historyMonths >= 2 }
 
         /// Expected income minus projected spending; negative means the money is not expected to last.
         var projectedBalanceKopecks: Int64 { projectedIncomeKopecks - projectedExpenseKopecks }
@@ -977,7 +984,12 @@ enum FinancialEngine {
             if back == 1 { previousMonthIncome = monthReport.incomeKopecks }
             // A month with almost no spending saved (an incompletely covered archive month) is not representative.
             let expenseCount = allItems.filter { !$0.isIncome && $0.date >= month.start && $0.date < month.end }.count
-            if expenseCount >= 3, let firstSaved, firstSaved < calendar.date(byAdding: .day, value: 7, to: start)! {
+            // A month saved only from its second half (a few rows of an archive that is complete from some later day, a lone old
+            // operation before them) is not a full month even when the saved history begins earlier: its first operation must
+            // be within the first two weeks.
+            let firstOfMonth = allItems.lazy.filter { $0.date >= month.start && $0.date < month.end }.map(\.date).min()
+            let startsEarly = firstOfMonth.map { $0 < calendar.date(byAdding: .day, value: 14, to: start)! } ?? false
+            if expenseCount >= 3, startsEarly, let firstSaved, firstSaved < calendar.date(byAdding: .day, value: 7, to: start)! {
                 months.append((month, monthReport))
             }
         }
@@ -1011,9 +1023,28 @@ enum FinancialEngine {
         }
         let oneOffItems = variableItems.filter(isOneOff)
 
-        // Purchases, not net spending: a refund tells nothing about how much is bought in the days to come.
+        // A purchase returned in the same month did not happen: the refund and the purchase both leave the pace (as much as the
+        // refund, for the same payee, at most what was bought from it that month among the usual purchases). A refund of an older
+        // purchase changes nothing in the pace: it says nothing about how much is bought in the days to come.
+        let refundItems: [(date: Date, key: String, amount: Int64)] = operations.indices.compactMap { index in
+            let assessment = prepared.assessments[index]
+            guard assessment.refundContributionKopecks > 0, let date = prepared.dates[index], date < endOfToday else { return nil }
+            let key = counterpartyKey(operations[index].description)
+            return key.isEmpty ? nil : (date, key, assessment.refundContributionKopecks)
+        }
+        let oneOffIndices = Set(oneOffItems.map(\.index))
+        func returnedPurchases(in interval: DateInterval) -> Int64 {
+            let refunds = Dictionary(grouping: refundItems.filter { $0.date >= interval.start && $0.date < interval.end }, by: \.key)
+                .mapValues { $0.reduce(0) { $0 + $1.amount } }
+            guard !refunds.isEmpty else { return 0 }
+            let bought = Dictionary(grouping: variableItems.filter { $0.date >= interval.start && $0.date < interval.end && !oneOffIndices.contains($0.index) },
+                                    by: \.key).mapValues { $0.reduce(0) { $0 + $1.amount } }
+            return refunds.reduce(0) { $0 + min($1.value, bought[$1.key] ?? 0) }
+        }
+        // Purchases, not net spending (decision 1), without the purchases returned the same month (decision A).
         func variableExpense(in interval: DateInterval, report monthReport: FinanceReport) -> Int64 {
             monthReport.grossExpenseKopecks - sum(recurringItems, income: false, in: interval) - sum(oneOffItems, income: false, in: interval)
+                - returnedPurchases(in: interval)
         }
         let variableExpenses = months.map { variableExpense(in: $0.interval, report: $0.report) }
         let baselineMonths = months.map { month -> BaselineMonth in
@@ -1027,7 +1058,8 @@ enum FinancialEngine {
                                         String(item.category.split(separator: "/", maxSplits: 1).first ?? "Прочее")
                                     }.map { group, items in (group, items.reduce(0) { $0 + $1.amount }) }
                                     .sorted { $0.1 > $1.1 }
-                                    .map { "\($0.0) \((Decimal($0.1) / 100).formatted(.currency(code: "RUB")))" })
+                                    .map { "\($0.0) \((Decimal($0.1) / 100).formatted(.currency(code: "RUB")))" },
+                                 otherRefundsKopecks: month.report.refundsKopecks - returnedPurchases(in: month.interval))
         }
         let variableIncomes = months.map { $0.report.incomeKopecks - sum(recurringItems, income: true, in: $0.interval) }
 

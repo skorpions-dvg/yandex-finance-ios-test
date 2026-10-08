@@ -45,8 +45,13 @@ struct ForecastDetailView: View {
                 Text(signedRubles(reserve))
                     .font(.largeTitle.weight(.semibold))
                     .foregroundStyle(reserveColor(reserve))
-                Text("обычно от \(signedRubles(range.low)) до \(signedRubles(range.high))")
-                    .font(.subheadline).foregroundStyle(.secondary)
+                if forecast.hasEnoughHistory {
+                    Text("обычно от \(signedRubles(range.low)) до \(signedRubles(range.high))")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                } else {
+                    Text("Мало данных: прогноз станет точнее после двух полных месяцев истории (сейчас \(forecast.historyMonths)).")
+                        .font(.subheadline).foregroundStyle(.orange)
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.futureExpenseKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))")
                     Text("Счета: " + (accountNames.isEmpty ? "не выбраны" : accountNames.joined(separator: ", ")) + ". Отложенные деньги исключаются в настройках.")
@@ -100,8 +105,13 @@ struct ForecastDetailView: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 LabeledContent("Расходы к концу месяца", value: "≈ " + rubles(f.projectedExpenseKopecks))
-                Text("обычно от \(rubles(f.projectedExpenseLowKopecks)) до \(rubles(f.projectedExpenseHighKopecks))")
-                    .font(.caption).foregroundStyle(.secondary)
+                if f.hasEnoughHistory {
+                    Text("обычно от \(rubles(f.projectedExpenseLowKopecks)) до \(rubles(f.projectedExpenseHighKopecks))")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("по темпу этого месяца, без опыта прошлых месяцев")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 if f.oneOffKopecks > 0 {
                     Text("Разовые покупки \(rubles(f.oneOffKopecks)) учтены как потраченные, но не в обычном темпе")
                         .font(.caption).foregroundStyle(.secondary)
@@ -109,7 +119,9 @@ struct ForecastDetailView: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 LabeledContent("Доход за месяц", value: "≈ " + rubles(f.projectedIncomeKopecks))
-                Text("пришло пока \(rubles(f.incomeKopecks)) + ожидаемая зарплата · в прошлом месяце \(rubles(f.previousMonthIncomeKopecks))")
+                Text(f.expectedIncomeLeftKopecks > 0
+                     ? "пришло пока \(rubles(f.incomeKopecks)) + ожидается регулярное \(rubles(f.expectedIncomeLeftKopecks)) · в прошлом месяце \(rubles(f.previousMonthIncomeKopecks))"
+                     : "пришло пока \(rubles(f.incomeKopecks)) · в прошлом месяце \(rubles(f.previousMonthIncomeKopecks))")
                     .font(.caption).foregroundStyle(.secondary)
                 if f.typicalIrregularIncomeKopecks > 0 {
                     Text("Нерегулярные поступления обычно ≈ \(rubles(f.typicalIrregularIncomeKopecks)) в месяц, в запас не входят")
@@ -153,7 +165,8 @@ struct ForecastDetailView: View {
                                 Spacer()
                                 Text(rubles(month.netExpenseKopecks)).font(.subheadline)
                             }
-                            Text("обычные \(rubles(month.variableKopecks)) · регулярные \(rubles(month.recurringKopecks)) · разовые \(rubles(month.oneOffKopecks))")
+                            Text("обычные \(rubles(month.variableKopecks)) · регулярные \(rubles(month.recurringKopecks)) · разовые \(rubles(month.oneOffKopecks))"
+                                 + (month.otherRefundsKopecks > 0 ? " · возвраты −\(rubles(month.otherRefundsKopecks))" : ""))
                                 .font(.caption).foregroundStyle(.secondary)
                             if !month.largestOneOffs.isEmpty {
                                 Text("разовые по категориям: " + month.largestOneOffs.joined(separator: ", "))
@@ -161,12 +174,12 @@ struct ForecastDetailView: View {
                             }
                         }
                     }
-                    Text("Расходы к концу месяца = потрачено + ещё ожидаемые регулярные + обычные траты до конца месяца. Обычные траты берутся по медиане этих месяцев; текущий месяц влияет на них постепенно: в начале почти нет, к концу почти полностью. Вилка — по нижней и верхней четверти этих месяцев.")
+                    Text("Расходы к концу месяца = потрачено + ещё ожидаемые регулярные + обычные траты до конца месяца. Обычные траты берутся по медиане этих месяцев; текущий месяц влияет на них постепенно: в начале почти нет, к концу почти полностью. Вилка — по нижней и верхней четверти этих месяцев. Обычные траты считаются по покупкам: покупка, возвращённая в том же месяце, в них не входит, а возврат за старую покупку показан отдельно.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 .font(.subheadline)
             }
-            if f.historyMonths < 3 {
+            if f.hasEnoughHistory && f.historyMonths < 3 {
                 Text("Истории пока мало (\(f.historyMonths) мес.), прогноз приблизительный.")
                     .font(.caption).foregroundStyle(.secondary)
             }

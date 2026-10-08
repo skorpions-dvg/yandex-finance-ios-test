@@ -336,7 +336,7 @@ struct OperationsHomeView: View {
                             Text(signedRubles(reserve))
                                 .font(.title3.weight(.semibold))
                                 .foregroundStyle(reserveColor(reserve))
-                            Text(reserveCaption(reserve))
+                            Text(reserveCaption(reserve) + (f.hasEnoughHistory ? "" : " · мало данных"))
                                 .font(.caption).foregroundStyle(reserveColor(reserve))
                         }
                     }
