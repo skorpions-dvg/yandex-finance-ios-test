@@ -297,7 +297,27 @@ private struct StructureContent: View {
         }
         ReportSliceList(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slices: slices, total: total, headline: headline,
                         refundsKopecks: mode == .expenses && !filter.isActive ? report.refundsKopecks : 0, filter: filter)
+        if mode == .expenses && !filter.isActive && needsCategoryReview(report) {
+            let groups = QuickReviewCache.groups(browser.history, presentation: presentation)
+            if !groups.isEmpty {
+                Section {
+                    NavigationLink {
+                        UncategorizedReviewView(browser: browser, presentation: presentation)
+                    } label: {
+                        Text("Разобрать «Прочее»: \(groups.count) получателей").foregroundStyle(.primary)
+                    }
+                }.glassRows()
+            }
+        }
         if !filter.isActive { separateSection(report) }
+    }
+
+    private func needsCategoryReview(_ report: FinanceReport) -> Bool {
+        guard report.grossExpenseKopecks > 0,
+              let category = browser.history.expenseCategory(id: UncategorizedReview.otherExpenseID),
+              let group = report.expenseLines.first(where: { $0.title == category.group.name }),
+              let other = group.children.first(where: { $0.title == category.category.name }) else { return false }
+        return Double(other.amountKopecks) / Double(report.grossExpenseKopecks) > 0.1
     }
 
     /// A percentage on a sector: the angle of its middle, clockwise from the top. Small sectors have no label.

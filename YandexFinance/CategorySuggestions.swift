@@ -18,6 +18,40 @@ struct RuleCandidate: Equatable, Identifiable {
     var id: String { payeeKey }
 }
 
+/// A short-lived undo record, never a backup of the financial history.
+struct ExpenseReviewUndo {
+    let id = UUID()
+    let rules: [CategoryRule]?
+    let overrides: [String: UUID]?
+
+    init(_ history: SavedHistory) {
+        rules = history.categoryRules
+        overrides = history.categoryOverrides
+    }
+
+    func changed(in history: SavedHistory) -> Bool {
+        rules != history.categoryRules || overrides != history.categoryOverrides
+    }
+
+    func restore(in history: inout SavedHistory) {
+        history.categoryRules = rules
+        history.categoryOverrides = overrides
+    }
+}
+
+enum ExpenseReviewEdits {
+    /// Use the existing setter for each unresolved row, including rows with individual Misc overrides.
+    static func apply(_ categoryID: UUID, to group: ReviewGroup, history: inout SavedHistory) -> Bool {
+        guard group.kind == .expense, !group.operations.isEmpty else { return false }
+        var next = history
+        for operation in group.operations {
+            guard next.setExpenseCategory(categoryID, for: operation, forPayee: group.appliesToAll) else { return false }
+        }
+        history = next
+        return true
+    }
+}
+
 /// Suggestions only: nothing is persisted until the user chooses an existing category.
 enum CategorySuggestions {
     private struct Evidence {

@@ -1229,6 +1229,48 @@ struct FinanceEngineTests {
         require(CategorySuggestions.ruleCandidates(history).isEmpty, "income cannot become an expense rule candidate")
     }
 
+    static func testExpenseReviewEdits() {
+        let a = bankOp("quick-review-a", -10_000, description: "ОрбитаТест север")
+        let b = bankOp("quick-review-b", -20_000, description: a.description)
+        var history = SavedHistory()
+        history.operations = [a, b]
+        history.categoryOverrides = [a.identity: UncategorizedReview.otherExpenseID, b.identity: UncategorizedReview.otherExpenseID]
+        let group = UncategorizedReview.groups(history)[0]
+        let selected = history.categoryTree[0].categories[0].id
+        let previous = ExpenseReviewUndo(history)
+        let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, duration: 30 * 86400)
+        let before = FinancialEngine.report(history.financialInputs, in: interval)
+        require(ExpenseReviewEdits.apply(selected, to: group, history: &history), "quick review applies a category using the existing setters")
+        require(history.expenseCategoryID(for: a) == selected && history.expenseCategoryID(for: b) == selected,
+                "quick review resolves all group rows, even those with individual Misc overrides")
+        require(UncategorizedReview.groups(history).isEmpty && previous.changed(in: history), "quick-reviewed payee leaves the list and can be undone")
+        let after = FinancialEngine.report(history.financialInputs, in: interval)
+        require(before.grossExpenseKopecks == after.grossExpenseKopecks && before.incomeKopecks == after.incomeKopecks,
+                "quick category review preserves financial totals")
+        let synced = bankOp("quick-review-synced", -500, description: "ДругойПолучательТест")
+        history.operations.append(synced)
+        history.incomeCategoryOverrides = ["new-income": "Зарплата и выплаты"]
+        previous.restore(in: &history)
+        require(history.categoryRules == previous.rules && history.categoryOverrides == previous.overrides,
+                "undo restores exactly the previous expense category fields, including nil rules")
+        require(history.operations == [a, b, synced] && history.incomeCategoryOverrides?["new-income"] == "Зарплата и выплаты",
+                "undo leaves newly synced operations and other history fields intact")
+        require(history.expenseCategoryID(for: a) == UncategorizedReview.otherExpenseID && UncategorizedReview.groups(history).count == 2,
+                "undo returns reviewed expenses to Misc")
+        let unnamed = bankOp("quick-review-empty", -100, description: "12345")
+        let unnamed2 = bankOp("quick-review-empty-2", -100, description: "12345")
+        history = SavedHistory()
+        history.operations = [unnamed, unnamed2]
+        require(ExpenseReviewEdits.apply(selected, to: UncategorizedReview.groups(history)[0], history: &history), "empty-key quick review is individual")
+        require(history.categoryOverrides?.count == 1 && (history.categoryRules ?? []).isEmpty && UncategorizedReview.groups(history).count == 1,
+                "empty-key review does not create a payee rule or affect its unnamed neighbour")
+        let savedOverrides = history.categoryOverrides
+        let badGroup = ReviewGroup(id: "quick-invalid", key: "", kind: .expense,
+                                   operations: [unnamed2, bankOp("quick-income", 100, description: "ПоступлениеТест", kind: "income")])
+        require(!ExpenseReviewEdits.apply(selected, to: badGroup, history: &history) && history.categoryOverrides == savedOverrides,
+                "a rejected batch makes no partial category edits")
+    }
+
     static func testCardToSaveTransfer() {
         // The bank's shared history lists a card → Save transfer as two rows titled after the Save account.
         let day = BankDateParser.parse("2026-10-07T00:00:00Z")!
@@ -2124,6 +2166,7 @@ struct FinanceEngineTests {
         testUncategorizedReview()
         testCategorySuggestions()
         testRuleCandidates()
+        testExpenseReviewEdits()
         testFixedCostGroups()
         testIncomeCategories()
         testSaveStatementSource()
