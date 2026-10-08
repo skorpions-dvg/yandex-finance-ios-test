@@ -815,7 +815,7 @@ struct SettingsView: View {
                 } header: { Text("Отображение") }.glassRows()
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
-                                        NavigationLink("Бюджеты") { BudgetsView(browser: browser, presentation: presentation) }
+                    NavigationLink("Бюджеты") { BudgetsView(browser: browser, presentation: presentation) }
                     NavigationLink("Безопасность") { SecuritySettingsView(lock: lock) }
                 }.glassRows()
                 Section {
