@@ -3445,7 +3445,377 @@ struct FinanceEngineTests {
         }
     }
 
+    // MARK: Stage 54: reproducible pre-redesign forecast measurements (fictional inputs only)
+
+    struct Forecast54Random {
+        var state: UInt64
+        mutating func int(_ lower: Int, _ upper: Int) -> Int {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return lower + Int((state >> 16) % UInt64(upper - lower + 1))
+        }
+    }
+
+    struct Forecast54Entry {
+        let date: Date
+        let input: FinancialOperationInput
+    }
+
+    struct Forecast54Profile {
+        let id: String
+        let seed: UInt64
+        let entries: [Forecast54Entry]
+    }
+
+    struct Forecast54Sample {
+        let profile: String
+        let month: String
+        let day: Int
+        let actualExpense: Int64
+        let actualIncome: Int64
+        let forecast: FinancialEngine.MonthForecast
+    }
+
+    static var forecast54Calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    static func forecast54Date(_ monthIndex: Int, _ day: Int, hour: Int = 12) -> Date {
+        forecast54Calendar.date(from: DateComponents(year: 2032 + monthIndex / 12,
+                                                     month: monthIndex % 12 + 1, day: day, hour: hour))!
+    }
+
+    static func forecast54Profiles() -> [Forecast54Profile] {
+        let shops = ["Магазин учебный Альфа", "Магазин учебный Бета", "Магазин учебный Гамма", "Магазин учебный Дельта"]
+        let alphabet = Array("абвгдежзиклмнопрстуфхцчшэюя")
+        return (0..<3).map { person in
+            let seed = UInt64(0x540001 + person)
+            var random = Forecast54Random(state: seed)
+            var entries: [Forecast54Entry] = []
+            func add(_ month: Int, _ day: Int, _ value: Int64, _ kind: String, _ title: String, _ category: String) {
+                let date = forecast54Date(month, day)
+                let iso = String(format: "%04d-%02d-%02dT12:00:00Z", 2032 + month / 12, month % 12 + 1, day)
+                entries.append(Forecast54Entry(date: date, input: op(value, kind: kind, category: category,
+                                                                   description: title, date: iso)))
+            }
+            for month in 0..<14 {
+                if person != 1 {
+                    add(month, 5, person == 0 ? 12_000_000 : 10_500_000, "income", "Зарплата учебная", "Зарплата")
+                } else {
+                    for _ in 0..<random.int(2, 4) {
+                        add(month, random.int(2, 27), Int64(random.int(500_000, 4_500_000)), "income",
+                            "Работа учебная " + String(alphabet[random.int(0, 20)]), "Прочие доходы")
+                    }
+                }
+                add(month, 12, -2_800_000, "expense", "Аренда учебная", "ЖКХ")
+                add(month, 22, -90_000, "expense", "Связь учебная", "Связь и интернет")
+                if person == 0 { add(month, 27, -45_000, "expense", "Подписка учебная", "Подписки") }
+                let scale = person == 1 ? random.int(75, 135) : random.int(90, 110)
+                for index in 0..<10 {
+                    let day = min(28, max(1, 1 + index * 3 + random.int(-1, 1)))
+                    let amount = Int64(random.int(80_000, 180_000) * scale / 100)
+                    add(month, day, -amount, "expense", shops[random.int(0, shops.count - 1)], "Супермаркеты")
+                }
+                if person == 2 {
+                    if month % 3 == 0 {
+                        add(month, random.int(14, 25), -20_000_000, "expense",
+                            "Техника учебная " + String(alphabet[month]), "Электроника")
+                    } else if month % 3 == 1 {
+                        add(month, random.int(3, 18), 2_000_000, "refund", "Возврат учебный", "Возврат")
+                    }
+                }
+            }
+            entries.sort { $0.date < $1.date }
+            return Forecast54Profile(id: ["stable", "irregular", "refunds-oneoffs"][person], seed: seed, entries: entries)
+        }
+    }
+
+    /// Ground truth uses the generator's explicit expense/refund/income labels, not the forecast/report engine.
+    static func forecast54Actual(_ entries: [Forecast54Entry], from: Date, to: Date) -> (expense: Int64, income: Int64) {
+        var expense: Int64 = 0, income: Int64 = 0
+        for entry in entries where entry.date >= from && entry.date < to {
+            switch entry.input.kind {
+            case "expense": expense -= entry.input.amountKopecks
+            case "refund": expense -= entry.input.amountKopecks
+            case "income": income += entry.input.amountKopecks
+            default: break
+            }
+        }
+        return (expense, income)
+    }
+
+    static func forecast54CheckStructure(_ forecast: FinancialEngine.MonthForecast, now: Date) {
+        let calendar = forecast54Calendar
+        require(forecast.daysInMonth == calendar.range(of: .day, in: .month, for: now)!.count,
+                "baseline54: calendar length is correct")
+        require(forecast.elapsedDays == calendar.component(.day, from: now), "baseline54: elapsed day is correct")
+        require(forecast.projectedExpenseLowKopecks <= forecast.projectedExpenseKopecks
+                && forecast.projectedExpenseKopecks <= forecast.projectedExpenseHighKopecks,
+                "baseline54: central estimate lies inside its ordered range")
+        require(forecast.historyMonths == forecast.baselineMonths.count && (0...6).contains(forecast.historyMonths),
+                "baseline54: history count agrees with listed baseline months")
+        let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
+        require(forecast.baselineMonths.allSatisfy { $0.month < monthStart }, "baseline54: no current/future baseline month")
+        require(zip(forecast.upcoming, forecast.upcoming.dropFirst()).allSatisfy { $0.date <= $1.date },
+                "baseline54: upcoming dates are ordered")
+    }
+
+    /// Each month/profile job is independent. Only result collection is shared, protected by the lock.
+    final class Forecast54Measurements: @unchecked Sendable {
+        let jobs: [(profile: Forecast54Profile, month: Int)]
+        private let lock = NSLock()
+        private var rows: [Forecast54Sample] = []
+        init(jobs: [(profile: Forecast54Profile, month: Int)]) { self.jobs = jobs }
+        func append(_ samples: [Forecast54Sample]) -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            rows.append(contentsOf: samples)
+            return rows.count
+        }
+        func result() -> [Forecast54Sample] {
+            lock.lock()
+            defer { lock.unlock() }
+            return rows.sorted { ($0.profile, $0.month, $0.day) < ($1.profile, $1.month, $1.day) }
+        }
+    }
+
+    static func forecast54MonthSamples(profile: Forecast54Profile, month: Int, days: Set<Int>? = nil) -> [Forecast54Sample] {
+        let calendar = forecast54Calendar
+        var samples: [Forecast54Sample] = []
+        let start = forecast54Date(month, 1, hour: 0)
+        let end = calendar.date(byAdding: .month, value: 1, to: start)!
+        let actual = forecast54Actual(profile.entries, from: start, to: end)
+        let monthKey = String(format: "%04d-%02d", 2032 + month / 12, month % 12 + 1)
+        for day in 1...calendar.range(of: .day, in: .month, for: start)!.count {
+            if let days, !days.contains(day) { continue }
+            let now = forecast54Date(month, day, hour: 0).addingTimeInterval(86_399)
+            // Physically remove future entries: neither payee discovery nor completeness can see the actual future.
+            let available = profile.entries.filter { $0.date <= now }.map(\.input)
+            let forecast = FinancialEngine.monthForecast(available, now: now, calendar: calendar)
+            forecast54CheckStructure(forecast, now: now)
+            samples.append(Forecast54Sample(profile: profile.id, month: monthKey, day: day,
+                                            actualExpense: actual.expense, actualIncome: actual.income, forecast: forecast))
+        }
+        return samples
+    }
+
+    static func forecast54Observations(days: Set<Int>? = nil) -> [Forecast54Sample] {
+        var jobs: [(profile: Forecast54Profile, month: Int)] = []
+        for profile in forecast54Profiles() {
+            for month in 3..<14 { jobs.append((profile, month)) }
+        }
+        let store = Forecast54Measurements(jobs: jobs)
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 6
+        for index in jobs.indices {
+            queue.addOperation {
+                let job = store.jobs[index]
+                let count = store.append(forecast54MonthSamples(profile: job.profile, month: job.month, days: days))
+                print("FORECAST54: " + forecast54JSON(["type": "progress", "profile": job.profile.id,
+                                                       "monthIndex": job.month, "samples": count]))
+            }
+        }
+        queue.waitUntilAllOperationsAreFinished()
+        return store.result()
+    }
+
+    static func forecast54JSON(_ object: [String: Any]) -> String {
+        String(data: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), encoding: .utf8)!
+    }
+
+    static func forecast54Median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        guard !sorted.isEmpty else { return 0 }
+        let middle = sorted.count / 2
+        return sorted.count % 2 == 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+    }
+
+    static func forecast54Metrics(_ rows: [Forecast54Sample], profile: String, day: Int) -> [String: Any] {
+        let expenses = rows.filter { $0.actualExpense != 0 }.map {
+            Double($0.forecast.projectedExpenseKopecks - $0.actualExpense) / abs(Double($0.actualExpense))
+        }
+        let incomes = rows.filter { $0.actualIncome != 0 }.map {
+            Double($0.forecast.projectedIncomeKopecks - $0.actualIncome) / abs(Double($0.actualIncome))
+        }
+        func mean(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count) }
+        let covered = rows.filter { $0.actualExpense >= $0.forecast.projectedExpenseLowKopecks
+            && $0.actualExpense <= $0.forecast.projectedExpenseHighKopecks }.count
+        let relativeWidths = rows.filter { $0.actualExpense != 0 }.map {
+            Double($0.forecast.projectedExpenseHighKopecks - $0.forecast.projectedExpenseLowKopecks) / abs(Double($0.actualExpense))
+        }
+        return ["type": "metrics", "profile": profile, "day": day, "n": rows.count,
+                "expenseN": expenses.count, "incomeN": incomes.count,
+                "expenseMAPE": mean(expenses.map(abs)), "expenseMdAPE": forecast54Median(expenses.map(abs)),
+                "expenseBias": mean(expenses), "incomeMAPE": mean(incomes.map(abs)),
+                "incomeMdAPE": forecast54Median(incomes.map(abs)), "incomeBias": mean(incomes),
+                "expenseCoverage": rows.isEmpty ? 0 : Double(covered) / Double(rows.count),
+                "expenseMeanRelativeWidth": mean(relativeWidths), "incomeCoverage": NSNull()]
+    }
+
+    static func forecast54Benchmark() {
+        let profile = forecast54Profiles()[0]
+        let cutoff = forecast54Date(12, 1, hour: 0)
+        let twelveMonths = profile.entries.filter { $0.date < cutoff }.map(\.input)
+        let now = cutoff.addingTimeInterval(-1)
+        var load: [FinancialOperationInput] = []
+        let loadNames = ["альфа", "бета", "гамма", "дельта"]
+        for index in 0..<10_000 {
+            let isIncome = index % 101 == 0
+            let amount: Int64 = isIncome ? 90_000 : -Int64(1_000 + (index * 37) % 20_000)
+            let iso = String(format: "2032-%02d-%02dT12:00:00Z", index % 12 + 1, (index / 12) % 28 + 1)
+            load.append(op(amount, kind: isIncome ? "income" : "expense", category: "Супермаркеты",
+                           description: "Магазин нагрузка " + loadNames[index % 4], date: iso))
+        }
+        for (id, inputs) in [("12-months", twelveMonths), ("10000-operations", load)] {
+            var milliseconds: [Double] = []
+            var checksum: Int64 = 0
+            for run in 1...5 {
+                let start = ProcessInfo.processInfo.systemUptime
+                let forecast = FinancialEngine.monthForecast(inputs, now: now, calendar: forecast54Calendar)
+                milliseconds.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+                checksum &+= forecast.projectedExpenseKopecks
+                forecast54CheckStructure(forecast, now: now)
+                print("FORECAST54: " + forecast54JSON(["type": "timing-progress", "dataset": id, "run": run,
+                                                       "milliseconds": milliseconds.last!]))
+            }
+            print("FORECAST54: " + forecast54JSON(["type": "timing", "dataset": id, "operations": inputs.count,
+                                                   "runs": milliseconds, "meanMS": milliseconds.reduce(0, +) / 5,
+                                                   "checksum": checksum]))
+        }
+    }
+
+    /// Full optional measurement: run explicitly for a report; no assertion on accuracy or elapsed time.
+    /// It is intentionally outside main: 1,002 rolling predictions and five 10k-row runs are a benchmark, not a CI gate.
+    static func testForecastBaseline54() {
+        let profiles = forecast54Profiles()
+        for profile in profiles {
+            let months = (0..<14).map { month -> [String: Any] in
+                let start = forecast54Date(month, 1, hour: 0)
+                let end = forecast54Calendar.date(byAdding: .month, value: 1, to: start)!
+                let total = forecast54Actual(profile.entries, from: start, to: end)
+                return ["month": String(format: "%04d-%02d", 2032 + month / 12, month % 12 + 1),
+                        "expenseKopecks": total.expense, "incomeKopecks": total.income,
+                        "operations": profile.entries.filter { $0.date >= start && $0.date < end }.count]
+            }
+            print("FORECAST54: " + forecast54JSON(["type": "fixture", "profile": profile.id,
+                                                   "seed": String(profile.seed), "operations": profile.entries.count, "months": months]))
+        }
+        let samples = forecast54Observations()
+        let expected = (3..<14).reduce(0) { $0 + forecast54Calendar.range(of: .day, in: .month, for: forecast54Date($1, 1))!.count } * 3
+        require(samples.count == expected, "baseline54: every day of all eleven measured months and three profiles is covered")
+        for profile in ["all"] + profiles.map(\.id) {
+            let selected = samples.filter { profile == "all" || $0.profile == profile }
+            print("FORECAST54: " + forecast54JSON(forecast54Metrics(selected, profile: profile, day: 0)))
+            for day in 1...31 {
+                print("FORECAST54: " + forecast54JSON(forecast54Metrics(selected.filter { $0.day == day }, profile: profile, day: day)))
+            }
+        }
+        print("FORECAST54: " + forecast54JSON(forecast54Metrics(samples.filter { $0.day <= 7 }, profile: "all-first-week", day: 0)))
+        forecast54Benchmark()
+    }
+
+    /// Cheap structural regression is part of the ordinary suite; the full walk-forward measurement above is opt-in.
+    static func testForecast54FixtureStructure() {
+        let profiles = forecast54Profiles()
+        let again = forecast54Profiles()
+        require(profiles.count == 3 && profiles.map(\.seed) == [0x540001, 0x540002, 0x540003], "baseline54: three fixed seeds")
+        for (first, second) in zip(profiles, again) {
+            require(first.entries.map { $0.input.amountKopecks } == second.entries.map { $0.input.amountKopecks }
+                    && first.entries.map { $0.input.occurredAt } == second.entries.map { $0.input.occurredAt },
+                    "baseline54: seeded amounts and dates reproduce exactly")
+            require(first.entries.count > 150 && first.entries.allSatisfy { $0.input.description.contains("учеб") },
+                    "baseline54: generated history is fictional and nonempty")
+            let now = forecast54Date(3, 15, hour: 0).addingTimeInterval(86_399)
+            let available = first.entries.filter { $0.date <= now }.map(\.input)
+            forecast54CheckStructure(FinancialEngine.monthForecast(available, now: now, calendar: forecast54Calendar), now: now)
+        }
+    }
+
+    /// Decision 1 is implemented in 46.22. Future gross spending is an explicit field, independent of the zero clamp.
+    static func testForecastRefunds55() {
+        let calendar = forecast54Calendar
+        func input(_ month: Int, _ day: Int, _ amount: Int64, kind: String = "expense") -> FinancialOperationInput {
+            op(amount, kind: kind, category: kind == "refund" ? "Возврат" : "Супермаркеты",
+               description: kind == "refund" ? "Возврат учебный" : "Продукты учебные",
+               date: String(format: "2032-%02d-%02dT12:00:00Z", month + 1, day))
+        }
+        let history = (0..<3).flatMap { month in [1, 15, 25].map { input(month, $0, -1_000) } }
+        let current = history + [input(3, 1, -1_000)]
+        let now = forecast54Date(3, 10)
+        let plain = FinancialEngine.monthForecast(current, now: now, calendar: calendar)
+        let returned = FinancialEngine.monthForecast(current + [input(3, 2, 10_000, kind: "refund")], now: now, calendar: calendar)
+        require(returned.projectedExpenseKopecks >= 0,
+                "K54-1-nonnegative: expected >= 0, actual \(returned.projectedExpenseKopecks)")
+        require(returned.futureExpenseKopecks == plain.futureExpenseKopecks,
+                "K54-1-refund-not-future: expected \(plain.futureExpenseKopecks), actual \(returned.futureExpenseKopecks)")
+        require(returned.spentKopecks == plain.spentKopecks - 10_000 && returned.refundsKopecks == 10_000,
+                "K54-1-already-spent: expected spent \(plain.spentKopecks - 10_000), refund 10000; actual \(returned.spentKopecks), \(returned.refundsKopecks)")
+    }
+
+    /// Remaining desired product decisions, deliberately outside main while the engine is being redesigned.
+    /// Missing review/data-quality fields are described in the external report; no imaginary engine API is used here.
+    static func testKnownForecast54(caseID: String? = nil) {
+        let calendar = forecast54Calendar
+        var failures: [String] = []
+        func check(_ id: String, _ condition: Bool, expected: Any, actual: Any) {
+            print("FORECAST54: " + forecast54JSON(["type": "known", "id": id, "passed": condition,
+                                                   "expected": expected, "actual": actual]))
+            if !condition { failures.append(id) }
+        }
+        func input(_ month: Int, _ day: Int, _ amount: Int64, _ title: String, kind: String = "expense") -> FinancialOperationInput {
+            op(amount, kind: kind, category: kind == "refund" ? "Возврат" : "Супермаркеты", description: title,
+               date: String(format: "2032-%02d-%02dT12:00:00Z", month + 1, day))
+        }
+        func selected(_ id: String) -> Bool { caseID == nil || caseID == id }
+
+        if selected("grace") {
+            let history = (0..<3).map { input($0, 5, -50_000, "Услуга учебная регулярная") }
+            let seventh = FinancialEngine.monthForecast(history, now: forecast54Date(3, 12), calendar: calendar)
+            let eighth = FinancialEngine.monthForecast(history, now: forecast54Date(3, 13), calendar: calendar)
+            let inSeventh = seventh.upcoming.filter { !$0.isIncome }.reduce(Int64(0)) { $0 + $1.amountKopecks }
+            let inEighth = eighth.upcoming.filter { !$0.isIncome }.reduce(Int64(0)) { $0 + $1.amountKopecks }
+            check("K54-2-grace-inclusive", inSeventh == 50_000, expected: 50_000, actual: inSeventh)
+            check("K54-2-after-grace", inEighth == 0, expected: 0, actual: inEighth)
+            // A separate owner question retaining the original dueDate is required, but MonthForecast has no such API yet.
+        }
+        if selected("completeness") {
+            var sparse = [input(0, 1, -1_000, "Начало учебного архива")]
+            for month in [1, 2] {
+                sparse += [20, 21, 22].map { input(month, $0, -1_000, "Продукты учебные") }
+            }
+            sparse += stride(from: 1, through: 29, by: 2).map { input(3, $0, -1_000, "Продукты учебные") }
+            let forecast = FinancialEngine.monthForecast(sparse, now: forecast54Date(4, 1), calendar: calendar)
+            check("K54-3-sparse-start", forecast.historyMonths == 1, expected: 1, actual: forecast.historyMonths)
+            // The fixture declares April complete, February/March sparse. Exact coverage metadata and a low-data flag
+            // must be specified by the engine owner; firstSaved alone cannot prove completeness.
+        }
+        if selected("range") {
+            let samples = forecast54Observations(days: Set(Array(1...7) + [25]))
+            let day25 = forecast54Metrics(samples.filter { $0.day == 25 }, profile: "known-day25", day: 25)
+            let firstWeek = forecast54Metrics(samples.filter { $0.day <= 7 }, profile: "known-first-week", day: 0)
+            let coverage25 = day25["expenseCoverage"] as! Double
+            let coverageFirst = firstWeek["expenseCoverage"] as! Double
+            check("K54-4-day25-coverage", coverage25 >= 0.8, expected: ">= 0.8; n=33", actual: coverage25)
+            check("K54-4-first-week", coverageFirst > 0, expected: "> 0; n=231", actual: coverageFirst)
+            // The source of interval calibration cannot be asserted through today's MonthForecast interface.
+            // Use errors from earlier months of the same day, excluding the evaluated month's future outcome.
+        }
+        if selected("rollover") {
+            let history = [input(0, 30, -50_000, "Аренда учебная конец месяца"),
+                           input(1, 29, -50_000, "Аренда учебная конец месяца"),
+                           input(2, 30, -50_000, "Аренда учебная конец месяца")]
+            // April 30 was not paid. May 1 must ask about that unresolved obligation rather than silently renew it.
+            let forecast = FinancialEngine.monthForecast(history, now: forecast54Date(4, 1), calendar: calendar)
+            let expected = forecast.upcoming.filter { !$0.isIncome }.reduce(Int64(0)) { $0 + $1.amountKopecks }
+            check("K54-5-new-month", expected == 0, expected: 0, actual: expected)
+        }
+        require(failures.isEmpty, "known forecast54 desired behaviour not implemented: " + failures.joined(separator: ", "))
+    }
+
     static func main() {
+        testForecastRefunds55()
+        testForecast54FixtureStructure()
         testAudit53AngledReceipts()
         testAudit53AccountHistory()
         testAudit52ReceiptLayouts()
