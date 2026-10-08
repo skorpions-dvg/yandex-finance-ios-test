@@ -981,6 +981,32 @@ extension SavedHistory {
 
 /// Receipt photos are files in the app's own folder; these rules are the only place that decides how they look.
 enum ReceiptLogic {
+    struct ReceiptRestoreResult: Equatable {
+        var added = 0
+        var alreadyExisted = 0
+        var damaged = 0
+        var notWritten = 0
+
+        var message: String {
+            if added == 0 && alreadyExisted == 0 && damaged == 0 && notWritten == 0 { return "В архиве нет фото чеков" }
+            if alreadyExisted == 0 && damaged == 0 && notWritten == 0 { return "Добавлено \(added) фото" }
+            if added == 0 && damaged == 0 && notWritten == 0 { return "Все \(alreadyExisted) фото уже были" }
+            var parts: [String] = []
+            if added > 0 { parts.append("добавлено \(added)") }
+            if alreadyExisted > 0 { parts.append("уже было \(alreadyExisted)") }
+            if damaged > 0 { parts.append("не удалось прочитать \(damaged)") }
+            if notWritten > 0 { parts.append("не удалось записать \(notWritten)") }
+            let text = parts.joined(separator: ", ")
+            return text.prefix(1).uppercased() + text.dropFirst()
+        }
+    }
+
+    static func exportMessage(saved: Int, skipped: Int) -> String {
+        if saved == 0 { return skipped > 0 ? "Не удалось прочитать \(skipped) фото. Архив не сохранён." : "Фото чеков на этом телефоне пока нет." }
+        let message = "Архив сохранён: \(saved) фото."
+        return skipped > 0 ? message + " Пропущено: \(skipped) (не удалось прочитать)." : message
+    }
+
     /// The longest side of a stored photo: enough to read a receipt, small enough (about 300 KB) to keep many.
     static let maxSide = 1600.0
     /// A PDF becomes pictures of its first pages only.

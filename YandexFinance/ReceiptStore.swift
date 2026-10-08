@@ -40,26 +40,33 @@ enum ReceiptStore {
     }
 
     /// All photos as one ZIP, for a backup; nil when there are none.
-    static func exportArchive() -> (data: Data, count: Int)? {
+    static func exportArchive() -> (data: Data, count: Int, skipped: Int)? {
         var entries: [(name: String, data: Data)] = []
-        for name in allFiles.sorted() {
+        let names = allFiles.sorted()
+        guard !names.isEmpty else { return nil }
+        for name in names {
             if let data = try? Data(contentsOf: folder.appendingPathComponent(name)) { entries.append((name, data)) }
         }
-        return entries.isEmpty ? nil : (ReceiptArchive.make(entries), entries.count)
+        return (ReceiptArchive.make(entries), entries.count, names.count - entries.count)
     }
 
-    /// Puts the photos of an archive back; files that are already here stay. Returns how many were added, nil when the
-    /// file is not an archive of this app.
-    static func restoreArchive(_ zip: Data) -> Int? {
+    /// Existing files stay; every entry is counted, including invalid images and failed writes.
+    /// nil means the file is not a valid archive of this app.
+    static func restoreArchive(_ zip: Data) -> ReceiptLogic.ReceiptRestoreResult? {
         guard let entries = ReceiptArchive.read(zip) else { return nil }
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        var added = 0
-        for entry in entries where ReceiptLogic.isValid(fileName: entry.name) && UIImage(data: entry.data) != nil {
+        var result = ReceiptLogic.ReceiptRestoreResult()
+        for entry in entries {
+            guard ReceiptLogic.isValid(fileName: entry.name) else { result.damaged += 1; continue }
+            guard UIImage(data: entry.data) != nil else { result.damaged += 1; continue }
             let url = folder.appendingPathComponent(entry.name)
-            if FileManager.default.fileExists(atPath: url.path) { continue }
-            if (try? entry.data.write(to: url, options: [.atomic, .completeFileProtection])) != nil { added += 1 }
+            if FileManager.default.fileExists(atPath: url.path) { result.alreadyExisted += 1; continue }
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try entry.data.write(to: url, options: [.atomic, .completeFileProtection])
+                result.added += 1
+            } catch { result.notWritten += 1 }
         }
-        return added
+        return result
     }
 
     static func delete(_ names: [String]) {

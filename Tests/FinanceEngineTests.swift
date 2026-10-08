@@ -2400,7 +2400,209 @@ struct FinanceEngineTests {
         } catch { require(false, "known issue: the synthetic backup unexpectedly failed to decode") }
     }
 
+    static func testAudit50ReceiptResults() {
+        typealias Result = ReceiptLogic.ReceiptRestoreResult
+        require(Result().message == "В архиве нет фото чеков", "audit50: empty archive is not an added-photo success")
+        require(Result(added: 3).message == "Добавлено 3 фото", "audit50: all new photos")
+        require(Result(alreadyExisted: 5).message == "Все 5 фото уже были", "audit50: all duplicates")
+        require(Result(added: 2, alreadyExisted: 1, damaged: 1).message == "Добавлено 2, уже было 1, не удалось прочитать 1",
+                "audit50: partial restore names every nonzero outcome")
+        require(Result(damaged: 2).message == "Не удалось прочитать 2", "audit50: damaged-only is an error")
+        require(Result(notWritten: 1).message == "Не удалось записать 1", "audit50: failed-only is an error")
+        require(Result(damaged: 1, notWritten: 2).message == "Не удалось прочитать 1, не удалось записать 2", "audit50: no success when nothing restored")
+        require(Result(added: 1, alreadyExisted: 2, damaged: 3, notWritten: 4).message ==
+                "Добавлено 1, уже было 2, не удалось прочитать 3, не удалось записать 4", "audit50: all result fields")
+        require(Result(added: 2, notWritten: 1).message == "Добавлено 2, не удалось записать 1", "audit50: zero fields omitted")
+        require(Result(alreadyExisted: 2, damaged: 1).message == "Уже было 2, не удалось прочитать 1", "audit50: duplicate plus error is not all-existing success")
+        require(ReceiptLogic.exportMessage(saved: 3, skipped: 0) == "Архив сохранён: 3 фото.", "audit50: complete export")
+        require(ReceiptLogic.exportMessage(saved: 3, skipped: 2) == "Архив сохранён: 3 фото. Пропущено: 2 (не удалось прочитать).",
+                "audit50: export reports skipped files")
+        require(ReceiptLogic.exportMessage(saved: 0, skipped: 2) == "Не удалось прочитать 2 фото. Архив не сохранён.", "audit50: failed export is not no-photos success")
+        require(ReceiptLogic.exportMessage(saved: 0, skipped: 0) == "Фото чеков на этом телефоне пока нет.", "audit50: no export photos")
+    }
+
+    static func testAudit50BudgetMonthBoundaries() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 6 * 3600)!
+        for (year, month, days) in [(2031, 2, 28), (2032, 2, 29), (2032, 4, 30), (2032, 12, 31)] {
+            let start = calendar.date(from: DateComponents(year: year, month: month, day: 1))!
+            let interval = BudgetEngine.monthInterval(containing: start, calendar: calendar)
+            require(calendar.dateComponents([.day], from: interval.start, to: interval.end).day == days,
+                    "audit50: budget month has the actual calendar length")
+            let dates = [start.addingTimeInterval(-1), start, interval.end.addingTimeInterval(-1), interval.end]
+            let inputs = dates.enumerated().map { index, date -> FinancialOperationInput in
+                var input = op(-Int64(index + 1) * 100, kind: "expense", description: "Audit market",
+                               date: date.formatted(.iso8601))
+                input.categoryPath = "Еда/Супермаркеты"
+                return input
+            }
+            let statuses = BudgetEngine.statuses(inputs: inputs, budgets: [Budget(group: nil, limitKopecks: 1_000)],
+                                                  month: start, taxonomy: .builtin, calendar: calendar)
+            require(statuses.first?.spentKopecks == 500, "audit50: first and last second count, adjacent months do not")
+        }
+    }
+
+    static func testAudit50BudgetMutationAndFallback() {
+        var history = SavedHistory()
+        require(history.setBudget(group: "Audit missing group", limitKopecks: 1_000, month: nil), "audit50: general limit")
+        let id = history.budgets!.first!.id
+        for amount in [1_000, 1_500, 1_500] {
+            require(history.setBudget(group: "Audit missing group", limitKopecks: Int64(amount), month: nil), "audit50: repeated set")
+        }
+        require(history.budgets?.count == 1 && history.budgets?.first?.id == id, "audit50: set keeps identity, no duplicates")
+        require(history.setBudget(group: "Audit missing group", limitKopecks: 2_000, month: "2032-02"), "audit50: month-only limit")
+        require(BudgetEngine.limit(history.budgets!, group: "Audit missing group", monthKey: "2032-02")?.isMonthOnly == true,
+                "audit50: month-only overrides general")
+        history.removeBudget(group: "Audit missing group", month: "2032-02")
+        require(BudgetEngine.limit(history.budgets!, group: "Audit missing group", monthKey: "2032-02")?.limitKopecks == 1_500,
+                "audit50: removing month-only restores general")
+        history.removeBudget(group: "Audit absent", month: nil)
+        let statuses = BudgetEngine.statuses(inputs: [], budgets: history.budgets!, month: Date(timeIntervalSince1970: 0), taxonomy: .builtin)
+        require(statuses.count == 1 && statuses[0].spentKopecks == 0, "audit50: a removed tree group keeps a zero-spent limit")
+        history.removeBudget(group: "Audit missing group", month: nil)
+        history.removeBudget(group: "Audit missing group", month: nil)
+        require(history.budgets == nil, "audit50: removing last limit repeatedly leaves nil")
+    }
+
+    static func testAudit50BudgetRefundsAndFutureDates() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let month = BankDateParser.parse("2032-06-10T12:00:00Z")!
+        var purchase = op(-100, kind: "expense", description: "Audit market", date: "2032-06-02T10:00:00Z")
+        purchase.categoryPath = "Еда/Супермаркеты"
+        var future = purchase
+        future = op(-200, kind: "expense", description: "Audit future", date: "2032-06-29T10:00:00Z")
+        future.categoryPath = purchase.categoryPath
+        let refund = op(500, kind: "refund", description: "Audit refund", date: "2032-06-04T10:00:00Z")
+        let own = op(-900, kind: "internal_transfer", description: "Audit own move", date: "2032-06-05T10:00:00Z")
+        let zero = op(0, kind: "expense", date: "2032-06-05T10:00:00Z")
+        let budgets = [Budget(group: nil, limitKopecks: 1_000), Budget(group: "Еда", limitKopecks: 1_000)]
+        let statuses = BudgetEngine.statuses(inputs: [purchase, future, refund, own, zero], budgets: budgets,
+                                              month: month, taxonomy: .builtin, calendar: calendar)
+        require(statuses[0].spentKopecks == -200 && statuses[0].percent == 0 && statuses[0].level == .calm,
+                "audit50: overall budget nets refunds, ignores own transfers and zero spending")
+        require(statuses[1].spentKopecks == 300, "audit50: group budgets intentionally use gross purchases, including future dates in that month")
+        let cancelled = BudgetEngine.statuses(inputs: [purchase, op(100, kind: "refund", date: "2032-06-04T10:00:00Z")],
+                                               budgets: budgets, month: month, taxonomy: .builtin, calendar: calendar)
+        require(cancelled[0].spentKopecks == 0 && cancelled[1].spentKopecks == 100, "audit50: zero net spending differs from gross group spending")
+    }
+
+    static func testAudit50BudgetNotices() {
+        func status(_ group: String?, _ spent: Int64) -> BudgetStatus {
+            BudgetStatus(group: group, limitKopecks: 100, spentKopecks: spent, isMonthOnly: false)
+        }
+        let notices = BudgetEngine.notices([status(nil, 200), status("Audit near A", 90), status("Audit over A", 101),
+                                           status("Audit calm", 89), status("Audit near B", 100), status("Audit over B", 150)])
+        require(notices.map(\.level) == [.exceeded, .warning], "audit50: exceeded precedes warning")
+        require(notices.map(\.text) == ["Превышен бюджет: Audit over A, Audit over B", "Почти исчерпан бюджет: Audit near A, Audit near B"],
+                "audit50: notices name only relevant groups in input order")
+        require(BudgetEngine.notices([]).isEmpty && BudgetEngine.notices([status(nil, 100), status("Audit calm", -10)]).isEmpty,
+                "audit50: overall bar and negative spending produce no category notice")
+    }
+
+    static func testAudit50AccountScopeWithFilters() {
+        let date = BankDateParser.parse("2032-06-02T10:00:00Z")!
+        let interval = BudgetEngine.monthInterval(containing: date)
+        let group = AccountGroup(name: "Audit group")
+        let cash = Account(name: "Audit cash", icon: "banknote", color: "green", groupID: group.id, startBalanceKopecks: 0, startDate: date)
+        let other = Account(name: "Audit wallet", icon: "wallet.pass", color: "blue", startBalanceKopecks: 0, startDate: date)
+        let resolved = ReportAccountChoice.group(group.id).resolve(accounts: [cash, other], groups: [group])
+        require(resolved.accounts == [cash] && resolved.scope == .accounts([cash]), "audit50: one-member group equals its account scope")
+        require(!ReportAccountChoice.account(UUID()).resolve(accounts: [cash], groups: []).isValid, "audit50: missing account falls back")
+        var history = SavedHistory()
+        history.accounts = [cash, other]
+        history.manualOperations = [
+            ManualOperation(kind: .expense, amountKopecks: 100, date: date, accountID: cash.id, group: "Еда", subcategory: "Супермаркеты"),
+            ManualOperation(kind: .expense, amountKopecks: 200, date: date, accountID: cash.id, group: "Транспорт", subcategory: "Такси"),
+            ManualOperation(kind: .expense, amountKopecks: 400, date: date, accountID: other.id, group: "Еда", subcategory: "Супермаркеты"),
+            ManualOperation(kind: .expense, amountKopecks: 800, date: date, accountID: nil, group: "Еда", subcategory: "Супермаркеты"),
+            ManualOperation(kind: .transfer, amountKopecks: 1_000, date: date, accountID: cash.id, toAccountID: other.id),
+            ManualOperation(kind: .income, amountKopecks: 50, date: date, accountID: cash.id, subcategory: "Прочие доходы")
+        ]
+        let inputs = history.financialInputs
+        require(inputs.contains { $0.accountID == ReportAccountScope.noAccount }, "audit50: accountless manual entry has distinct sentinel")
+        let filter = ReportFilter(excludedGroups: ["Транспорт"], scope: resolved.scope)
+        let slices = ReportEngine.slices(inputs, in: interval, mode: .expenses, grouping: .categories, taxonomy: .builtin, filter: filter)
+        let bars = ReportEngine.bars(inputs, buckets: [interval], mode: .expenses, grouping: .categories, filter: filter)
+        let flow = ReportEngine.flow(inputs, buckets: [interval], filter: filter)
+        require(slices.reduce(0) { $0 + $1.amountKopecks } == 100 && bars.reduce(0) { $0 + $1.amountKopecks } == 100,
+                "audit50: slices and bars combine account scope with category exclusions; transfers do not count")
+        require(flow.first?.expenseKopecks == 100 && flow.first?.incomeKopecks == 50, "audit50: flow applies both dimensions")
+        let excludedPayees = Set(inputs.filter { $0.accountID == cash.id && $0.amountKopecks == -100 }.map { FinancialEngine.payeeRuleKey($0.description) })
+        let payeeFilter = ReportFilter(excludedGroups: ["Транспорт"], excludedPayees: excludedPayees, scope: resolved.scope)
+        require(ReportEngine.slices(inputs, in: interval, mode: .expenses, grouping: .payees, taxonomy: .builtin, filter: payeeFilter).isEmpty,
+                "audit50: payee exclusions are applied within account scope")
+        let scopes: [ReportAccountScope] = [.all, .accounts([]), .accounts([cash]), .accounts([other]), .accounts([cash, other]),
+                                            ReportAccountScope(accountIDs: [cash.id], includesBankCard: true)]
+        require(Set(scopes.map(\.cacheKey)).count == scopes.count, "audit50: distinct sets and bank flag have distinct keys")
+        require(ReportAccountScope.accounts([cash, other]).cacheKey == ReportAccountScope.accounts([other, cash, cash]).cacheKey,
+                "audit50: scope key is stable across order and duplicates")
+    }
+
+    static func testAudit50HistoryPeriods() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 6 * 3600)!
+        for text in ["2031-12-31T23:59:59+06:00", "2032-01-01T00:00:00+06:00", "2032-02-29T23:59:59+06:00"] {
+            let now = BankDateParser.parse(text)!
+            let period = HistoryPeriod.currentMonth(now: now, calendar: calendar)
+            require(HistoryPeriod(storageText: period.storageText) == period, "audit50: month survives storage across year and leap day")
+            let interval = historyInterval(period, now: now, calendar: calendar)
+            require(calendar.component(.day, from: interval.start) == 1 && interval.end > now, "audit50: current month starts on first and includes today")
+        }
+        for days in [1, 3660] { require(HistoryPeriod(storageText: "days:\(days)") == .lastDays(days), "audit50: storage day bounds") }
+        for text in ["days:3661", "days:-1", "days:9223372036854775808", "custom::0", "custom:0:inf", "all:"] {
+            require(HistoryPeriod(storageText: text) == nil, "audit50: malformed and excessive storage values are rejected")
+        }
+        let reversed = HistoryPeriod.custom(from: Date(timeIntervalSince1970: 1), through: Date(timeIntervalSince1970: -1))
+        require(HistoryPeriod(storageText: reversed.storageText) == reversed, "audit50: epoch boundary and reversed dates survive storage")
+    }
+
+    static func testAudit50BackupDates() throws {
+        for fraction in ["100", "900", "999"] {
+            let anchor = BankDateParser.parse("2032-06-01T10:00:00.\(fraction)Z")!
+            var history = SavedHistory()
+            history.accounts = [Account(name: "Audit precision", icon: "banknote", color: "blue", startBalanceKopecks: 0, startDate: anchor)]
+            history.manualOperations = [ManualOperation(kind: .income, amountKopecks: 1, date: anchor, accountID: history.accounts![0].id)]
+            let restored = try HistoryBackup.decode(HistoryBackup.encode(history, exportedAt: anchor))
+            require(restored.accounts?.first?.startDate == anchor && restored.manualOperations?.first?.date == anchor,
+                    "audit50: backup preserves 0.\(fraction) seconds in account and manual dates")
+        }
+        let old = Data(#"{"format":1,"exportedAt":"2032-06-01T10:00:00Z","history":{"operations":[]}}"#.utf8)
+        let restoredOld = try HistoryBackup.decode(old)
+        require(restoredOld.operations.isEmpty, "audit50: pre-fraction backup opens")
+    }
+
+    // Stage 50 failures are compiled but intentionally not run until Claude fixes the underlying code.
+    static func testKnownIssues50() {
+        testKnownIssue50BudgetLevelOverflow()
+        testKnownIssue50BudgetPercentOverflow()
+        testKnownIssue50BudgetRemainingOverflow()
+    }
+
+    static func testKnownIssue50BudgetLevelOverflow() {
+        require(BudgetEngine.level(spent: Int64.max - 1, limit: Int64.max) == .warning,
+                "known issue50: comparing the 90 percent threshold must not multiply into overflow")
+    }
+
+    static func testKnownIssue50BudgetPercentOverflow() {
+        let status = BudgetStatus(group: nil, limitKopecks: Int64.max, spentKopecks: Int64.max, isMonthOnly: false)
+        require(status.percent == 100, "known issue50: the percent of an exactly spent large limit must be 100 without overflow")
+    }
+
+    static func testKnownIssue50BudgetRemainingOverflow() {
+        let status = BudgetStatus(group: nil, limitKopecks: Int64.max, spentKopecks: -1, isMonthOnly: false)
+        require(status.remainingKopecks >= 0, "known issue50: a large limit with net refunds must not crash calculating remaining")
+    }
+
     static func main() {
+        testAudit50ReceiptResults()
+        testAudit50BudgetMonthBoundaries()
+        testAudit50BudgetMutationAndFallback()
+        testAudit50BudgetRefundsAndFutureDates()
+        testAudit50BudgetNotices()
+        testAudit50AccountScopeWithFilters()
+        testAudit50HistoryPeriods()
+        do { try testAudit50BackupDates() } catch { require(false, "audit50: backup date fixture failed") }
         require(FinancialEngine.classify(op(-10_000, kind: "expense")).type == .expense, "expense")
         require(FinancialEngine.classify(op(5_000, kind: "income")).type == .income, "explicit income")
         require(FinancialEngine.classify(op(5_100, kind: "unclassified_income")).type == .unknown, "technical unclassified income must stay unknown")

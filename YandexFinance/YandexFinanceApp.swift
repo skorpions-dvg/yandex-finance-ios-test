@@ -651,6 +651,7 @@ struct SettingsView: View {
     @State private var exportedBackup: BackupDocument?
     @State private var exportedType: UTType = .json
     @State private var exportedName = ""
+    @State private var exportedNotice: String?
     @State private var showReceiptsImporter = false
     @State private var showBackupImporter = false
     @State private var showCategoryImporter = false
@@ -659,6 +660,7 @@ struct SettingsView: View {
     @State private var pendingRestore: URL?
 
     private func exportBackupJSON() {
+        exportedNotice = nil
         do {
             let data = try browser.backupData()
             exportedType = .json
@@ -674,8 +676,13 @@ struct SettingsView: View {
             browser.message = "Фото чеков на этом телефоне пока нет."
             return
         }
+        guard archive.count > 0 else {
+            browser.message = ReceiptLogic.exportMessage(saved: 0, skipped: archive.skipped)
+            return
+        }
         exportedType = .zip
         exportedName = "FinanceTest-receipts-\(Date().formatted(.iso8601.year().month().day()))"
+        exportedNotice = ReceiptLogic.exportMessage(saved: archive.count, skipped: archive.skipped)
         exportedBackup = BackupDocument(data: archive.data)
     }
     var body: some View {
@@ -827,17 +834,21 @@ struct SettingsView: View {
         .fileExporter(isPresented: Binding(get: { exportedBackup != nil }, set: { if !$0 { exportedBackup = nil } }),
                       document: exportedBackup, contentType: exportedType,
                       defaultFilename: exportedName) { result in
-            if case .success = result { browser.message = "Резервная копия сохранена." }
+            switch result {
+            case .success: browser.message = exportedNotice ?? "Резервная копия сохранена."
+            case .failure: browser.message = "Не удалось сохранить файл копии."
+            }
+            exportedNotice = nil
         }
         .fileImporter(isPresented: $showReceiptsImporter, allowedContentTypes: [.zip]) { result in
             guard case .success(let url) = result else { return }
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            guard let data = try? Data(contentsOf: url), let added = ReceiptStore.restoreArchive(data) else {
+            guard let data = try? Data(contentsOf: url), let restored = ReceiptStore.restoreArchive(data) else {
                 browser.message = "Это не архив фото чеков, сделанный приложением."
                 return
             }
-            browser.message = added == 0 ? "Все фото из архива уже есть на этом телефоне." : "Фото чеков восстановлено: \(added)."
+            browser.message = restored.message
         }
         .alert("Импорт PDF-выписок", isPresented: Binding(get: { browser.statementPreview != nil }, set: { _ in })) {
             Button("Применить") { browser.applyStatementImport() }

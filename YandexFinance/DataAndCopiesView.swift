@@ -65,6 +65,7 @@ struct DataAndCopiesView: View {
 
     private func run(_ action: () -> Void) {
         tappedAt = Date()
+        browser.message = ""
         action()
     }
 }
