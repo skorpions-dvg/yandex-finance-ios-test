@@ -664,6 +664,8 @@ struct SettingsView: View {
     @State private var exportedNotice: String?
     /// Operations whose receipts are in the collection that is being saved; they are marked as collected once it is saved.
     @State private var pendingCollected: [String] = []
+    /// A collection of receipts is being prepared or saved: a second one is not started meanwhile.
+    @State private var collecting = false
     @State private var showReceiptsImporter = false
     @State private var showBackupImporter = false
     @State private var showCategoryImporter = false
@@ -705,9 +707,12 @@ struct SettingsView: View {
     }
     /// «Собрать чеки для проверки»: the photos with the text read from them, for the check of the reading.
     private func collectReceiptChecks() {
+        guard !collecting else { return }
+        collecting = true
         let history = browser.history
         Task {
             guard let collection = await ReceiptDiagnostics.collect(history: history) else {
+                collecting = false
                 browser.message = "Новых чеков для проверки нет."
                 return
             }
@@ -870,6 +875,7 @@ struct SettingsView: View {
                       defaultFilename: exportedName) { result in
             let collected = pendingCollected
             pendingCollected = []
+            collecting = false
             switch result {
             case .success:
                 browser.message = exportedNotice ?? "Резервная копия сохранена."

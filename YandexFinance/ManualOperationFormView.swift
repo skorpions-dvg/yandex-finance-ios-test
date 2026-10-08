@@ -34,6 +34,14 @@ struct ManualOperationFormView: View {
     /// of the receipt and the operation cannot be saved.
     @State private var dateConfirmBase: Date?
     @State private var recognizing = false
+    /// Each reading has a number: a result that comes after the form was closed, or after a newer reading, is dropped.
+    @State private var recognitionGeneration = 0
+    /// The goods as the last accepted reading set them: a list that differs from it was edited by the owner and is not replaced.
+    @State private var itemsSetByScan = ""
+    /// How much the best reading of this form gave; a later photo replaces the goods and the scan only if it gives more.
+    @State private var scanScore = -1
+    /// The time was read from printed text, not from the QR code: it may be misread, the owner is asked to check it.
+    @State private var timeCheckBase: Date?
     @State private var showDateTime = false
     @State private var selectsTime = false
 
@@ -71,9 +79,10 @@ struct ManualOperationFormView: View {
 
     /// A receipt was read but its date was not: the date must be set by hand (or confirmed as it is).
     private var dateIsPending: Bool { dateConfirmBase.map { $0 == date } ?? false }
+    private var timeNeedsCheck: Bool { timeCheckBase.map { $0 == date } ?? false }
 
     private var canSave: Bool {
-        guard parsedAmount != nil, date <= Date(), !dateIsPending,
+        guard parsedAmount != nil, date <= Date(), !dateIsPending, !recognizing,
               eligibleAccounts.contains(where: { $0.id == accountID }) else { return false }
         switch kind {
         case .expense:
@@ -150,6 +159,7 @@ struct ManualOperationFormView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Отмена", systemImage: "xmark") {
+                        recognitionGeneration += 1
                         ReceiptStore.delete(pendingReceipts)
                         pendingReceipts = []
                         dismiss()
@@ -275,6 +285,11 @@ struct ManualOperationFormView: View {
                         .font(.footnote).foregroundStyle(.red)
                     Button("Дата и время верны") { dateConfirmBase = nil }
                         .font(.footnote)
+                } else if timeNeedsCheck {
+                    Text("Время взято из печатного текста чека, где цифра могла прочитаться неверно: сверьте с чеком.")
+                        .font(.footnote).foregroundStyle(.orange)
+                    Button("Время верно") { timeCheckBase = nil }
+                        .font(.footnote)
                 }
                 TextField("Комментарий", text: $note).focused($fieldFocused)
             } footer: {
@@ -333,9 +348,13 @@ struct ManualOperationFormView: View {
     private func recognize(_ images: [UIImage]) {
         recognizing = true
         recognition = nil
+        recognitionGeneration += 1
+        let generation = recognitionGeneration
         let dateAtStart = date
         Task {
             let parsed = await ReceiptRecognizer.recognize(images)
+            // The form was closed or a newer reading began: an old result must not win over it or over the owner's corrections.
+            guard generation == recognitionGeneration else { return }
             apply(parsed, dateAtStart: dateAtStart)
             recognizing = false
         }
@@ -343,18 +362,32 @@ struct ManualOperationFormView: View {
 
     /// `dateAtStart`: the date of the form when the reading began; a date the user changed meanwhile is not overwritten.
     private func apply(_ parsed: ParsedReceipt, dateAtStart: Date) {
-        lastScan = ReceiptScan(scannedAt: Date(), readLines: parsed.readLines, totalKopecks: parsed.totalKopecks, date: parsed.date,
-                               merchant: parsed.merchant, goods: parsed.goods, dateHasTime: parsed.dateHasTime)
+        // How much this reading gave. A later photo of the same receipt replaces the scan, the goods and the date only if it gives more.
+        let adds = ReceiptParser.goodsSumNote(parsed.goods, expectedKopecks: parsed.totalKopecks)?.adds == true
+        let score = (parsed.totalKopecks != nil ? 3 : 0) + (parsed.date != nil ? (parsed.dateHasTime ? 3 : 1) : 0)
+            + min(parsed.goods.filter { $0.kopecks != nil }.count, 6) + (adds ? 10 : 0)
+        let isBetter = score > scanScore
+        if isBetter {
+            scanScore = score
+            lastScan = ReceiptScan(scannedAt: Date(), readLines: parsed.readLines, totalKopecks: parsed.totalKopecks, date: parsed.date,
+                                   merchant: parsed.merchant, goods: parsed.goods, dateHasTime: parsed.dateHasTime)
+        }
         // Neither a sum nor a date: nothing useful was read, and the owner is told so instead of getting a guessed form.
         if parsed.totalKopecks == nil && parsed.date == nil {
-            recognitionFailed = true
-            dateConfirmBase = nil
-            recognition = "Не удалось прочитать чек. Сфотографируйте ровнее и при хорошем свете или введите данные вручную. Фото останется приложенным."
+            if scanScore > 0 {
+                recognition = "Эта фото не прочиталась, остаётся прежнее чтение."
+            } else {
+                recognitionFailed = true
+                dateConfirmBase = nil
+                recognition = "Не удалось прочитать чек. Сфотографируйте ровнее и при хорошем свете или введите данные вручную. Фото останется приложенным."
+            }
             return
         }
         recognitionFailed = false
-        dateConfirmBase = nil
-        if !parsed.goods.isEmpty { itemsText = parsed.goods.map(\.line).joined(separator: "\n") }
+        if isBetter, !parsed.goods.isEmpty, itemsText.isEmpty || itemsText == itemsSetByScan {
+            itemsSetByScan = parsed.goods.map(\.line).joined(separator: "\n")
+            itemsText = itemsSetByScan
+        }
         var filled: [String] = []
         if kind == .expense {
             if let total = parsed.totalKopecks, amountText.filter({ !$0.isWhitespace }).isEmpty {
@@ -380,17 +413,24 @@ struct ManualOperationFormView: View {
                 filled.append("счёт")
             }
         }
-        if let when = parsed.date, when <= Date(), date == dateAtStart {
-            date = when
-            filled.append("дата")
-            if !parsed.dateHasTime { dateConfirmBase = date }
-        } else if parsed.date == nil, date == dateAtStart {
-            // The date of the receipt was not read: the form keeps today's date, but it is not accepted until it is set.
-            dateConfirmBase = date
+        if isBetter {
+            dateConfirmBase = nil
+            timeCheckBase = nil
+            if let when = parsed.date, when <= Date(), date == dateAtStart {
+                date = when
+                filled.append("дата")
+                if !parsed.dateHasTime { dateConfirmBase = date }
+                else if !parsed.dateFromQR { timeCheckBase = date }
+            } else if date == dateAtStart, parsed.date.map({ $0 > Date() }) ?? true {
+                // The date of the receipt was not read, or it was read as a day to come (a misread year): the form keeps today's date,
+                // but it is not accepted until it is set.
+                dateConfirmBase = date
+            }
         }
         var message = filled.isEmpty ? "Ничего нового не нашлось." : "Заполнено: " + filled.joined(separator: ", ") + ". Проверьте и сохраните."
         if parsed.totalKopecks == nil { message += " Сумму не удалось прочитать: введите её вручную." }
         if parsed.date == nil { message += " Дату чека не удалось прочитать: укажите её." }
+        else if parsed.date.map({ $0 > Date() }) == true { message += " Дата чека прочиталась как будущая: укажите её." }
         else if !parsed.dateHasTime { message += " Время чека не прочиталось: укажите его." }
         recognition = message
     }

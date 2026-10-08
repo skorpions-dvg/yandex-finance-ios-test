@@ -582,7 +582,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         }
         pendingHistory = next
         Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 250_000_000)
             self?.settlePending()
         }
         return true

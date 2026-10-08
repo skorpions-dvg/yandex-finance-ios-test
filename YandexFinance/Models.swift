@@ -479,6 +479,9 @@ struct ExpenseCategoryResolver {
         var input = operation.financialInput
         if let nature = natures[operation.identity] { input.confirmedNature = nature }
         input.accountID = manualAccounts[operation.identity]
+        // A purchase with Split or with Plus points is no money of the bank card or of Save: it belongs to no money account, so the
+        // report of a chosen account leaves it out (it stays in «all accounts»).
+        if input.accountID == nil, FinancialEngine.isSplitOrPointsSide(input) { input.accountID = ManualOperation.noAccountID }
         if input.accountID == nil, let saveAccountID, FinancialEngine.isSaveSide(input) { input.accountID = saveAccountID }
         return input
     }
@@ -1014,6 +1017,17 @@ extension SavedHistory {
 
     func receiptGoods(forIdentity identity: String) -> [ReceiptGood] { receiptGoods?[identity] ?? [] }
 
+    /// Keeps only the photo names made by the app (`ReceiptLogic.isValid`); an operation left without photos loses its entry.
+    mutating func dropForeignReceiptNames() {
+        guard let all = receipts else { return }
+        var clean: [String: [String]] = [:]
+        for (identity, files) in all {
+            let good = files.filter { ReceiptLogic.isValid(fileName: $0) }
+            if !good.isEmpty { clean[identity] = good }
+        }
+        receipts = clean.isEmpty ? nil : clean
+    }
+
     mutating func setReceiptGoods(_ goods: [ReceiptGood], forIdentity identity: String) {
         var all = receiptGoods ?? [:]
         all[identity] = goods.isEmpty ? nil : goods
@@ -1200,7 +1214,10 @@ enum HistoryBackup {
         guard envelope.format <= formatVersion else {
             throw AppFailure(message: "Копия сделана более новой версией приложения. Обновите приложение и повторите.")
         }
-        return envelope.history
+        // A copy from outside may name any file: only the names the app itself makes are kept (never «../» or a folder).
+        var history = envelope.history
+        history.dropForeignReceiptNames()
+        return history
     }
 }
 

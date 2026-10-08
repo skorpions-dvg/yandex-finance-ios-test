@@ -35,7 +35,7 @@ function audit53BankRows(knownOnly = false) {
   let passed = 0;
   const failures = [];
   for (const [id, title, sum, row, details, method, kind, known] of cases) {
-    if (!!known !== knownOnly) continue;
+    if (knownOnly && !known) continue;
     const reference = {type: 'DEPOT', chainId: `audit53-${id}`, operationId: `audit53-${id}`, operationTimestamp: '2033-03-10T10:30:00Z'};
     const address = 'https://bank.yandex.ru/my/transactions-history/operation?id=' + encodeURIComponent(JSON.stringify([reference]));
     const actual = parse(address, makeCard(title, sum, details), row, new Date('2033-03-11T12:00:00Z'));

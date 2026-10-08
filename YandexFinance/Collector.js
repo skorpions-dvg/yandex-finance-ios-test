@@ -649,7 +649,10 @@ function parseCard(url, cardText, rowText, now = new Date()) {
   // The list row names the account it belongs to after the amount («Карта Пэй», «Счёт в Сейвах», «Сплит», «Баллы Плюса»).
   // The card of an interest payout has no «Способ оплаты», only «На счёт в Сейвах», so the row decides; the destination of
   // an incoming payment to Save is the second source.
-  const listedAccountMatch = /(?:карта\s+п[эе]й|сч[её]т\s+в\s+сейвах|сплит|баллы\s+плюса)\s*$/i.exec(rowText.trim());
+  // Only what follows the last amount can be the account (a shop whose name ends with «Сплит» is not the Split account).
+  const rowAmounts = [...rowText.matchAll(/[+−–-]\s*\d[\d\s.,]*\s*₽/g)];
+  const afterAmount = rowAmounts.length ? rowText.slice(rowAmounts[rowAmounts.length - 1].index + rowAmounts[rowAmounts.length - 1][0].length) : '';
+  const listedAccountMatch = /(?:карта\s+п[эе]й|сч[её]т\s+в\s+сейвах|сплит|баллы\s+плюса)\s*$/i.exec(afterAmount.trim());
   const listedAccount = listedAccountMatch ? listedAccountMatch[0].trim() : null;
   const fromOwn = /(?:^|\s)(?:с\s+карты\s+п[эе]й|со\s+сч[её]та\s+в\s+сейвах|с\s+сч[её]та\s+в\s+сейвах)/i.test(combined);
   const toOwn = /на\s+(?:сч[её]т\s+в\s+сейвах|карту\s+п[эе]й)/i.test(combined);

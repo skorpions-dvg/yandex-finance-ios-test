@@ -730,6 +730,55 @@ struct FinanceEngineTests {
         require(ReceiptLogic.orphanFiles(all: [], referenced: ["manual:1": ["receipt-1.jpg"]]).isEmpty, "no files, nothing to delete")
     }
 
+    /// Repairs of prices, pairing of the two passes, foreign photo names, Split and points in the reports (46.18).
+    static func testReceiptRepairs() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 20, minute: 0))!
+        // a good without a price: its figures stuck to the next name; the gap to the total is among the sums near that name
+        let layout = ["ЦЕНА ЦЕНА СО СКИДКОЙ КОЛ-ВО ИТОГ",
+                      "ТОВАР А шарик <РОССИя>: 10 29.99", "36.99 29.99",
+                      "ТОВАР Б пиво тЕн 174.99", "174.99 174.99ł",
+                      "ТОВАР В колбаса П/СУХ",
+                      "ТОВАР Г креветки в/м хВО: 490 179.99 79.99", "279.99 279.99 559.98",
+                      "ТОВАР Д шоколад какаС-РЕм", "59.99 211 . 119.98",
+                      "ТОВАР Е арахис: 19,99", "73.99 73.99 1ШT -",
+                      "Карта Nº ****-****-0000", "ИТОГО 1038.92"]
+        let read = ReceiptParser.parseText(layout, now: now, calendar: calendar)
+        require(read.totalKopecks == 103_892, "the total of the receipt")
+        require(read.goods.map(\.kopecks) == [2_999, 17_499, 7_999, 55_998, 11_998, 7_399], "the missing price is found among the sums of the next name")
+        // one good, a misread sum repeated twice, the right price among the sums and the total of the receipt
+        let single = ReceiptParser.parseText(["Сахар учебный 19.99", "89.99 73.99 1ШТ. 19.99", "ИТОГО 73.99"], now: now, calendar: calendar)
+        require(single.goods == [ReceiptGood(name: "Сахар учебный", kopecks: 7_399)], "a repeated misread sum is not taken for the price")
+        // nothing is guessed when the receipt has a discount on the whole of it
+        let discounted = ReceiptParser.parseText(["Товар один 1 x 500.00 500.00", "Товар два 1 x 600.00 600.00", "ИТОГ БЕЗ СКИДОК 1100.00", "СКИДКА 100.00", "ИТОГ 1000.00"],
+                                                 now: now, calendar: calendar)
+        require(discounted.goods.map(\.kopecks) == [50_000, 60_000], "prices above the total are left as they are")
+        require(ReceiptParser.reconcilePrices([ReceiptGood(name: "А", kopecks: 100), ReceiptGood(name: "Б")], bands: [[100], []], expected: 500)
+                .map(\.kopecks) == [100, nil], "a gap that is not among the sums repairs nothing")
+        // pairing of the two passes
+        let named = [ReceiptGood(name: "Молоко учебное"), ReceiptGood(name: "Хлеб учебный")]
+        let priced = [ReceiptGood(name: "Молоко учебнсе", kopecks: 11_800), ReceiptGood(name: "Хлеб учеьный", kopecks: 4_650)]
+        require(ReceiptParser.pairGoods(named: named, priced: priced)?.map(\.kopecks) == [11_800, 4_650], "the same lines are paired")
+        require(ReceiptParser.pairGoods(named: [ReceiptGood(name: "Хлеб учебный"), ReceiptGood(name: "Сыр твёрдый")],
+                                        priced: [ReceiptGood(name: "Молоко учебное", kopecks: 11_800), ReceiptGood(name: "Хлеб учебный", kopecks: 4_650)]) == nil,
+                "a shifted list is not paired")
+        require(ReceiptParser.pairGoods(named: [], priced: []) == nil && ReceiptParser.pairGoods(named: named, priced: [priced[0]]) == nil, "different counts")
+        require(ReceiptParser.similarity("Хлеб", "Хлеб") == 1 && ReceiptParser.similarity("Хлеб", "Сыр") < 0.3, "similarity of texts")
+        // photo names from outside
+        var history = SavedHistory()
+        history.receipts = ["manual:1": ["receipt-00000000-0000-0000-0000-000000000001.jpg", "../outside.txt", "sub/a.jpg", "/etc/hosts"],
+                            "manual:2": ["../x.jpg"]]
+        let copy = try? HistoryBackup.decode(HistoryBackup.encode(history))
+        require(copy?.receipts == ["manual:1": ["receipt-00000000-0000-0000-0000-000000000001.jpg"]], "a copy keeps only the photo names the app makes")
+        // Split and points belong to no money account
+        var split = SavedHistory()
+        split.operations = [BankOperation(identity: "s1", occurredAt: "2032-06-05T10:00:00Z", timePrecision: "exact", description: "Магазин", amountKopecks: -5_000,
+                                          currency: "RUB", status: "Выполнено", category: "Супермаркеты", mcc: nil, purpose: nil, paymentMethod: "Баллы Плюса",
+                                          providers: [], kind: "expense")]
+        require(split.financialInputs[0].accountID == ManualOperation.noAccountID, "a purchase with points has no money account")
+    }
+
     static func testRegularPayments() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3743,6 +3792,10 @@ struct FinanceEngineTests {
         testReceiptCheckReport()
         testReceiptPriceBands()
         testReceiptLayoutsRepaired()
+        testReceiptRepairs()
+        testKnownIssues52()
+        testKnownIssues53()
+        testKnownAccountIssues53()
         testRegularPayments()
         testReceipts()
         testReceiptParser()

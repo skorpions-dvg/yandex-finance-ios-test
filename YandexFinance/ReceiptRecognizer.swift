@@ -64,9 +64,9 @@ enum ReceiptRecognizer {
     nonisolated private static func assemble(_ reading: Reading) -> ParsedReceipt {
         var result = ReceiptParser.merge(qr: reading.qr, text: ReceiptParser.parseText(reading.lines))
         let named = ReceiptParser.itemEntries(in: reading.nameLines)
-        let priced = ReceiptParser.itemEntries(in: reading.lines)
-        if !named.isEmpty && named.count == priced.count {
-            result.goods = zip(named, priced).map { ReceiptGood(name: $0.name, kopecks: $1.kopecks) }
+        let priced = ReceiptParser.itemEntries(in: reading.lines, expectedTotal: result.totalKopecks)
+        if let paired = ReceiptParser.pairGoods(named: named, priced: priced) {
+            result.goods = paired
         } else if !priced.isEmpty {
             result.goods = priced
         } else {
@@ -83,8 +83,8 @@ enum ReceiptRecognizer {
         if reading.qr != nil { points += 5 }
         if parsed.totalKopecks != nil { points += 3 }
         if parsed.date != nil { points += parsed.dateHasTime ? 3 : 1 }
-        points += parsed.goods.filter { $0.kopecks != nil }.count
-        if ReceiptParser.goodsSumNote(parsed.goods, expectedKopecks: parsed.totalKopecks)?.adds == true { points += 8 }
+        points += min(parsed.goods.filter { $0.kopecks != nil }.count, 6)
+        if ReceiptParser.goodsSumNote(parsed.goods, expectedKopecks: parsed.totalKopecks)?.adds == true { points += 10 }
         return points
     }
 
@@ -175,9 +175,11 @@ enum ReceiptDiagnostics {
         let operations = Dictionary(history.allOperations.map { ($0.identity, $0) }, uniquingKeysWith: { first, _ in first })
         let resolver = ExpenseCategoryResolver(history)
         let queue = (history.receipts ?? [:]).compactMap { identity, files -> (operation: BankOperation, files: [String], date: Date)? in
-            guard !done.contains(identity), !files.isEmpty, let operation = operations[identity],
+            // Only names the app itself makes are read from the receipts folder.
+            let valid = files.filter { ReceiptLogic.isValid(fileName: $0) }
+            guard !done.contains(identity), !valid.isEmpty, let operation = operations[identity],
                   let date = BankDateParser.parse(operation.occurredAt) else { return nil }
-            return (operation, files, date)
+            return (operation, valid, date)
         }.sorted { $0.date < $1.date }
         guard !queue.isEmpty else { return nil }
         var entries: [(name: String, data: Data)] = []

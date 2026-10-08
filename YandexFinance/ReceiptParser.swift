@@ -11,6 +11,8 @@ struct ParsedReceipt: Equatable {
     var readLines: [String] = []
     /// False when a date was read but no time with it (then the date is a guess for the time of day).
     var dateHasTime = true
+    /// The date and time come from the QR code: exact, unlike the printed text, where a digit may be misread.
+    var dateFromQR = false
 
     var isEmpty: Bool { totalKopecks == nil && date == nil && merchant == nil }
 }
@@ -81,14 +83,15 @@ enum ReceiptParser {
     /// The lines of a receipt from top to bottom, as they were read.
     static func parseText(_ lines: [String], now: Date = Date(), calendar: Calendar = .current) -> ParsedReceipt {
         let found = dateAndTime(in: lines, now: now, calendar: calendar)
-        return ParsedReceipt(totalKopecks: total(in: lines), date: found?.date, merchant: merchant(in: lines), goods: itemEntries(in: lines),
+        let sum = total(in: lines)
+        return ParsedReceipt(totalKopecks: sum, date: found?.date, merchant: merchant(in: lines), goods: itemEntries(in: lines, expectedTotal: sum),
                              dateHasTime: found?.hasTime ?? true)
     }
 
     /// The QR code is exact for the sum and the date; the text gives what it lacks and the shop.
     static func merge(qr: ParsedReceipt?, text: ParsedReceipt) -> ParsedReceipt {
         ParsedReceipt(totalKopecks: qr?.totalKopecks ?? text.totalKopecks, date: qr?.date ?? text.date, merchant: text.merchant, goods: text.goods,
-                      dateHasTime: qr?.date != nil ? true : text.dateHasTime)
+                      dateHasTime: qr?.date != nil ? true : text.dateHasTime, dateFromQR: qr?.date != nil)
     }
 
     /// What is looked for, in order: the sum to pay, what was paid by card (it is what the bank charges), the total.
@@ -226,7 +229,9 @@ enum ReceiptParser {
     static func items(in lines: [String]) -> [String] { itemEntries(in: lines).map(\.name) }
 
     /// The goods with the final price of the line: the last sum on the line of the good or on the line of figures after it.
-    static func itemEntries(in lines: [String]) -> [ReceiptGood] {
+    /// With `expectedTotal` (the total of the receipt) prices that do not add up to it are repaired where the figures to repair
+    /// them are in the text (`reconcilePrices`).
+    static func itemEntries(in lines: [String], expectedTotal: Int64? = nil) -> [ReceiptGood] {
         let endWords = ["итого", "итог", "к оплате", "безналичн", "карта", "карту", "бонус", "причин", "извин", "неудобств", "горяч",
                         "скидка", "ндс", "наличн", "сдача", "всего"]
         let serviceWords = ["кассир", "смена", "ккт", "инн", "спасибо", "место расчет", "адрес", "тел.", "тел:", "чек", "приход", "www", "http"]
@@ -273,7 +278,56 @@ enum ReceiptParser {
                 bands[bands.count - 1] += amounts(in: line)
             }
         }
-        return zip(names, bands).map { ReceiptGood(name: $0, kopecks: lineTotal($1)) }
+        let goods = zip(names, bands).map { ReceiptGood(name: $0, kopecks: lineTotal($1)) }
+        guard let expectedTotal else { return goods }
+        return reconcilePrices(goods, bands: bands, expected: expectedTotal)
+    }
+
+    /// The prices fall short of the total of the receipt by `gap`. One good without a price and the gap seen among the sums near
+    /// another good: its row of figures stuck to the next name. All goods priced and the price of one good plus the gap seen
+    /// among its own sums: it took a repeated misreading («19,99») instead of the price («73,99»). Nothing else is guessed:
+    /// receipts with a discount on the whole receipt, with service charges or incomplete ones are left as they are.
+    static func reconcilePrices(_ goods: [ReceiptGood], bands: [[Int64]], expected: Int64) -> [ReceiptGood] {
+        guard goods.count == bands.count, !goods.isEmpty else { return goods }
+        let gap = expected - goods.compactMap(\.kopecks).reduce(0, +)
+        guard gap > 0 else { return goods }
+        var result = goods
+        let unpriced = goods.indices.filter { goods[$0].kopecks == nil }
+        if unpriced.count == 1 {
+            if bands.contains(where: { $0.contains(gap) }) { result[unpriced[0]].kopecks = gap }
+            return result
+        }
+        guard unpriced.isEmpty else { return goods }
+        let fixable = goods.indices.filter { index in goods[index].kopecks.map { bands[index].contains($0 + gap) } ?? false }
+        if fixable.count == 1, let price = goods[fixable[0]].kopecks { result[fixable[0]].kopecks = price + gap }
+        return result
+    }
+
+    /// Names read with the correction of words and prices read exactly are the same goods only if the lines are alike; a pass that
+    /// missed a line shifts the prices to other names, and then nothing is paired.
+    static func pairGoods(named: [ReceiptGood], priced: [ReceiptGood]) -> [ReceiptGood]? {
+        guard !named.isEmpty, named.count == priced.count else { return nil }
+        for (a, b) in zip(named, priced) where similarity(a.name, b.name) < 0.3 { return nil }
+        return zip(named, priced).map { ReceiptGood(name: $0.name, kopecks: $1.kopecks) }
+    }
+
+    /// How alike two texts are, 0…1 (the share of common pairs of letters; letters and digits only, case ignored).
+    static func similarity(_ first: String, _ second: String) -> Double {
+        func pairs(_ text: String) -> [String] {
+            let letters = Array(text.lowercased().filter { $0.isLetter || $0.isNumber })
+            return letters.count < 2 ? letters.map { String($0) } : (0..<(letters.count - 1)).map { String(letters[$0...($0 + 1)]) }
+        }
+        var rest = pairs(second)
+        let mine = pairs(first)
+        guard !mine.isEmpty, !rest.isEmpty else { return first.lowercased() == second.lowercased() ? 1 : 0 }
+        var common = 0
+        for pair in mine {
+            if let index = rest.firstIndex(of: pair) {
+                common += 1
+                rest.remove(at: index)
+            }
+        }
+        return 2 * Double(common) / Double(mine.count + pairs(second).count)
     }
 
     /// The total of a line of a receipt among the sums found around its name. The unit price, the price after the discount and
