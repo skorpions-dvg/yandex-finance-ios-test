@@ -3541,6 +3541,480 @@ struct FinanceEngineTests {
         }
     }
 
+    // MARK: Stage 57 opt-in contracts. Not called by the ordinary main.
+
+    struct Forecast57Random {
+        var state: UInt64
+        mutating func int(_ lower: Int, _ upper: Int) -> Int {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return lower + Int((state >> 16) % UInt64(upper - lower + 1))
+        }
+    }
+
+    struct Forecast57Entry {
+        let date: Date
+        let input: FinancialOperationInput
+    }
+
+    struct Forecast57Profile {
+        let id: String
+        let seed: UInt64
+        let entries: [Forecast57Entry]
+    }
+
+    struct Forecast57Sample {
+        let profile: String
+        let month: String
+        let day: Int
+        let actualExpense: Int64
+        let actualIncome: Int64
+        let forecast: FinancialEngine.MonthForecast
+    }
+
+    static var forecast57Calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    static func forecast57Date(_ monthIndex: Int, _ day: Int, hour: Int = 12) -> Date {
+        forecast57Calendar.date(from: DateComponents(year: 2032 + monthIndex / 12,
+                                                     month: monthIndex % 12 + 1, day: day, hour: hour))!
+    }
+
+    static func forecast57Profiles() -> [Forecast57Profile] {
+        let shops = ["Магазин учебный Альфа", "Магазин учебный Бета", "Магазин учебный Гамма", "Магазин учебный Дельта"]
+        let alphabet = Array("абвгдежзиклмнопрстуфхцчшэюя")
+        return (0..<3).map { person in
+            let seed = UInt64(0x540001 + person)
+            var random = Forecast57Random(state: seed)
+            var entries: [Forecast57Entry] = []
+            func add(_ month: Int, _ day: Int, _ value: Int64, _ kind: String, _ title: String, _ category: String) {
+                let date = forecast57Date(month, day)
+                let iso = String(format: "%04d-%02d-%02dT12:00:00Z", 2032 + month / 12, month % 12 + 1, day)
+                entries.append(Forecast57Entry(date: date, input: op(value, kind: kind, category: category,
+                                                                   description: title, date: iso)))
+            }
+            for month in 0..<14 {
+                if person != 1 {
+                    add(month, 5, person == 0 ? 12_000_000 : 10_500_000, "income", "Зарплата учебная", "Зарплата")
+                } else {
+                    for _ in 0..<random.int(2, 4) {
+                        add(month, random.int(2, 27), Int64(random.int(500_000, 4_500_000)), "income",
+                            "Работа учебная " + String(alphabet[random.int(0, 20)]), "Прочие доходы")
+                    }
+                }
+                add(month, 12, -2_800_000, "expense", "Аренда учебная", "ЖКХ")
+                add(month, 22, -90_000, "expense", "Связь учебная", "Связь и интернет")
+                if person == 0 { add(month, 27, -45_000, "expense", "Подписка учебная", "Подписки") }
+                let scale = person == 1 ? random.int(75, 135) : random.int(90, 110)
+                for index in 0..<10 {
+                    let day = min(28, max(1, 1 + index * 3 + random.int(-1, 1)))
+                    let amount = Int64(random.int(80_000, 180_000) * scale / 100)
+                    add(month, day, -amount, "expense", shops[random.int(0, shops.count - 1)], "Супермаркеты")
+                }
+                if person == 2 {
+                    if month % 3 == 0 {
+                        add(month, random.int(14, 25), -20_000_000, "expense",
+                            "Техника учебная " + String(alphabet[month]), "Электроника")
+                    } else if month % 3 == 1 {
+                        add(month, random.int(3, 18), 2_000_000, "refund", "Возврат учебный", "Возврат")
+                    }
+                }
+            }
+            entries.sort { $0.date < $1.date }
+            return Forecast57Profile(id: ["stable", "irregular", "refunds-oneoffs"][person], seed: seed, entries: entries)
+        }
+    }
+
+    /// Ground truth uses the generator's explicit expense/refund/income labels, not the forecast/report engine.
+    static func forecast57Actual(_ entries: [Forecast57Entry], from: Date, to: Date) -> (expense: Int64, income: Int64) {
+        var expense: Int64 = 0, income: Int64 = 0
+        for entry in entries where entry.date >= from && entry.date < to {
+            switch entry.input.kind {
+            case "expense": expense -= entry.input.amountKopecks
+            case "refund": expense -= entry.input.amountKopecks
+            case "income": income += entry.input.amountKopecks
+            default: break
+            }
+        }
+        return (expense, income)
+    }
+
+
+
+    struct Band57: Equatable {
+        let low: Int64
+        let high: Int64
+        let count: Int
+        let rank: Int
+        let label: String
+    }
+
+    /// Independent reference for the literal PLAN: separate nonnegative tail errors,
+    /// k=ceil((n+1)*0.8). This is NOT a proof of joint 80% coverage.
+    static func referenceBand57(point: Int64, errors: [Int64], sidePercent: Int = 80) -> Band57? {
+        guard errors.count >= 4 else { return nil }
+        let n = errors.count
+        let rank = n < 9 ? n : ((n + 1) * sidePercent + 99) / 100
+        guard rank <= n else { return nil }
+        let lower = errors.map { max(0, -$0) }.sorted()[rank - 1]
+        let upper = errors.map { max(0, $0) }.sorted()[rank - 1]
+        return Band57(low: max(0, point - lower), high: max(0, point + upper), count: n, rank: rank,
+                      label: n < 9 ? "all-past-errors" : "same-day-calibrated")
+    }
+
+    static func json57(_ object: [String: Any]) -> String {
+        String(data: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), encoding: .utf8)!
+    }
+
+    static func record57(_ object: [String: Any]) { print("STAGE57: " + json57(object)) }
+
+    static func bandJSON57(_ band: Band57?) -> Any {
+        guard let band else { return NSNull() }
+        return ["low": band.low, "high": band.high, "n": band.count, "rank": band.rank, "label": band.label] as [String: Any]
+    }
+
+    struct Observation57 {
+        let profile: String
+        let monthIndex: Int
+        let day: Int
+        let query: Date
+        let latestInput: Date?
+        let truth: Int64
+        let forecast: FinancialEngine.MonthForecast
+    }
+
+    /// Inputs are physically truncated. Ground truth is used only by the evaluator,
+    /// never passed into the forecast. A completed month's truth is known at the current cutoff.
+    static func observation57(_ profile: Forecast57Profile, month: Int, day: Int) -> Observation57? {
+        let start = forecast57Date(month, 1, hour: 0)
+        let days = forecast57Calendar.range(of: .day, in: .month, for: start)!.count
+        guard day <= days else { return nil } // Never substitute February 28 for another month's 31st.
+        let now = forecast57Date(month, day, hour: 0).addingTimeInterval(86_399)
+        let entries = profile.entries.filter { $0.date <= now }
+        let end = forecast57Calendar.date(byAdding: .month, value: 1, to: start)!
+        let truth = forecast57Actual(profile.entries, from: start, to: end).expense
+        return Observation57(profile: profile.id, monthIndex: month, day: day, query: now,
+                             latestInput: entries.map(\.date).max(), truth: truth,
+                             forecast: FinancialEngine.monthForecast(entries.map(\.input), now: now, calendar: forecast57Calendar))
+    }
+
+    static func calibration57(_ profile: Forecast57Profile, month: Int, day: Int) -> [Observation57] {
+        guard month > 2 else { return [] }
+        // Two full training months before the first calibration month. No current/future outcome.
+        return (2..<month).compactMap { observation57(profile, month: $0, day: day) }
+    }
+
+    static func testRangeOracle57() {
+        let examples: [(String, Int64, [Int64], Band57?)] = [
+            ("n0", 10_000, [], nil),
+            ("n3", 10_000, [-100, 0, 200], nil),
+            ("n4-full-spread", 10_000, [-900, -600, 100, 200], .init(low: 9_100, high: 10_200, count: 4, rank: 4, label: "all-past-errors")),
+            ("n8-full-spread", 10_000, [-900, -600, 0, 100, 200, 400, 600, 800], .init(low: 9_100, high: 10_800, count: 8, rank: 8, label: "all-past-errors")),
+            ("n9-k8-asymmetric", 10_000, [-900, -600, 0, 100, 200, 400, 600, 800, 1_000], .init(low: 9_400, high: 10_800, count: 9, rank: 8, label: "same-day-calibrated")),
+            ("n9-all-positive", 10_000, [100, 200, 300, 400, 500, 600, 700, 800, 900], .init(low: 10_000, high: 10_800, count: 9, rank: 8, label: "same-day-calibrated")),
+            ("n9-all-negative", 10_000, [-100, -200, -300, -400, -500, -600, -700, -800, -900], .init(low: 9_200, high: 10_000, count: 9, rank: 8, label: "same-day-calibrated")),
+            ("n9-zero-errors", 10_000, Array(repeating: 0, count: 9), .init(low: 10_000, high: 10_000, count: 9, rank: 8, label: "same-day-calibrated")),
+            ("expense-floor", 100, [-900, -600, 100, 200], .init(low: 0, high: 300, count: 4, rank: 4, label: "all-past-errors")),
+            ("duplicates-count-as-months", 10_000, Array(repeating: 100, count: 9), .init(low: 10_000, high: 10_100, count: 9, rank: 8, label: "same-day-calibrated"))
+        ]
+        for (id, point, errors, expected) in examples {
+            let actual = referenceBand57(point: point, errors: errors)
+            require(actual == expected, "57 reference arithmetic \(id): \(String(describing: actual))")
+            require(referenceBand57(point: point, errors: Array(errors.reversed())) == expected, "57 order invariant \(id)")
+            record57(["type": "oracle-test", "id": id, "point": point, "errors": errors, "expected": bandJSON57(expected), "passed": true])
+        }
+        // A counterexample, not an empirical promise: separate 80% tails need not cover 80% jointly.
+        let errors: [Int64] = Array((-10 ... -1).map { Int64($0) * 100 }) + Array((1...9).map { Int64($0) * 100 })
+        let side80 = referenceBand57(point: 10_000, errors: errors)!
+        let covered = errors.filter { 10_000 + $0 >= side80.low && 10_000 + $0 <= side80.high }.count
+        require(side80.rank == 16 && side80.low == 9_300 && side80.high == 10_600 && covered == 13,
+                "57 separate-tail counterexample: only 13/19 calibration outcomes jointly inside")
+        record57(["type": "policy-counterexample", "n": 19, "rank": 16, "covered": covered,
+                  "band": bandJSON57(side80), "errors": errors, "jointCoverage": Double(covered) / 19])
+        let split90 = referenceBand57(point: 10_000, errors: errors, sidePercent: 90)!
+        require(split90.rank == 18 && split90.low == 9_100 && split90.high == 10_800,
+                "57 alternative splitting alpha: independently calculated 90% one-sided rank")
+
+        let profiles = forecast57Profiles()
+        require(profiles.map(\.seed) == [0x540001, 0x540002, 0x540003], "57 exact baseline seeds")
+        require(profiles.reduce(0) { $0 + $1.entries.count } == 600, "57 same 600-operation baseline")
+        let profile = profiles[0]
+        for (month, wantedN) in [(3, 1), (6, 4), (10, 8), (11, 9)] {
+            let samples = calibration57(profile, month: month, day: 15)
+            require(samples.count == wantedN, "57 independent same-day calibration count")
+            require(samples.allSatisfy { $0.monthIndex < month && $0.day == 15 && ($0.latestInput ?? $0.query) <= $0.query },
+                    "57 every retrodiction uses only that day's prefix")
+            let errors = samples.map { $0.truth - $0.forecast.projectedExpenseKopecks }
+            let now = observation57(profile, month: month, day: 15)!
+            let expected = referenceBand57(point: now.forecast.projectedExpenseKopecks, errors: errors)
+            require((expected == nil) == (wantedN < 4), "57 range unavailable until four calibration months")
+            record57(["type": "synthetic-calibration", "profile": profile.id, "monthIndex": month, "day": 15,
+                      "point": now.forecast.projectedExpenseKopecks, "errors": errors, "expected": bandJSON57(expected)])
+        }
+        require(observation57(profile, month: 1, day: 30) == nil, "57 February 2032 has no 30th")
+        let sameDay = calibration57(profile, month: 12, day: 31)
+        require(sameDay.map(\.monthIndex) == [2, 4, 6, 7, 9, 11], "57 exact day31 skips short months")
+
+        let cutoff = forecast57Date(11, 15, hour: 0).addingTimeInterval(86_399)
+        let altered = Forecast57Profile(id: profile.id, seed: profile.seed, entries: profile.entries.map { entry in
+            guard entry.date > cutoff else { return entry }
+            let value: Int64 = entry.input.kind == "income" ? 999_999_999 : -999_999_999
+            let input = op(value, kind: entry.input.kind, category: entry.input.category,
+                           description: "Будущий учебный магазин", date: entry.input.occurredAt)
+            return Forecast57Entry(date: entry.date, input: input)
+        })
+        let before = calibration57(profile, month: 11, day: 15)
+        let after = calibration57(altered, month: 11, day: 15)
+        require(before.map(\.truth) == after.map(\.truth)
+                && before.map { $0.forecast.projectedExpenseKopecks } == after.map { $0.forecast.projectedExpenseKopecks },
+                "57 future-poisoned monthly outcomes do not enter calibration")
+        require(observation57(profile, month: 11, day: 15)!.forecast == observation57(altered, month: 11, day: 15)!.forecast,
+                "57 current forecast prefix ignores poisoned future")
+        record57(["type": "oracle-summary", "arithmeticCases": examples.count, "chronologyChecks": 8, "passed": true])
+    }
+
+    /// Desired engine comparison is opt-in and may fail until decision4 is implemented.
+    static func testFutureBands57() {
+        var failures: [String] = []
+        for profile in forecast57Profiles() {
+            for month in [6, 10, 11] {
+                let current = observation57(profile, month: month, day: 15)!
+                let samples = calibration57(profile, month: month, day: 15)
+                let expected = referenceBand57(point: current.forecast.projectedExpenseKopecks,
+                                               errors: samples.map { $0.truth - $0.forecast.projectedExpenseKopecks })!
+                let passed = current.forecast.projectedExpenseLowKopecks == expected.low
+                    && current.forecast.projectedExpenseHighKopecks == expected.high
+                let id = "\(profile.id)-month\(month)-day15"
+                if !passed { failures.append(id) }
+                record57(["type": "engine-band-test", "id": id, "passed": passed, "expected": bandJSON57(expected),
+                          "actual": ["low": current.forecast.projectedExpenseLowKopecks, "high": current.forecast.projectedExpenseHighKopecks],
+                          "point": current.forecast.projectedExpenseKopecks])
+                // Expense uncertainty reverses the reserve endpoints; regular income is an exact common offset.
+                let balance: Int64 = 12_345_600
+                let lowFuture = max(0, expected.low - current.forecast.spentKopecks)
+                let highFuture = max(0, expected.high - current.forecast.spentKopecks)
+                let wantedLow = balance - highFuture + current.forecast.expectedIncomeLeftKopecks
+                let wantedHigh = balance - lowFuture + current.forecast.expectedIncomeLeftKopecks
+                let range = FinancialEngine.monthReserveRange(balanceKopecks: balance, forecast: current.forecast)
+                if range.low != wantedLow || range.high != wantedHigh { failures.append("reserve-" + id) }
+                record57(["type": "reserve-band-test", "id": id, "expectedLow": wantedLow, "expectedHigh": wantedHigh,
+                          "actualLow": range.low, "actualHigh": range.high, "passed": range.low == wantedLow && range.high == wantedHigh])
+            }
+        }
+        record57(["type": "engine-band-summary", "checks": 18, "failures": failures,
+                  "pending": "no public calibration-count/visibility API; n<4 suppression and labels require future adapter"])
+        require(failures.isEmpty, "57 future band contract not implemented: \(failures.joined(separator: ", "))")
+    }
+
+    static func measureCoverage57() {
+        var measured = 0
+        for profile in forecast57Profiles() {
+            record57(["type": "fixture", "profile": profile.id, "seed": String(profile.seed), "operations": profile.entries.count])
+            var past: [Int: [Observation57]] = [:]
+            for month in 2..<14 {
+                let days = forecast57Calendar.range(of: .day, in: .month, for: forecast57Date(month, 1))!.count
+                for day in 1...days {
+                    let current = observation57(profile, month: month, day: day)!
+                    require((current.latestInput ?? current.query) <= current.query, "57 measurement prefix cutoff")
+                    let calibration = past[day] ?? []
+                    require(calibration.allSatisfy { $0.monthIndex < month && $0.day == day }, "57 no future calibration")
+                    let errors = calibration.map { $0.truth - $0.forecast.projectedExpenseKopecks }
+                    if month >= 3 {
+                        measured += 1
+                        record57(["type": "point", "profile": profile.id, "monthIndex": month, "day": day,
+                                  "actualExpense": current.truth, "point": current.forecast.projectedExpenseKopecks,
+                                  "engineLow": current.forecast.projectedExpenseLowKopecks,
+                                  "engineHigh": current.forecast.projectedExpenseHighKopecks,
+                                  "literal80": bandJSON57(referenceBand57(point: current.forecast.projectedExpenseKopecks, errors: errors)),
+                                  "split90": bandJSON57(referenceBand57(point: current.forecast.projectedExpenseKopecks, errors: errors, sidePercent: 90)),
+                                  "calibrationMonths": calibration.map(\.monthIndex), "errors": errors,
+                                  "inputCutoff": current.query.timeIntervalSince1970,
+                                  "latestInput": current.latestInput.map { $0.timeIntervalSince1970 as Any } ?? NSNull()])
+                    }
+                    past[day, default: []].append(current)
+                }
+                record57(["type": "progress", "profile": profile.id, "completedMonth": month, "measured": measured])
+            }
+        }
+        require(measured == 1_002, "57 repeatable coverage uses the exact 1,002 measurement cutoffs")
+        record57(["type": "coverage-summary", "points": measured, "passed": true])
+    }
+
+    struct DateVoteCase57 {
+        let id: String
+        let readings: [String]
+        let expectedISO: String?
+        let needsReview: Bool
+    }
+
+    static var dateVoteCases57: [DateVoteCase57] {
+        [
+            .init(id: "three-agree", readings: ["08.10.2032 18:37", "08.10.2032 18:37", "08.10.2032 18:37"], expectedISO: "2032-10-08T18:37:00Z", needsReview: false),
+            .init(id: "majority-with-disagreement", readings: ["08.10.2032 18:37", "08.10.2032 18:37", "08.10.2032 18:27"], expectedISO: "2032-10-08T18:37:00Z", needsReview: true),
+            .init(id: "tie", readings: ["08.10.2032 18:37", "08.10.2032 18:27"], expectedISO: nil, needsReview: true),
+            .init(id: "all-different", readings: ["08.10.2032 18:37", "08.10.2032 18:27", "08.10.2032 18:17"], expectedISO: nil, needsReview: true),
+            .init(id: "one-valid", readings: ["08.10.2032 18:37", "не прочитано", "08.10.2032 28:77"], expectedISO: "2032-10-08T18:37:00Z", needsReview: true),
+            .init(id: "no-time", readings: ["08.10.2032", "08.10.2032", ""], expectedISO: nil, needsReview: true),
+            .init(id: "future-date-rejected", readings: ["09.10.2032 18:37", "08.10.2032 18:37", "08.10.2032 18:37"], expectedISO: "2032-10-08T18:37:00Z", needsReview: true),
+            .init(id: "same-time-different-dates", readings: ["08.10.2032 18:37", "07.10.2032 18:37"], expectedISO: nil, needsReview: true),
+            .init(id: "midnight-valid", readings: ["08.10.2032 00:00", "08.10.2032 00:00"], expectedISO: "2032-10-08T00:00:00Z", needsReview: false),
+            .init(id: "empty", readings: [], expectedISO: nil, needsReview: true),
+            .init(id: "date-only-does-not-vote-noon", readings: ["08.10.2032", "08.10.2032 18:37", "08.10.2032 18:37"], expectedISO: "2032-10-08T18:37:00Z", needsReview: true),
+            .init(id: "format-equivalence", readings: ["08.10.2032 18:37", "8/10/2032 18:37"], expectedISO: "2032-10-08T18:37:00Z", needsReview: false)
+        ]
+    }
+
+    /// Test-side specification only. Never linked into the app's receipt parser.
+    static func referenceDateVote57(_ lines: [String], now: Date, calendar: Calendar) -> (date: Date?, needsReview: Bool) {
+        let reads = lines.compactMap { line -> Date? in
+            // Do not use production dateAndTime as an oracle: it clamps some future dates to now.
+            let pattern = #"^\s*(\d{1,2})[./](\d{1,2})[./](\d{4})\s+(\d{1,2}):(\d{2})\s*$"#
+            let regex = try! NSRegularExpression(pattern: pattern)
+            guard let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else { return nil }
+            let values = (1...5).map { Int((line as NSString).substring(with: match.range(at: $0)))! }
+            let parts = DateComponents(year: values[2], month: values[1], day: values[0], hour: values[3], minute: values[4])
+            guard let date = calendar.date(from: parts), date <= now,
+                  calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date) == parts else { return nil }
+            return date
+        }
+        let counts = Dictionary(grouping: reads, by: { $0 }).mapValues(\.count)
+        guard let maximum = counts.values.max() else { return (nil, true) }
+        let winners = counts.filter { $0.value == maximum }.map(\.key)
+        guard winners.count == 1 else { return (nil, true) }
+        let enough = maximum > reads.count / 2
+        guard enough else { return (nil, true) }
+        return (winners[0], lines.count < 2 || counts.count > 1 || reads.count != lines.count)
+    }
+
+    /// Future selector is an injected adapter: its API has not yet been invented in production.
+    static func testDateVoting57(selector: (([String], Date, Calendar) -> (date: Date?, needsReview: Bool))? = nil) {
+        let now = BankDateParser.parse("2032-10-08T20:00:00Z")!
+        var failures: [String] = []
+        for fixture in dateVoteCases57 {
+            let expectedDate = fixture.expectedISO.flatMap { BankDateParser.parse($0) }
+            let oracle = referenceDateVote57(fixture.readings, now: now, calendar: forecast57Calendar)
+            require(oracle.date == expectedDate && oracle.needsReview == fixture.needsReview, "57 date fixture oracle \(fixture.id)")
+            guard let selector else {
+                record57(["type": "date-vote-test", "id": fixture.id, "status": "PENDING_PRODUCTION_SELECTOR",
+                          "readings": fixture.readings, "expectedISO": fixture.expectedISO.map { $0 as Any } ?? NSNull(),
+                          "expectedNeedsReview": fixture.needsReview, "oraclePassed": true])
+                continue
+            }
+            let actual = selector(fixture.readings, now, forecast57Calendar)
+            let passed = actual.date == expectedDate && actual.needsReview == fixture.needsReview
+            if !passed { failures.append(fixture.id) }
+            record57(["type": "date-vote-test", "id": fixture.id, "passed": passed, "readings": fixture.readings,
+                      "expectedISO": fixture.expectedISO.map { $0 as Any } ?? NSNull(), "expectedNeedsReview": fixture.needsReview,
+                      "actualTimestamp": actual.date.map { $0.timeIntervalSince1970 as Any } ?? NSNull(), "actualNeedsReview": actual.needsReview])
+        }
+        require(failures.isEmpty, "57 future date voting failures: \(failures.joined(separator: ", "))")
+        record57(["type": "date-vote-summary", "cases": dateVoteCases57.count,
+                  "productionAdapter": selector != nil, "failures": failures])
+    }
+
+    static func testReceiptContracts55In57(caseID: String? = nil) {
+        var failures: [String] = []
+        var count = 0
+        func goodsJSON(_ goods: [ReceiptGood]) -> [[String: Any]] {
+            goods.map { ["name": $0.name, "kopecks": $0.kopecks.map { $0 as Any } ?? NSNull()] }
+        }
+        func check(_ id: String, _ passed: Bool, input: Any, expected: Any, actual: Any) {
+            count += 1
+            print("RECEIPT55: " + json57(["id": id, "passed": passed, "input": input,
+                                                  "expected": expected, "actual": actual]))
+            if !passed { failures.append(id) }
+        }
+        let header = "ЦЕНА КОЛ-ВО СУММА"
+        let examples: [(String, [String], [ReceiptGood], Int64)] = [
+            ("A54-1-service", [header, "Пирог учебный 120.00 100.00 100.00", "ИТОГО 120.00", "СЕРВИСНЫЙ СБОР 20.00"],
+             [ReceiptGood(name: "Пирог учебный", kopecks: 10_000)], 12_000),
+            ("A54-1-tips", [header, "Пирог учебный 120.00 100.00 100.00", "ИТОГО 120.00", "ЧАЕВЫЕ 20.00"],
+             [ReceiptGood(name: "Пирог учебный", kopecks: 10_000)], 12_000),
+            ("A54-1-incomplete", [header, "Молоко учебное 150.00 100.00 100.00", "ИТОГО 150.00"],
+             [ReceiptGood(name: "Молоко учебное", kopecks: 10_000)], 15_000),
+            ("A54-1-distant-band", [header, "Позиция учебная без цены", "", "Товар учебный посредине 70.00",
+                                   "Товар учебный последний 50.00", "ИТОГО 170.00"],
+             [ReceiptGood(name: "Позиция учебная без цены", kopecks: nil),
+              ReceiptGood(name: "Товар учебный посредине", kopecks: 7_000),
+              ReceiptGood(name: "Товар учебный последний", kopecks: 5_000)], 17_000),
+            ("A54-3-two-identical-goods", [header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 200.00"],
+             [ReceiptGood(name: "Товар учебный", kopecks: 10_000), ReceiptGood(name: "Товар учебный", kopecks: 10_000)], 20_000),
+            ("A54-3-ocr-duplicate-control", [header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 100.00"],
+             [ReceiptGood(name: "Товар учебный", kopecks: 10_000)], 10_000),
+            ("discount-control", [header, "Товар учебный первый 500.00", "Товар учебный второй 600.00", "ИТОГО 1000.00"],
+             [ReceiptGood(name: "Товар учебный первый", kopecks: 50_000), ReceiptGood(name: "Товар учебный второй", kopecks: 60_000)], 100_000),
+            ("no-price-evidence-control", [header, "Позиция учебная без цены", "Товар учебный 70.00", "ИТОГО 170.00"],
+             [ReceiptGood(name: "Позиция учебная без цены", kopecks: nil), ReceiptGood(name: "Товар учебный", kopecks: 7_000)], 17_000),
+        ]
+        for (id, lines, wantedGoods, wantedTotal) in examples where caseID == nil || caseID == id {
+            let parsed = ReceiptParser.parseText(lines, now: forecast57Date(0, 1), calendar: forecast57Calendar)
+            check(id, parsed.goods == wantedGoods && parsed.totalKopecks == wantedTotal, input: lines,
+                  expected: ["goods": goodsJSON(wantedGoods), "total": wantedTotal],
+                  actual: ["goods": goodsJSON(parsed.goods), "total": parsed.totalKopecks.map { $0 as Any } ?? NSNull()])
+        }
+        let pairID = "A54-2-swapped-similar-names"
+        if caseID == nil || caseID == pairID {
+            let namedLines = [header, "Йогурт учебный клубника 80.00", "Йогурт учебный вишня 120.00", "ИТОГО 200.00"]
+            let pricedLines = [header, "Йогурт учебный вишня 120.00", "Йогурт учебный клубника 80.00", "ИТОГО 200.00"]
+            let named = ReceiptParser.parseText(namedLines, now: forecast57Date(0, 1), calendar: forecast57Calendar).goods
+            let priced = ReceiptParser.parseText(pricedLines, now: forecast57Date(0, 1), calendar: forecast57Calendar).goods
+            let actual = ReceiptParser.pairGoods(named: named, priced: priced)
+            let correct = [ReceiptGood(name: "Йогурт учебный клубника", kopecks: 8_000),
+                           ReceiptGood(name: "Йогурт учебный вишня", kopecks: 12_000)]
+            check(pairID, actual == nil || actual == correct, input: ["named": namedLines, "priced": pricedLines],
+                  expected: ["rejectPairOrMapByName": goodsJSON(correct)],
+                  actual: ["paired": actual.map { goodsJSON($0) as Any } ?? NSNull(),
+                           "crossSimilarity": ReceiptParser.similarity(named[0].name, priced[0].name)])
+        }
+        print("RECEIPT55: " + json57(["type": "summary", "checks": count, "failed": failures]))
+        require(failures.isEmpty, "known receipt55 desired behaviour not implemented: " + failures.joined(separator: ", "))
+    }
+
+
+    /// Independent arithmetic checks of the reserve shown in 46.25; not part of ordinary main.
+    static func testReserve4625In57() {
+        let date = BankDateParser.parse("2032-10-20T12:00:00Z")!
+        typealias Payment = FinancialEngine.UpcomingPayment
+        let cases: [(String, Int64, Int64, [Payment], Int64)] = [
+            ("no-income", 100_000, 20_000, [], 80_000),
+            ("regular-still-expected", 100_000, 20_000,
+             [.init(title: "Доход учебный", amountKopecks: 10_000, date: date, isIncome: true, overdue: false)], 90_000),
+            ("income-overdue", 100_000, 20_000,
+             [.init(title: "Доход учебный", amountKopecks: 10_000, date: date, isIncome: true, overdue: true)], 80_000),
+            ("income-question", 100_000, 20_000,
+             [.init(title: "Доход учебный", amountKopecks: 10_000, date: date, isIncome: true, overdue: false, status: .question)], 80_000),
+            ("income-waiting", 100_000, 20_000,
+             [.init(title: "Доход учебный", amountKopecks: 10_000, date: date, isIncome: true, overdue: false, status: .waiting)], 80_000),
+            ("expense-is-not-income", 100_000, 20_000,
+             [.init(title: "Расход учебный", amountKopecks: 10_000, date: date, isIncome: false, overdue: false)], 80_000),
+            ("negative-future-clamped", 100_000, -20_000, [], 100_000),
+            ("zero-balance-shortage", 0, 20_000, [], -20_000),
+            ("negative-balance", -10_000, 20_000, [], -30_000)
+        ]
+        for (id, balance, expense, upcoming, expected) in cases {
+            var f = FinancialEngine.MonthForecast(spentKopecks: 0, incomeKopecks: 0, projectedExpenseKopecks: max(0, expense),
+                projectedExpenseLowKopecks: 15_000, projectedExpenseHighKopecks: 25_000, projectedIncomeKopecks: 0,
+                previousMonthIncomeKopecks: 0, typicalIrregularIncomeKopecks: 900_000, irregularIncomeSoFarKopecks: 0,
+                oneOffKopecks: 0, upcoming: upcoming, historyMonths: 6, baselineMonths: [], elapsedDays: 1, daysInMonth: 31,
+                futureExpenseKopecks: expense, futureExpenseLowKopecks: 15_000, futureExpenseHighKopecks: 25_000,
+                cautiousIrregularIncomeKopecks: 900_000)
+            let actual = FinancialEngine.monthReserve(balanceKopecks: balance, forecast: f)
+            require(actual == expected, "57 reserve46.25 independent arithmetic \(id)")
+            f.cautiousIrregularIncomeKopecks = 99_000_000
+            require(FinancialEngine.monthReserve(balanceKopecks: balance, forecast: f) == expected,
+                    "57 larger irregular hint cannot raise the default reserve \(id)")
+            let regular: Int64 = id == "regular-still-expected" ? 10_000 : 0
+            let range = FinancialEngine.monthReserveRange(balanceKopecks: balance, forecast: f)
+            require(range.low == balance - 25_000 + regular && range.high == balance - 15_000 + regular,
+                    "57 reserve endpoints independently reverse expense bounds \(id)")
+            record57(["type": "reserve4625-test", "id": id, "balance": balance, "futureExpense": expense,
+                      "expected": expected, "actual": actual, "passed": true])
+        }
+        record57(["type": "reserve4625-summary", "cases": cases.count, "checks": cases.count * 3, "passed": true])
+    }
+
     static func main() {
         testAudit53AngledReceipts()
         testAudit53AccountHistory()
