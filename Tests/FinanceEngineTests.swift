@@ -2589,12 +2589,25 @@ struct FinanceEngineTests {
         require(status.percent == 100, "known issue50: the percent of an exactly spent large limit must be 100 without overflow")
     }
 
+    static func testBudgetLargestAmount() {
+        var history = SavedHistory()
+        require(!history.setBudget(group: nil, limitKopecks: BudgetEngine.largestAmount + 1, month: nil) && history.budgets == nil,
+                "a limit beyond any real amount is refused")
+        require(history.setBudget(group: nil, limitKopecks: BudgetEngine.largestAmount, month: nil), "the largest limit is accepted")
+        let huge = BudgetStatus(group: nil, limitKopecks: BudgetEngine.largestAmount, spentKopecks: BudgetEngine.largestAmount, isMonthOnly: false)
+        require(huge.percent == 100 && huge.level == .warning && huge.remainingKopecks == 0, "the largest figures do not overflow")
+        require(BudgetEngine.level(spent: Int64.max, limit: Int64.min) == .calm, "a negative limit is no limit")
+        require(BudgetEngine.level(spent: Int64.min, limit: Int64.max) == .calm, "refunds beyond any amount are not spending")
+    }
+
     static func testKnownIssue50BudgetRemainingOverflow() {
         let status = BudgetStatus(group: nil, limitKopecks: Int64.max, spentKopecks: -1, isMonthOnly: false)
         require(status.remainingKopecks >= 0, "known issue50: a large limit with net refunds must not crash calculating remaining")
     }
 
     static func main() {
+        testKnownIssues50()
+        testBudgetLargestAmount()
         testAudit50ReceiptResults()
         testAudit50BudgetMonthBoundaries()
         testAudit50BudgetMutationAndFallback()

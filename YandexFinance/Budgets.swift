@@ -15,10 +15,10 @@ struct BudgetStatus: Identifiable, Equatable {
     let isMonthOnly: Bool
 
     var id: String { group ?? "—month" }
-    var remainingKopecks: Int64 { limitKopecks - spentKopecks }
+    var remainingKopecks: Int64 { BudgetEngine.sane(limitKopecks) - BudgetEngine.sane(spentKopecks) }
     var fraction: Double { limitKopecks > 0 ? Double(spentKopecks) / Double(limitKopecks) : 0 }
     /// Whole percent spent, rounded down (99.9 % is still 99 %).
-    var percent: Int { limitKopecks > 0 ? Int(max(0, spentKopecks) * 100 / limitKopecks) : 0 }
+    var percent: Int { limitKopecks > 0 ? Int(max(0, BudgetEngine.sane(spentKopecks)) * 100 / BudgetEngine.sane(limitKopecks)) : 0 }
     var level: BudgetLevel { BudgetEngine.level(spent: spentKopecks, limit: limitKopecks) }
 }
 
@@ -30,6 +30,11 @@ struct BudgetNotice: Identifiable, Equatable {
 }
 
 enum BudgetEngine {
+    /// A larger figure than `Budget.largestAmount` is taken as that one instead of overflowing in the products below.
+    static let largestAmount = Budget.largestAmount
+
+    static func sane(_ kopecks: Int64) -> Int64 { min(largestAmount, max(-largestAmount, kopecks)) }
+
     /// The groups over their limit, then the groups from 90 % of it. The limit of the whole month is shown by its own bar.
     static func notices(_ statuses: [BudgetStatus]) -> [BudgetNotice] {
         let groups = statuses.filter { $0.group != nil }
@@ -55,6 +60,7 @@ enum BudgetEngine {
     /// Spent against a limit: up to 90 % calm, from 90 % up to and including the limit a warning, above it exceeded.
     static func level(spent: Int64, limit: Int64) -> BudgetLevel {
         guard limit > 0 else { return .calm }
+        let spent = sane(spent), limit = sane(limit)
         if spent > limit { return .exceeded }
         return spent * 10 >= limit * 9 ? .warning : .calm
     }

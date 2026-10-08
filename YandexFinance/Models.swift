@@ -1113,6 +1113,10 @@ struct Budget: Codable, Equatable, Identifiable {
     var limitKopecks: Int64
     /// nil: the limit of every month. «yyyy-MM»: that month only; it wins over the limit of every month.
     var month: String?
+
+    /// The largest amount the budgets work with: 10 trillion rubles in kopecks. Nothing real is larger, and the
+    /// arithmetic on it (× 100) always fits into Int64.
+    static let largestAmount: Int64 = 1_000_000_000_000_000
 }
 
 extension SavedHistory {
@@ -1120,7 +1124,7 @@ extension SavedHistory {
     /// An amount that is not positive is refused and nothing changes.
     @discardableResult
     mutating func setBudget(group: String?, limitKopecks: Int64, month: String?) -> Bool {
-        guard limitKopecks > 0 else { return false }
+        guard limitKopecks > 0, limitKopecks <= Budget.largestAmount else { return false }
         var all = budgets ?? []
         if let index = all.firstIndex(where: { $0.group == group && $0.month == month }) {
             all[index].limitKopecks = limitKopecks
