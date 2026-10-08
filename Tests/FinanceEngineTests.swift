@@ -1042,7 +1042,9 @@ struct FinanceEngineTests {
     }
 
     /// A large synthetic history (12 000 rows over 13 months): the forecast must come out the same however it is computed, and
-    /// its time is printed (the speed is a goal of the forecast block, not a hard limit of this test).
+    /// its time is printed (the speed is a goal of the forecast block, not a hard limit of this test). The expected numbers changed
+    /// once on purpose, in 46.22: the pace and the baseline are built from purchases, not from spending net of refunds (this
+    /// history has refunds), so the variable part is a little higher than before.
     static func testForecastSpeed() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -1082,7 +1084,7 @@ struct FinanceEngineTests {
                          forecast.typicalIrregularIncomeKopecks, forecast.irregularIncomeSoFarKopecks, forecast.oneOffKopecks,
                          Int64(forecast.upcoming.count), Int64(forecast.historyMonths), Int64(forecast.baselineMonths.count)]
         print("FORECAST-SPEED: \(history.count) rows, best of 3 = \(Int(best * 1000)) ms, signature \(signature)")
-        require(signature == [173380000, 300000000, 259228000, 256469050, 260875300, 300000000, 300000000, 300000000, 300000000, 0, 0, 6, 6], "the forecast of a large history is unchanged by speed-ups: \(signature)")
+        require(signature == [173380000, 300000000, 259858000, 257309050, 261610300, 300000000, 300000000, 300000000, 300000000, 0, 0, 6, 6], "the forecast of a large history is unchanged by speed-ups: \(signature)")
     }
 
     static func testMonthForecast() {
@@ -1306,6 +1308,34 @@ struct FinanceEngineTests {
         require(AccountListItem.move(items, from: [5], to: 0) == items, "the ungrouped header does not move")
     }
 
+    /// Refunds are shown apart: they lower what was spent, never the spending still expected, and the forecast is never negative.
+    static func testForecastRefunds() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: 12))! }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2032-%02d-%02dT12:00:00Z", month, day) }
+        let history = (1...3).flatMap { month in
+            [1, 15, 25].map { op(-1_000, kind: "expense", category: "Супермаркеты", description: "Продукты учебные", date: iso(month, $0)) }
+        }
+        let current = history + [op(-1_000, kind: "expense", category: "Супермаркеты", description: "Продукты учебные", date: iso(4, 1))]
+        let refund = op(10_000, kind: "refund", category: "Возврат", description: "Возврат учебный", date: iso(4, 2))
+        let plain = FinancialEngine.monthForecast(current, now: at(4, 10), calendar: calendar)
+        let returned = FinancialEngine.monthForecast(current + [refund], now: at(4, 10), calendar: calendar)
+        require(returned.projectedExpenseKopecks >= 0 && returned.projectedExpenseLowKopecks >= 0, "a refund larger than the purchases does not make the forecast negative")
+        require(returned.futureExpenseKopecks == plain.futureExpenseKopecks && returned.futureExpenseLowKopecks == plain.futureExpenseLowKopecks
+                && returned.futureExpenseHighKopecks == plain.futureExpenseHighKopecks, "a refund does not reduce the spending still expected")
+        require(returned.spentKopecks == plain.spentKopecks - 10_000 && returned.refundsKopecks == 10_000 && plain.refundsKopecks == 0,
+                "the refund lowers what was spent and is shown apart")
+        require(plain.projectedExpenseKopecks == plain.spentKopecks + plain.futureExpenseKopecks, "without refunds the forecast is spent plus what is still expected")
+        let reserveBefore = FinancialEngine.monthReserve(balanceKopecks: 50_000, forecast: plain)
+        require(FinancialEngine.monthReserve(balanceKopecks: 50_000, forecast: returned) == reserveBefore,
+                "the reserve counts only the spending still expected, whatever came back")
+        // a small refund inside the month: the total is spent + future as before
+        let small = FinancialEngine.monthForecast(current + [op(300, kind: "refund", category: "Возврат", description: "Возврат учебный", date: iso(4, 2))],
+                                                  now: at(4, 10), calendar: calendar)
+        require(small.projectedExpenseKopecks == small.spentKopecks + small.futureExpenseKopecks, "a refund smaller than the purchases leaves the total as spent plus future")
+    }
+
     static func testMonthReserve() {
         let forecast = FinancialEngine.MonthForecast(spentKopecks: 24_913, incomeKopecks: 11_000, projectedExpenseKopecks: 129_940,
                                                      projectedExpenseLowKopecks: 117_098, projectedExpenseHighKopecks: 144_877,
@@ -1320,7 +1350,9 @@ struct FinanceEngineTests {
                                                         FinancialEngine.UpcomingPayment(title: "Аренда", amountKopecks: 20_000, date: Date(timeIntervalSince1970: 2_000_000_100),
                                                                                         isIncome: false, overdue: false),
                                                      ], historyMonths: 3, baselineMonths: [],
-                                                     elapsedDays: 6, daysInMonth: 31)
+                                                     elapsedDays: 6, daysInMonth: 31,
+                                                     futureExpenseKopecks: 129_940 - 24_913, futureExpenseLowKopecks: 117_098 - 24_913,
+                                                     futureExpenseHighKopecks: 144_877 - 24_913)
         let reserve = FinancialEngine.monthReserve(balanceKopecks: 80_460, forecast: forecast)
         require(forecast.expectedIncomeLeftKopecks == 50_000, "a regular income whose day passed without it arriving is not counted")
         require(reserve == 80_460 - (129_940 - 24_913) + 50_000, "reserve = balance minus the spending still expected plus the regular income still expected")
@@ -3838,6 +3870,7 @@ struct FinanceEngineTests {
         testReceiptLayoutsRepaired()
         testReceiptRepairs()
         testForecastSpeed()
+        testForecastRefunds()
         testKnownIssues52()
         testKnownIssues53()
         testKnownAccountIssues53()

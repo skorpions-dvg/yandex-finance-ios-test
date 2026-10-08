@@ -683,14 +683,14 @@ enum FinancialEngine {
     /// expected (a salary that has its usual day ahead). Irregular income is never guessed here; see
     /// `monthReserveWithTypicalIncome`.
     static func monthReserve(balanceKopecks: Int64, forecast: MonthForecast) -> Int64 {
-        balanceKopecks - max(0, forecast.projectedExpenseKopecks - forecast.spentKopecks) + forecast.expectedIncomeLeftKopecks
+        balanceKopecks - max(0, forecast.futureExpenseKopecks) + forecast.expectedIncomeLeftKopecks
     }
 
     /// The reserve at the usual low and high spending of the months the forecast is built from.
     static func monthReserveRange(balanceKopecks: Int64, forecast: MonthForecast) -> (low: Int64, high: Int64) {
         let left = forecast.expectedIncomeLeftKopecks
-        let atHighSpending = balanceKopecks - max(0, forecast.projectedExpenseHighKopecks - forecast.spentKopecks) + left
-        let atLowSpending = balanceKopecks - max(0, forecast.projectedExpenseLowKopecks - forecast.spentKopecks) + left
+        let atHighSpending = balanceKopecks - max(0, forecast.futureExpenseHighKopecks) + left
+        let atLowSpending = balanceKopecks - max(0, forecast.futureExpenseLowKopecks) + left
         return (min(atHighSpending, atLowSpending), max(atHighSpending, atLowSpending))
     }
 
@@ -803,6 +803,14 @@ enum FinancialEngine {
         let baselineMonths: [BaselineMonth]
         let elapsedDays: Int
         let daysInMonth: Int
+        /// Refunds received from the first day of the month through today. They lower `spentKopecks` (what was really spent) but
+        /// not the spending still expected: the pace and the baseline are built from purchases.
+        var refundsKopecks: Int64 = 0
+        /// The spending still expected this month (recurring payments and the variable tail), whatever came back as refunds.
+        /// `projectedExpenseKopecks` is `max(0, spent + this)`: a refund larger than the purchases never gives a negative forecast.
+        var futureExpenseKopecks: Int64 = 0
+        var futureExpenseLowKopecks: Int64 = 0
+        var futureExpenseHighKopecks: Int64 = 0
 
         /// Expected income minus projected spending; negative means the money is not expected to last.
         var projectedBalanceKopecks: Int64 { projectedIncomeKopecks - projectedExpenseKopecks }
@@ -986,7 +994,7 @@ enum FinancialEngine {
         }
         let historyByCategory = Dictionary(grouping: variableItems.filter { $0.date >= historyStart && $0.date < monthStartDate }, by: \.category)
             .mapValues { $0.map(\.amount) }
-        let roughBaseline = median(months.map { $0.report.netExpenseKopecks - sum(recurringItems, income: false, in: $0.interval) })
+        let roughBaseline = median(months.map { $0.report.grossExpenseKopecks - sum(recurringItems, income: false, in: $0.interval) })
         // A payee seen in two or more different months is a habit (a person you send money to, a utility bill),
         // not a one-off, even when single amounts are large.
         let monthsByPayee = Dictionary(grouping: allVariable, by: \.key)
@@ -1003,8 +1011,9 @@ enum FinancialEngine {
         }
         let oneOffItems = variableItems.filter(isOneOff)
 
+        // Purchases, not net spending: a refund tells nothing about how much is bought in the days to come.
         func variableExpense(in interval: DateInterval, report monthReport: FinanceReport) -> Int64 {
-            monthReport.netExpenseKopecks - sum(recurringItems, income: false, in: interval) - sum(oneOffItems, income: false, in: interval)
+            monthReport.grossExpenseKopecks - sum(recurringItems, income: false, in: interval) - sum(oneOffItems, income: false, in: interval)
         }
         let variableExpenses = months.map { variableExpense(in: $0.interval, report: $0.report) }
         let baselineMonths = months.map { month -> BaselineMonth in
@@ -1062,8 +1071,10 @@ enum FinancialEngine {
         // An income whose usual day has passed without it arriving is counted nowhere (the reserve already ignores it).
         let upcomingIncome = upcoming.filter { $0.isIncome && !$0.overdue }.reduce(0) { $0 + $1.amountKopecks }
 
-        let known = soFar.netExpenseKopecks + upcomingExpense
-        let estimates = [tail(quantile(variableExpenses, 0.25)), tail(baseline), tail(quantile(variableExpenses, 0.75))].map { known + $0 }
+        // What is still expected, apart from what has been spent or returned so far.
+        let futures = [tail(quantile(variableExpenses, 0.25)), tail(baseline), tail(quantile(variableExpenses, 0.75))].map { upcomingExpense + $0 }
+        // The month's total never goes below zero: a refund larger than the purchases of the month is shown as refunds, not as a gain.
+        let estimates = futures.map { max(0, soFar.netExpenseKopecks + $0) }
 
         return MonthForecast(spentKopecks: soFar.netExpenseKopecks,
                              incomeKopecks: soFar.incomeKopecks,
@@ -1079,7 +1090,11 @@ enum FinancialEngine {
                              historyMonths: variableExpenses.count,
                              baselineMonths: baselineMonths,
                              elapsedDays: elapsed,
-                             daysInMonth: daysInMonth)
+                             daysInMonth: daysInMonth,
+                             refundsKopecks: soFar.refundsKopecks,
+                             futureExpenseKopecks: futures[1],
+                             futureExpenseLowKopecks: futures.min()!,
+                             futureExpenseHighKopecks: futures.max()!)
     }
 
     // MARK: - Chart data

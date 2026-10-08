@@ -48,7 +48,7 @@ struct ForecastDetailView: View {
                 Text("обычно от \(signedRubles(range.low)) до \(signedRubles(range.high))")
                     .font(.subheadline).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.projectedExpenseKopecks - forecast.spentKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))")
+                    Text("Остаток \(rubles(balance)) − ещё расходы \(rubles(max(0, forecast.futureExpenseKopecks))) + ещё регулярные поступления \(rubles(forecast.expectedIncomeLeftKopecks))")
                     Text("Счета: " + (accountNames.isEmpty ? "не выбраны" : accountNames.joined(separator: ", ")) + ". Отложенные деньги исключаются в настройках.")
                 }
                 .font(.caption).foregroundStyle(.secondary)
@@ -91,6 +91,13 @@ struct ForecastDetailView: View {
         Section(header: Text("Прогноз на месяц")) {
             let f = forecast
             LabeledContent("Потрачено за \(f.elapsedDays) из \(f.daysInMonth) дн.", value: rubles(f.spentKopecks))
+            if f.refundsKopecks > 0 {
+                VStack(alignment: .leading, spacing: 2) {
+                    LabeledContent("Возвраты уже учтены", value: rubles(f.refundsKopecks))
+                    Text("Возвраты уменьшают потраченное, но не ожидаемые расходы до конца месяца")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             VStack(alignment: .leading, spacing: 2) {
                 LabeledContent("Расходы к концу месяца", value: "≈ " + rubles(f.projectedExpenseKopecks))
                 Text("обычно от \(rubles(f.projectedExpenseLowKopecks)) до \(rubles(f.projectedExpenseHighKopecks))")
