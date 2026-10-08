@@ -526,22 +526,15 @@ private struct ReportSliceList: View {
     }
 
     private func budgetBar(_ status: BudgetStatus) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            BudgetBar(fraction: status.fraction, level: status.level, status: status).accessibilityHidden(true)
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    Text("Бюджет: \(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
-                    Spacer()
-                    Text(status.caption)
-                }.fixedSize(horizontal: true, vertical: false)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Бюджет: \(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
-                    Text(status.caption)
-                }.fixedSize(horizontal: false, vertical: true)
+        VStack(spacing: 4) {
+            BudgetBar(fraction: status.fraction, level: status.level)
+            HStack {
+                Text("Бюджет: \(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
+                Spacer()
+                Text(status.caption).foregroundStyle(status.level == .calm ? Color.secondary : status.level.color)
             }
-            .font(.caption).foregroundStyle(.primary)
+            .font(.caption2).foregroundStyle(.secondary)
         }
-        .accessibilityElement(children: .combine)
         .accessibilityLabel("Бюджет: " + status.title)
         .accessibilityValue(BudgetBar.accessibilityValue(status))
     }
@@ -564,17 +557,11 @@ private struct ReportSliceList: View {
                                                   selection: mode == .expenses ? .allExpenses : .allIncome, filter: filter)
                 } label: {
                     VStack(spacing: 6) {
-                        ViewThatFits(in: .horizontal) {
-                            HStack {
-                                Image(systemName: "sum").foregroundStyle(.secondary).frame(width: 28)
-                                Text(mode == .expenses ? "Все расходы" : "Все доходы").font(.headline)
-                                Spacer()
-                                Text(reportRubles(headline)).font(.headline).monospacedDigit()
-                            }.fixedSize(horizontal: true, vertical: false)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Label(mode == .expenses ? "Все расходы" : "Все доходы", systemImage: "sum").font(.headline)
-                                Text(reportRubles(headline)).font(.headline).monospacedDigit()
-                            }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                        HStack {
+                            Image(systemName: "sum").foregroundStyle(.secondary).frame(width: 28)
+                            Text(mode == .expenses ? "Все расходы" : "Все доходы").font(.headline)
+                            Spacer()
+                            Text(reportRubles(headline)).font(.headline).monospacedDigit()
                         }
                         ShareBar(fraction: 1, color: .accentColor)
                         if mode == .expenses, let monthBudget = budgets.first(where: { $0.group == nil }) { budgetBar(monthBudget) }
@@ -585,22 +572,12 @@ private struct ReportSliceList: View {
                         ReportDetailView(browser: browser, presentation: presentation, interval: interval, mode: mode, grouping: grouping, slice: slice, filter: filter)
                     } label: {
                         VStack(spacing: 6) {
-                            ViewThatFits(in: .horizontal) {
-                                HStack {
-                                    Circle().fill(ReportPalette.color(slice.title)).frame(width: 12, height: 12).frame(width: 28)
-                                    Text(slice.title)
-                                    Spacer()
-                                    Text(percent(slice.amountKopecks)).font(.caption).foregroundStyle(.secondary)
-                                    Text(reportRubles(slice.amountKopecks)).monospacedDigit()
-                                }.fixedSize(horizontal: true, vertical: false)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Circle().fill(ReportPalette.color(slice.title)).frame(width: 12, height: 12)
-                                        Text(slice.title).fixedSize(horizontal: false, vertical: true)
-                                    }
-                                    Text(reportRubles(slice.amountKopecks)).monospacedDigit()
-                                    Text(percent(slice.amountKopecks)).font(.caption).foregroundStyle(.secondary)
-                                }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                            HStack {
+                                Circle().fill(ReportPalette.color(slice.title)).frame(width: 12, height: 12).frame(width: 28)
+                                Text(slice.title).lineLimit(1)
+                                Spacer()
+                                Text(percent(slice.amountKopecks)).font(.caption).foregroundStyle(.secondary)
+                                Text(reportRubles(slice.amountKopecks)).monospacedDigit()
                             }
                             ShareBar(fraction: total > 0 ? Double(slice.amountKopecks) / Double(total) : 0, color: ReportPalette.color(slice.title))
                             if let own = budgets.first(where: { $0.group == slice.title }) { budgetBar(own) }

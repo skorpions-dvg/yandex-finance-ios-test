@@ -736,3 +736,17 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   const bar = budgets.match(/struct BudgetBar: View[\s\S]*?\r?\n}\r?\n/)[0];
   assert.ok(!bar.includes('accessibilityElement'), 'The budget bar must not change how accessibility elements are built around it');
 }
+
+// The rows of the budgets and of the report categories came out bunched and stretched on the phone after a layout switcher
+// (ViewThatFits with a fixed-width HStack) was put in them (46.18–46.24); they are back to the layout of 46.16.
+{
+  const budgetsView = fs.readFileSync(path.join(__dirname, '../YandexFinance/BudgetsView.swift'), 'utf8');
+  const budgetRow = budgetsView.match(/private func row\(_ status: BudgetStatus[\s\S]*?\.accessibilityHint/)[0];
+  const reports = fs.readFileSync(path.join(__dirname, '../YandexFinance/ReportsView.swift'), 'utf8');
+  const reportRows = reports.match(/private func budgetBar[\s\S]*?if refundsKopecks > 0/)[0];
+  for (const [name, code] of [['budget row', budgetRow], ['report rows', reportRows]]) {
+    for (const banned of ['ViewThatFits', 'accessibilityElement', 'fixedSize(horizontal: true']) {
+      assert.ok(!code.includes(banned), `The ${name} must not use ${banned}`);
+    }
+  }
+}

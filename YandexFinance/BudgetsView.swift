@@ -130,38 +130,26 @@ struct BudgetsView: View {
 
     private func row(_ status: BudgetStatus, _ monthKey: String) -> some View {
         Button { editing = BudgetFormTarget(group: status.group, isNew: false, month: monthKey) } label: {
+            // The row of 46.16, known to draw correctly on the phone (reliability.test.js guards it): a layout switcher with a
+            // fixed-width row bunched the texts to the left and stretched the card, the title missing (46.18–46.24).
             VStack(alignment: .leading, spacing: 6) {
-                ViewThatFits(in: .horizontal) {
-                    HStack {
-                        Label(status.title, systemImage: status.group == nil ? "calendar" : "tag").font(.headline)
-                        Spacer()
-                        Text("\(status.percent) %").font(.headline).monospacedDigit()
-                    }.fixedSize(horizontal: true, vertical: false)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(status.title, systemImage: status.group == nil ? "calendar" : "tag").font(.headline)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("Потрачено \(status.percent) %").font(.subheadline).monospacedDigit()
-                    }
+                HStack {
+                    Image(systemName: status.group == nil ? "calendar" : "tag").foregroundStyle(.secondary).frame(width: 24)
+                    Text(status.title).font(.headline)
+                    if status.isMonthOnly { Text("только этот месяц").font(.caption2).foregroundStyle(.secondary) }
+                    Spacer()
+                    Text("\(status.percent) %").font(.headline).monospacedDigit().foregroundStyle(status.level.color)
                 }
-                if status.isMonthOnly { Text("только этот месяц").font(.caption).foregroundStyle(.primary) }
-                BudgetBar(fraction: status.fraction, level: status.level, status: status).accessibilityHidden(true)
-                ViewThatFits(in: .horizontal) {
-                    HStack {
-                        Text("\(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
-                        Spacer()
-                        Text(status.caption)
-                    }.fixedSize(horizontal: true, vertical: false)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("\(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
-                        Text(status.caption)
-                    }.fixedSize(horizontal: false, vertical: true)
+                BudgetBar(fraction: status.fraction, level: status.level)
+                HStack {
+                    Text("\(budgetWholeRubles(status.spentKopecks)) из \(budgetWholeRubles(status.limitKopecks))")
+                    Spacer()
+                    Text(status.caption).foregroundStyle(status.level == .calm ? Color.secondary : status.level.color)
                 }
-                .font(.caption).monospacedDigit().foregroundStyle(.primary)
+                .font(.caption).monospacedDigit()
             }
-            .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
         .accessibilityLabel(status.title)
         .accessibilityValue(BudgetBar.accessibilityValue(status))
         .accessibilityHint("Изменить лимит бюджета")
