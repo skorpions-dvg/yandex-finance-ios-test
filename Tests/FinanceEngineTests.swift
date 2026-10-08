@@ -1041,6 +1041,50 @@ struct FinanceEngineTests {
                 "custom dates are whole days in either order, the last day included")
     }
 
+    /// A large synthetic history (12 000 rows over 13 months): the forecast must come out the same however it is computed, and
+    /// its time is printed (the speed is a goal of the forecast block, not a hard limit of this test).
+    static func testForecastSpeed() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(year: 2032, month: 6, day: 20, hour: 12))!
+        let days: [String] = (0..<400).map { back in
+            calendar.date(byAdding: .day, value: -back, to: calendar.date(from: DateComponents(year: 2032, month: 6, day: 20, hour: 9))!)!
+                .formatted(.iso8601)
+        }
+        var history: [FinancialOperationInput] = []
+        for i in 0..<12_000 {
+            let day = days[i % 400]
+            switch i % 40 {
+            case 0:
+                history.append(op(100_000_00, kind: "income", category: "Зарплата", description: "ООО Ромашка", date: day))
+            case 1:
+                history.append(op(-20_000_00, kind: "expense", category: "ЖКХ", description: "УК Жилищник", date: day))
+            case 2:
+                history.append(op(-5_000_00, kind: "transfer", category: "Переводы", description: "Перевод между счетами одного клиента", date: day))
+            case 3:
+                history.append(op(5_000_00, kind: "transfer", category: "Переводы", description: "Перевод между счетами одного клиента", date: day))
+            case 4:
+                history.append(op(700_00, kind: "refund", category: "Супермаркеты", description: "Магазин \(i % 60)", date: day))
+            default:
+                history.append(op(-Int64(100 + (i * 37) % 5_000) * 100, kind: "expense", category: ["Супермаркеты", "Кафе", "Транспорт", "Одежда"][i % 4],
+                                  description: "Магазин \(i % 60)", date: day))
+            }
+        }
+        var forecast = FinancialEngine.monthForecast(history, now: now, calendar: calendar)
+        var best = Double.infinity
+        for _ in 0..<3 {
+            let started = Date()
+            forecast = FinancialEngine.monthForecast(history, now: now, calendar: calendar)
+            best = min(best, Date().timeIntervalSince(started))
+        }
+        let signature = [forecast.spentKopecks, forecast.incomeKopecks, forecast.projectedExpenseKopecks, forecast.projectedExpenseLowKopecks,
+                         forecast.projectedExpenseHighKopecks, forecast.projectedIncomeKopecks, forecast.previousMonthIncomeKopecks,
+                         forecast.typicalIrregularIncomeKopecks, forecast.irregularIncomeSoFarKopecks, forecast.oneOffKopecks,
+                         Int64(forecast.upcoming.count), Int64(forecast.historyMonths), Int64(forecast.baselineMonths.count)]
+        print("FORECAST-SPEED: \(history.count) rows, best of 3 = \(Int(best * 1000)) ms, signature \(signature)")
+        require(signature == [173380000, 300000000, 259228000, 256469050, 260875300, 300000000, 300000000, 300000000, 300000000, 0, 0, 6, 6], "the forecast of a large history is unchanged by speed-ups: \(signature)")
+    }
+
     static func testMonthForecast() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -3793,6 +3837,7 @@ struct FinanceEngineTests {
         testReceiptPriceBands()
         testReceiptLayoutsRepaired()
         testReceiptRepairs()
+        testForecastSpeed()
         testKnownIssues52()
         testKnownIssues53()
         testKnownAccountIssues53()

@@ -421,8 +421,25 @@ enum FinancialEngine {
                                 grossExpenseKopecks: grossExpense, refundsKopecks: refunds, incomeKopecks: income)
     }
 
+    /// What several reports over the same list of operations share: the dates, the assessments and the Save pairs, worked out
+    /// once (each of them costs a pass over the whole history, and the forecast asks for seven reports).
+    struct PreparedOperations {
+        let dates: [Date?]
+        let assessments: [FinancialAssessment]
+        let pairRows: Set<Int>
+    }
+
+    static func prepare(_ operations: [FinancialOperationInput]) -> PreparedOperations {
+        let dates = operations.map { BankDateParser.parse($0.occurredAt) }
+        let assessments = operations.map { classify($0) }
+        return PreparedOperations(dates: dates, assessments: assessments,
+                                  pairRows: saveSidePairRows(operations, dates: dates, assessments: assessments))
+    }
+
+    /// With `prepared` (made from the same `operations`) the report reads the dates and assessments instead of working them out
+    /// again; the result is the same.
     static func report(_ operations: [FinancialOperationInput], in interval: DateInterval,
-                       taxonomy: ExpenseTaxonomy = .builtin) -> FinanceReport {
+                       taxonomy: ExpenseTaxonomy = .builtin, prepared: PreparedOperations? = nil) -> FinanceReport {
         var invalidDateCount = 0
         var operationCount = 0
         var income: Int64 = 0
@@ -452,15 +469,15 @@ enum FinancialEngine {
             groups[title] = group
         }
 
-        let otherAccountRows = saveSidePairRows(operations)
+        let otherAccountRows = prepared?.pairRows ?? saveSidePairRows(operations)
         for (index, operation) in operations.enumerated() {
-            guard let date = BankDateParser.parse(operation.occurredAt) else {
+            guard let date = prepared?.dates[index] ?? BankDateParser.parse(operation.occurredAt) else {
                 invalidDateCount += 1
                 continue
             }
             guard date >= interval.start && date < interval.end else { continue }
             operationCount += 1
-            let assessment = classify(operation)
+            let assessment = prepared?.assessments[index] ?? classify(operation)
             // The Save statement repeats the deposit side of transfers the card statement already has.
             let fromSaveStatement = isNotCardSide(operation) || otherAccountRows.contains(index)
             if assessment.type != .cancelled && !fromSaveStatement {
@@ -805,7 +822,10 @@ enum FinancialEngine {
         let title: String
         let isIncome: Bool
         let amount: Int64
-        /// "Group/Subcategory" for expenses, empty for income.
+        /// The row of the operation in the list it was made from.
+        let index: Int
+        /// "Group/Subcategory" for expenses, empty for income and until `monthForecast` asks for it (it needs only the months of
+        /// the baseline, and working it out costs more than everything else about a row).
         var category = ""
     }
 
@@ -825,18 +845,19 @@ enum FinancialEngine {
     }
 
     /// Completed income and expense movements with their counterparty; refunds, transfers, split and pending are left out.
-    private static func datedAmounts(_ operations: [FinancialOperationInput]) -> [DatedAmount] {
-        operations.compactMap { operation in
-            guard let date = BankDateParser.parse(operation.occurredAt) else { return nil }
-            let assessment = classify(operation)
+    private static func datedAmounts(_ operations: [FinancialOperationInput], prepared: PreparedOperations? = nil) -> [DatedAmount] {
+        operations.indices.compactMap { index in
+            let operation = operations[index]
+            guard let date = prepared?.dates[index] ?? BankDateParser.parse(operation.occurredAt) else { return nil }
+            let assessment = prepared?.assessments[index] ?? classify(operation)
             let key = counterpartyKey(operation.description)
             if assessment.incomeContributionKopecks > 0 {
-                return DatedAmount(date: date, key: key, title: operation.description, isIncome: true, amount: assessment.incomeContributionKopecks)
+                return DatedAmount(date: date, key: key, title: operation.description, isIncome: true,
+                                   amount: assessment.incomeContributionKopecks, index: index)
             }
             if assessment.expenseContributionKopecks > 0 {
-                let path = expenseCategory(for: operation, assessment: assessment)
                 return DatedAmount(date: date, key: key, title: operation.description, isIncome: false,
-                                   amount: assessment.expenseContributionKopecks, category: path.group + "/" + path.subcategory)
+                                   amount: assessment.expenseContributionKopecks, index: index)
             }
             return nil
         }
@@ -873,9 +894,13 @@ enum FinancialEngine {
     /// Payments and income from the same counterparty at least three times, about every 7, 14, 30 or 365 days,
     /// with amounts within 15% of their median (two thirds of the time), and seen recently enough to still be active.
     static func recurringPatterns(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current) -> [RecurringPattern] {
+        recurringPatterns(items: datedAmounts(operations), now: now, calendar: calendar)
+    }
+
+    private static func recurringPatterns(items all: [DatedAmount], now: Date, calendar: Calendar) -> [RecurringPattern] {
         let horizon = calendar.date(byAdding: .day, value: -400, to: now)!
         // A title that cannot be a payee key (only digits, a date) never makes a "recurring payment" of its own.
-        let items = datedAmounts(operations).filter { $0.date >= horizon && $0.date <= now && !payeeRuleKey($0.title).isEmpty }
+        let items = all.filter { $0.date >= horizon && $0.date <= now && !payeeRuleKey($0.title).isEmpty }
         let groups = Dictionary(grouping: items) { "\($0.isIncome)|\($0.key)" }
         func days(_ from: Date, _ to: Date) -> Int {
             calendar.dateComponents([.day], from: calendar.startOfDay(for: from), to: calendar.startOfDay(for: to)).day ?? 0
@@ -920,9 +945,12 @@ enum FinancialEngine {
         let daysInMonth = calendar.range(of: .day, in: .month, for: monthStartDate)?.count ?? 30
         let remaining = max(0, daysInMonth - elapsed)
 
-        let patterns = recurringPatterns(operations, now: now, calendar: calendar)
+        // Dates, assessments and Save pairs of the whole history are worked out once for all the reports below.
+        let prepared = prepare(operations)
+        let dated = datedAmounts(operations, prepared: prepared)
+        let patterns = recurringPatterns(items: dated, now: now, calendar: calendar)
         // Operations dated after today (a pending one, a scheduled one) do not take part in today's forecast.
-        let allItems = datedAmounts(operations).filter { $0.date < endOfToday }
+        let allItems = dated.filter { $0.date < endOfToday }
         let recurringKeys = Set(patterns.map { "\($0.isIncome)|\(counterpartyKey($0.title))" })
         let recurringItems = allItems.filter { recurringKeys.contains("\($0.isIncome)|\($0.key)") }
         func sum(_ items: [DatedAmount], income: Bool, in interval: DateInterval) -> Int64 {
@@ -931,13 +959,13 @@ enum FinancialEngine {
 
         // Full months only: a month before the saved history or the partly covered month it starts in
         // (for example a statement that begins mid-month) would drag the baseline down.
-        let firstSaved = operations.compactMap { BankDateParser.parse($0.occurredAt) }.min()
+        let firstSaved = prepared.dates.compactMap { $0 }.min()
         var months: [(interval: DateInterval, report: FinanceReport)] = []
         var previousMonthIncome: Int64 = 0
         for back in 1...6 {
             let start = calendar.date(byAdding: .month, value: -back, to: monthStartDate)!
             let month = DateInterval(start: start, end: calendar.date(byAdding: .month, value: 1, to: start)!)
-            let monthReport = report(operations, in: month)
+            let monthReport = report(operations, in: month, prepared: prepared)
             if back == 1 { previousMonthIncome = monthReport.incomeKopecks }
             // A month with almost no spending saved (an incompletely covered archive month) is not representative.
             let expenseCount = allItems.filter { !$0.isIncome && $0.date >= month.start && $0.date < month.end }.count
@@ -948,13 +976,20 @@ enum FinancialEngine {
         let historyStart = months.map(\.interval.start).min() ?? monthStartDate
 
         // One-off purchases: compared with the usual purchase of their category in the history.
-        let variableItems = allItems.filter { !$0.isIncome && !recurringKeys.contains("\($0.isIncome)|\($0.key)") }
+        let allVariable = allItems.filter { !$0.isIncome && !recurringKeys.contains("\($0.isIncome)|\($0.key)") }
+        // Only the purchases of the baseline months and of this month are compared and counted, so only they get a category.
+        let variableItems = allVariable.filter { $0.date >= historyStart }.map { item -> DatedAmount in
+            var item = item
+            let path = expenseCategory(for: operations[item.index], assessment: prepared.assessments[item.index])
+            item.category = path.group + "/" + path.subcategory
+            return item
+        }
         let historyByCategory = Dictionary(grouping: variableItems.filter { $0.date >= historyStart && $0.date < monthStartDate }, by: \.category)
             .mapValues { $0.map(\.amount) }
         let roughBaseline = median(months.map { $0.report.netExpenseKopecks - sum(recurringItems, income: false, in: $0.interval) })
         // A payee seen in two or more different months is a habit (a person you send money to, a utility bill),
         // not a one-off, even when single amounts are large.
-        let monthsByPayee = Dictionary(grouping: variableItems, by: \.key)
+        let monthsByPayee = Dictionary(grouping: allVariable, by: \.key)
             .mapValues { Set($0.map { calendar.dateComponents([.year, .month], from: $0.date) }).count }
         func isOneOff(_ item: DatedAmount) -> Bool {
             if (monthsByPayee[item.key] ?? 0) >= 2 { return false }
@@ -988,7 +1023,7 @@ enum FinancialEngine {
         let variableIncomes = months.map { $0.report.incomeKopecks - sum(recurringItems, income: true, in: $0.interval) }
 
         let soFarInterval = DateInterval(start: monthStartDate, end: endOfToday)
-        let soFar = report(operations, in: soFarInterval)
+        let soFar = report(operations, in: soFarInterval, prepared: prepared)
         let variableSoFar = variableExpense(in: soFarInterval, report: soFar)
         let baseline = median(variableExpenses)
 
@@ -1408,12 +1443,14 @@ enum FinancialEngine {
     /// with opposite signs within two minutes. For card → Save the card keeps the debit and the credit row is the Save's;
     /// for Save → card the card keeps the credit. Rows the scanner already tagged with their account are left to
     /// `isSaveSide`, and a row without its pair is never dropped.
-    static func saveSidePairRows(_ operations: [FinancialOperationInput]) -> Set<Int> {
+    static func saveSidePairRows(_ operations: [FinancialOperationInput], dates: [Date?]? = nil,
+                                 assessments: [FinancialAssessment]? = nil) -> Set<Int> {
         let candidates = operations.indices.compactMap { index -> (Int, TransferDestination, Date)? in
             let operation = operations[index]
-            guard !isSaveSide(operation), operation.amountKopecks != 0, classify(operation).type == .internalTransfer,
+            guard !isSaveSide(operation), operation.amountKopecks != 0,
+                  (assessments?[index] ?? classify(operation)).type == .internalTransfer,
                   let destination = transferDestination(operation),
-                  let date = BankDateParser.parse(operation.occurredAt) else { return nil }
+                  let date = dates?[index] ?? BankDateParser.parse(operation.occurredAt) else { return nil }
             return (index, destination, date)
         }
         var result = Set<Int>()
