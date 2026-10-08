@@ -199,6 +199,8 @@ private struct BottomBarSpaceKey: EnvironmentKey {
 /// update of the window rebuilt all three pages at each turn, 46.26).
 final class PagerLocks: ObservableObject {
     @Published var pushed: Set<Int> = []
+    /// The root of each page that is shown now (a page can get a new root: Settings tapped again).
+    var roots: [Int: UUID] = [:]
 }
 
 private struct PagerLocksKey: EnvironmentKey {
@@ -213,12 +215,20 @@ private struct TabPageKey: EnvironmentKey {
 private struct PushedScreenWatcher: ViewModifier {
     @Environment(\.pagerLocks) private var locks
     @Environment(\.tabPage) private var page
+    @State private var root = UUID()
 
     func body(content: Content) -> some View {
         content
             // Only a real change is published: the window above is not redrawn for nothing.
-            .onAppear { if locks?.pushed.contains(page) == true { locks?.pushed.remove(page) } }
-            .onDisappear { if locks?.pushed.contains(page) == false { locks?.pushed.insert(page) } }
+            .onAppear {
+                locks?.roots[page] = root
+                if locks?.pushed.contains(page) == true { locks?.pushed.remove(page) }
+            }
+            .onDisappear {
+                // A root that was replaced (Settings tapped again) says nothing about the root shown now.
+                guard locks?.roots[page] == root else { return }
+                if locks?.pushed.contains(page) == false { locks?.pushed.insert(page) }
+            }
     }
 }
 

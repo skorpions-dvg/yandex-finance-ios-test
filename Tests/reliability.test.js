@@ -612,7 +612,7 @@ assert.match(appSwift, /\.textContentType\(\.oneTimeCode\)/, 'the code field mus
 assert.match(appSwift, /Button\("Открыть страницу банка"\) \{ browser\.showBankPageForSignIn\(\) \}/, 'the code window must lead to the bank page');
 assert.match(appSwift, /Button\("Отмена"\) \{ browser\.cancelSignIn\(\) \}/, 'the code window must be cancellable');
 assert.match(swift, /func finishSignIn\(\) \{[\s\S]{0,200}codeEntryVisible = false/, 'finishing the sign-in closes the code window');
-assert.match(swift, /historyPageReady\(\) else \{ continue \}\s*self\.finishSignIn\(\)[\s\S]{0,120}self\.read\(mode: "history"/, 'after sign-in the page closes and the refresh continues');
+assert.match(swift, /let ready = await self\.historyPageReady\(\)[\s\S]{0,160}guard ready else \{ continue \}\s*self\.finishSignIn\(\)[\s\S]{0,120}self\.read\(mode: "history"/, 'after sign-in the page closes and the refresh continues');
 assert.match(appSwift, /ZStack\(alignment: \.top\) \{[\s\S]{0,200}BankWebView\(browser: browser\)/, 'bank page must stay in the window behind the tabs');
 assert.ok(!/Label\("Банк"/.test(appSwift), 'the bank page is no longer a tab');
 assert.match(appSwift, /\("Настройки", "gearshape"\)/);
@@ -769,4 +769,17 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
     const code = fs.readFileSync(path.join(__dirname, '../YandexFinance/' + file), 'utf8');
     assert.ok(code.includes('.watchesPushedScreens()'), `${file}: the tab root must watch its pushed screens`);
   }
+}
+
+// Audit of GPT, stage 58: the pager lock must not stop the lists inside the pages; a sign-in has a number; the code field is only a clear one.
+{
+  const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
+  for (const page of [1, 2, 3]) {
+    assert.match(app, new RegExp('\\.environment\\(\\\\\\.tabPage, ' + page + '\\)\\s*(//[^\\n]*\\s*)?\\.scrollDisabled\\(false\\)'),
+                 `page ${page} must scroll inside although the pager is locked`);
+  }
+  assert.ok(!/pagerLocks\.pushed\.remove\(3\)/.test(app), 'no timed unlock of Settings');
+  const bank = fs.readFileSync(path.join(__dirname, '../YandexFinance/BankBrowser.swift'), 'utf8');
+  assert.match(bank, /func finishSignIn\(\) \{[\s\S]{0,120}signInGeneration \+= 1/, 'finishing a sign-in makes its late answers harmless');
+  assert.ok(!/maxLength >= 4 && el\.maxLength <= 6\) score/.test(bank), 'a numeric field alone is not taken for the code');
 }

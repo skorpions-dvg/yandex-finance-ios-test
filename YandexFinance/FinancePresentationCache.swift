@@ -18,6 +18,13 @@ final class FinancePresentationCache {
            old.operationLooks == history.operationLooks,
            old.payeeLookRules == history.payeeLookRules {
             if old.accounts == history.accounts && old.accountGroups == history.accountGroups { return }
+            // Which account follows the card or Save decides which operations belong to which account (the inputs and the
+            // reports of an account): then everything is computed again; hiding, names and order keep the rest.
+            if Self.bankLinks(old) != Self.bankLinks(history) {
+                snapshot = history
+                values.removeAll(keepingCapacity: true)
+                return
+            }
             // Only the accounts or their groups changed (hiding an account, a new name, another order): what is built from
             // them is dropped, the forecast, the reports and the review of categories stay (the forecast takes ~1 s).
             snapshot = history
@@ -26,6 +33,10 @@ final class FinancePresentationCache {
         }
         snapshot = history
         values.removeAll(keepingCapacity: true)
+    }
+
+    private static func bankLinks(_ history: SavedHistory) -> [String] {
+        (history.accounts ?? []).map { "\($0.id)|\($0.tracksBankCard)|\($0.tracksSave ?? false)" }
     }
 
     /// Keys of values made from the accounts: the balances of accounts, of the reserve, the pages of one account.

@@ -26,6 +26,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     private var preferBankPage = false
     /// The balances are being read (the bank's main page may be open for it): a second reading does not start meanwhile.
     private var readingBalances = false
+    /// The number of the current sign-in and of the current code sent: an answer that comes for an older one is dropped (a
+    /// cancelled sign-in must not bring its window back, a new code must not get the error or the end of an older one).
+    private var signInGeneration = 0
+    private var submitGeneration = 0
     @Published var busy = false
     @Published var message = ""
     @Published private(set) var statementPreview: StatementImportPreview?
@@ -157,15 +161,20 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         signInRequested = true
         preferBankPage = false
         signInWatch?.cancel()
+        signInGeneration += 1
+        let generation = signInGeneration
         signInWatch = Task { @MainActor [weak self] in
             // The code window when the bank asks for a code; its own page for anything else (a phone number, a check).
             guard let first = self else { return }
-            if await first.bankPageState() == .codeRequested { first.showCodeEntry() } else { first.bankPageVisible = true }
+            let opening = await first.bankPageState()
+            guard first.signInGeneration == generation, first.signInRequested else { return }
+            if opening == .codeRequested { first.showCodeEntry() } else { first.bankPageVisible = true }
             var otherSeconds = 0
             for _ in 0..<600 {
                 do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
-                guard let self, self.signInRequested else { return }
+                guard let self, self.signInGeneration == generation, self.signInRequested else { return }
                 let state = await self.bankPageState()
+                guard self.signInGeneration == generation, self.signInRequested else { return }
                 if state == .codeRequested {
                     otherSeconds = 0
                     if !self.codeEntryVisible && !self.preferBankPage { self.showCodeEntry() }
@@ -183,18 +192,25 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                     self.webView.load(URLRequest(url: URL(string: "https://bank.yandex.ru/my/transactions-history")!))
                     continue
                 }
-                guard await self.historyPageReady() else { continue }
+                let ready = await self.historyPageReady()
+                guard self.signInGeneration == generation, self.signInRequested else { return }
+                guard ready else { continue }
                 self.finishSignIn()
                 self.message = "Вход выполнен, обновляю операции…"
                 self.read(mode: "history", lookbackDays: self.incrementalDays())
                 return
             }
+            // Ten minutes without a sign-in: the waiting ends, the window and the page close, the owner starts again later.
+            guard let self, self.signInGeneration == generation, self.signInRequested else { return }
+            self.finishSignIn()
+            self.message = "Вход не завершён за 10 минут. Обновите операции, когда будете готовы войти."
         }
     }
 
     /// Hides the bank page and stops waiting for a sign-in (also used by «Готово»).
     func finishSignIn() {
         signInWatch?.cancel(); signInWatch = nil
+        signInGeneration += 1
         signInRequested = false
         bankPageVisible = false
         codeEntryVisible = false
@@ -219,20 +235,31 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                                              other.parentElement.parentElement === el.parentElement.parentElement);
         return outer.length >= 3 && outer.length <= 8 ? outer : null;
     };
+    // Only what is clearly a code: a field marked for a one-time code, else one field named as a code, else one group of
+    // one-digit fields. A numeric field of 4–6 digits alone (a postal code) is not taken; two candidates of the same kind are
+    // not guessed between: the bank page itself then takes the code.
     const findCodeFields = () => {
         const marked = inputs.filter(el => (el.autocomplete || '').toLowerCase() === 'one-time-code');
-        if (marked.length) return marked[0].maxLength === 1 ? (groupOf(marked[0]) || [marked[0]]) : [marked[0]];
-        const single = inputs.find(el => el.maxLength === 1 && groupOf(el));
-        if (single) return groupOf(single);
-        const scored = inputs.map(el => {
-            let score = 0;
-            const mode = (el.inputMode || el.getAttribute('inputmode') || '').toLowerCase();
-            if (mode === 'numeric') score += 30;
-            if (el.maxLength >= 4 && el.maxLength <= 6) score += 40;
-            if (/код|code|otp|pin|смс|sms/.test(meta(el))) score += 50;
-            return { el, score };
-        }).filter(item => item.score > 40).sort((a, b) => b.score - a.score);
-        return scored.length ? [scored[0].el] : [];
+        if (marked.length) return marked[0].maxLength === 1 ? (groupOf(marked[0]) || [marked[0]]) : (marked.length === 1 ? [marked[0]] : []);
+        const named = inputs.filter(el => el.maxLength !== 1 && /код|code|otp|pin|смс|sms/.test(meta(el)));
+        if (named.length) return named.length === 1 ? named : [];
+        const groups = [];
+        for (const el of inputs) {
+            if (el.maxLength !== 1) continue;
+            const group = groupOf(el);
+            if (group && !groups.some(known => known[0] === group[0])) groups.push(group);
+        }
+        return groups.length === 1 ? groups[0] : [];
+    };
+    // The block of the code: its form or dialog, else a few levels around the field; errors, the wait and «request again» are
+    // looked for there only, not in the whole page.
+    const codeArea = fields => {
+        if (!fields.length) return null;
+        const holder = fields[0].closest('form, [role="dialog"]');
+        if (holder) return holder;
+        let box = fields[0];
+        for (let step = 0; step < 3 && box.parentElement; step++) box = box.parentElement;
+        return box;
     };
     """
 
@@ -274,9 +301,14 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     func submitCode(_ code: String) async {
         let digits = code.filter(\.isNumber)
         guard !codeSubmitting, !digits.isEmpty else { return }
+        submitGeneration += 1
+        let attempt = submitGeneration
+        let session = signInGeneration
+        // Still the same sign-in and the latest code: only then may an answer change what the window shows.
+        func current() -> Bool { signInGeneration == session && submitGeneration == attempt }
         codeEntryError = nil
         codeSubmitting = true
-        defer { codeSubmitting = false }
+        defer { if current() { codeSubmitting = false } }
         let fill = Self.codeFieldsJS + """
         const fields = findCodeFields();
         if (!fields.length) return { ok: false, reason: 'field_not_found' };
@@ -304,6 +336,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         return { ok: fields.every((el, index) => el.value === code[index]), mode: 'digits' };
         """
         let result = try? await webView.callAsyncJavaScript(fill, arguments: ["code": digits], in: nil, contentWorld: .defaultClient)
+        guard current() else { return }
         guard let answer = result as? [String: Any], answer["ok"] as? Bool == true else {
             codeEntryError = "Не получилось вписать код на странице банка. Откройте страницу банка и введите код там."
             return
@@ -311,12 +344,16 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         for _ in 0..<20 {
             try? await Task.sleep(nanoseconds: 500_000_000)
             // Signed in: the watcher has already finished the sign-in and started the refresh.
-            guard signInRequested else { return }
-            if await codeRejected() {
+            guard current(), signInRequested else { return }
+            let rejected = await codeRejected()
+            guard current() else { return }
+            if rejected {
                 codeEntryError = "Банк не принял код. Проверьте цифры или запросите новый."
                 return
             }
-            if await bankPageState() != .codeRequested { return }
+            let state = await bankPageState()
+            guard current() else { return }
+            if state != .codeRequested { return }
         }
         codeEntryError = "Банк пока не ответил. Попробуйте ещё раз или откройте страницу банка."
     }
@@ -392,11 +429,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// An error next to the code field (not anywhere on the page: the word «ошибка» can be in any other text).
     private func codeRejected() async -> Bool {
         let script = Self.codeFieldsJS + """
-        const fields = findCodeFields();
-        if (!fields.length) return false;
-        let box = fields[0];
-        for (let step = 0; step < 4 && box.parentElement; step++) box = box.parentElement;
-        return /неверн|ошибк|некоррект|истёк|истек|не подходит/i.test(box.innerText || '');
+        const area = codeArea(findCodeFields());
+        if (!area) return false;
+        return /неверн|ошибк|некоррект|истёк|истек|не подходит/i.test(area.innerText || '');
         """
         return (try? await webView.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .defaultClient) as? Bool) ?? false
     }
@@ -404,12 +439,16 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
     /// Seconds until the bank lets ask for a new code (its «Запросить другой через N секунд»); with `request` and no wait left
     /// it taps the bank's button. The owner's tap in the window is what asks, never the app by itself.
     func resendCode(request: Bool) async -> Int {
-        let script = """
-        const text = document.body ? document.body.innerText : '';
+        let script = Self.codeFieldsJS + """
+        // The block of the code and a little around it (the bank's «Запросить другой» sits under the field).
+        let area = codeArea(findCodeFields());
+        if (!area) return 0;
+        if (area.parentElement && area.tagName !== 'FORM') area = area.parentElement;
+        const text = area.innerText || '';
         const wait = text.match(/через\\s*(\\d+)\\s*(мин)?/i);
         const seconds = wait ? parseInt(wait[1], 10) * (wait[2] ? 60 : 1) : 0;
         if (!request || seconds > 0) return seconds;
-        const button = [...document.querySelectorAll('button, a, [role="button"]')].find(node =>
+        const button = [...area.querySelectorAll('button, a, [role="button"]')].find(node =>
             node.getClientRects().length > 0 && !node.disabled && node.getAttribute('aria-disabled') !== 'true' &&
             /запросить|отправить.*(ещё|еще|повторно|снова)|получить.*код|новый код/i.test((node.textContent || '').trim()));
         if (button) button.click();

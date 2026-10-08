@@ -93,6 +93,8 @@ struct ContentView: View {
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
                                 .environment(\.pagerLocks, pagerLocks).environment(\.tabPage, 1)
+                                // The pager's lock passes down to every scroll view inside; the pages and their lists scroll.
+                                .scrollDisabled(false)
                                 .frame(width: width, height: height)
                                 .overlay {
                                     // While the accounts are open, a tap on the visible edge of the page closes them.
@@ -105,6 +107,7 @@ struct ContentView: View {
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
                                 .environment(\.pagerLocks, pagerLocks).environment(\.tabPage, 2)
+                                .scrollDisabled(false)
                                 .frame(width: width, height: height)
                                 .id(2)
                             SettingsView(browser: browser, presentation: presentation, resetToken: settingsReset,
@@ -112,6 +115,7 @@ struct ContentView: View {
                                 // Lists scroll under the floating bar and stop with their last row above it.
                                 .environment(\.bottomBarSpace, bottomSpace)
                                 .environment(\.pagerLocks, pagerLocks).environment(\.tabPage, 3)
+                                .scrollDisabled(false)
                                 .frame(width: width, height: height)
                                 .id(3)
                         }
@@ -197,14 +201,7 @@ struct ContentView: View {
     private func closeAccounts() { animate { page = 1 } }
 
     private func selectTab(_ tab: Int) {
-        if selectedTab == tab && tab == 3 {
-            settingsReset += 1
-            // A new Settings root replaces the old one: whatever order their appear/disappear come in, the pages turn again.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 400_000_000)
-                pagerLocks.pushed.remove(3)
-            }
-        }
+        if selectedTab == tab && tab == 3 { settingsReset += 1 }
         selectedTab = tab
         if page == tab {
             // The saved position can stay at a page the pager is no longer on; a repeated value would do nothing.
