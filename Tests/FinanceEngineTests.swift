@@ -1132,6 +1132,103 @@ struct FinanceEngineTests {
         require(manual.count == 2 && manual.allSatisfy { !$0.appliesToAll }, "manual operations stay individual because existing setters do not create rules for them")
     }
 
+    static func testCategorySuggestions() {
+        var history = SavedHistory()
+        func category(_ group: String, _ name: String) -> UUID {
+            history.categoryTree.first { $0.name == group }!.categories.first { $0.name == name }!.id
+        }
+        let food = category("Еда", "Супермаркеты")
+        let cafe = category("Еда", "Кафе и рестораны")
+        let clothes = category("Покупки", "Одежда")
+        let target = bankOp("suggest-target", -100, description: "СозвездиеТест кафе север")
+        let group = ReviewGroup(id: "suggest-group", key: FinancialEngine.payeeRuleKey(target.description),
+                                kind: .expense, operations: [target])
+        let old = bankOp("suggest-old", -200, description: target.description, date: "2032-05-02T10:00:00Z")
+        let newer = bankOp("suggest-new", -300, description: target.description, date: "2032-06-01T10:00:00Z")
+        let similar1 = bankOp("suggest-similar-1", -400, description: "ООО СозвездиеТест юг")
+        let similar2 = bankOp("suggest-similar-2", -500, description: "СозвездиеТест восток")
+        history.operations = [target, old, newer, similar1, similar2]
+        history.categoryOverrides = [target.identity: UncategorizedReview.otherExpenseID, old.identity: food,
+                                     newer.identity: clothes, similar1.identity: food, similar2.identity: food]
+        let suggestions = CategorySuggestions.suggest(for: group, history: history)
+        require(suggestions.map(\.reason) == [.history, .words, .similarPayees], "suggestions rank history, words, then similar payees")
+        require(suggestions.map(\.categoryID) == [clothes, cafe, food], "history frequency tie chooses the freshest category")
+        require(suggestions.map(\.count) == [1, 0, 2] && suggestions.count <= 3,
+                "suggestion counts reflect evidence and there are at most three")
+        let repeated = bankOp("suggest-repeat", -600, description: target.description, date: "2032-04-01T10:00:00Z")
+        history.operations.append(repeated)
+        history.categoryOverrides?[repeated.identity] = food
+        let frequent = CategorySuggestions.suggest(for: group, history: history)
+        require(frequent.first?.categoryID == food && frequent.first?.count == 2, "history frequency outranks freshness")
+        require(frequent.count == 2 && Set(frequent.map(\.categoryID)).count == frequent.count, "repeated category keeps its strongest reason only")
+
+        let conflict = bankOp("suggest-conflict", -100, description: "СозвездиеТест запад")
+        history.operations = [target, similar1, similar2, conflict]
+        history.categoryOverrides?[conflict.identity] = clothes
+        require(CategorySuggestions.suggest(for: group, history: history).map(\.reason) == [.words], "two of three similar purchases is below 80 percent")
+        let similar3 = bankOp("suggest-similar-3", -100, description: "СозвездиеТест центр")
+        let similar4 = bankOp("suggest-similar-4", -100, description: "СозвездиеТест берег")
+        history.operations += [similar3, similar4]
+        history.categoryOverrides?[similar3.identity] = food
+        history.categoryOverrides?[similar4.identity] = food
+        require(CategorySuggestions.suggest(for: group, history: history).last?.count == 4, "exactly 80 percent qualifies as a similar-payee suggestion")
+        history.operations = [target, similar1]
+        require(CategorySuggestions.suggest(for: group, history: history).map(\.reason) == [.words], "one similar operation is not sufficient")
+
+        let unnamed = ReviewGroup(id: "suggest-empty", key: "", kind: .expense, operations: [target])
+        history.operations = [target, old, newer, similar1, similar2]
+        require(CategorySuggestions.suggest(for: unnamed, history: history).map(\.reason) == [.words], "empty payee key permits words only")
+        let income = ReviewGroup(id: "suggest-income", key: group.key, kind: .income, operations: [target])
+        require(CategorySuggestions.suggest(for: income, history: history).isEmpty, "income groups get no expense suggestions")
+        let unknown = bankOp("suggest-unknown", -100, description: "АбстракцияТест север")
+        let other = bankOp("suggest-other", -200, description: unknown.description)
+        let unknownGroup = ReviewGroup(id: "suggest-unknown-group", key: FinancialEngine.payeeRuleKey(unknown.description),
+                                       kind: .expense, operations: [unknown])
+        history.operations = [unknown, other]
+        history.categoryOverrides = [other.identity: UncategorizedReview.otherExpenseID]
+        require(CategorySuggestions.suggest(for: unknownGroup, history: history).isEmpty, "Misc is never evidence or a suggestion")
+        require(history.renameExpenseCategory(UncategorizedReview.otherExpenseID, to: "РазобратьТест"), "suggestion fixture renames Misc")
+        require(CategorySuggestions.suggest(for: unknownGroup, history: history).isEmpty, "Misc stays excluded after renaming")
+        history.expenseCategories = history.categoryTree.map { value in
+            var changed = value
+            changed.categories.removeAll { $0.id == cafe }
+            return changed
+        }
+        require(CategorySuggestions.suggest(for: unnamed, history: history).isEmpty, "word suggestion must exist in the user's tree")
+    }
+
+    static func testRuleCandidates() {
+        var history = SavedHistory()
+        let food = history.categoryTree[0].categories[0].id
+        let otherCategory = history.categoryTree[0].categories[1].id
+        let operations = (1...4).map { bankOp("candidate-\($0)", -100, description: "ПолучательТест север") }
+        history.operations = operations
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: operations.prefix(3).map { ($0.identity, food) })
+        let candidates = CategorySuggestions.ruleCandidates(history)
+        require(candidates.count == 1 && candidates[0].categoryID == food && candidates[0].operationCount == 4,
+                "exactly three identical manual category choices offer a rule covering all bank expenses")
+        history.categoryOverrides?[operations[3].identity] = otherCategory
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "a conflicting manual category blocks a rule")
+        history.categoryOverrides?[operations[3].identity] = nil
+        require(history.setExpenseCategory(food, for: operations[3], forPayee: true), "candidate fixture adds a rule")
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "an existing payee rule is not offered again")
+        history.categoryRules = nil
+        history.categoryOverrides?[operations[2].identity] = nil
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "two manual choices are not enough")
+        history.operations = (1...3).map { bankOp("candidate-empty-\($0)", -100, description: "12345") }
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: history.operations.map { ($0.identity, food) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "empty keys never produce rule candidates")
+        history.operations = (1...3).map { bankOp("manual:candidate-\($0)", -100, description: "ПолучательТест север") }
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: history.operations.map { ($0.identity, food) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "manual operations cannot count towards bank payee rules")
+        history.operations = operations
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: operations.map { ($0.identity, UUID()) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "deleted or conflicting category ids are not offered")
+        history.operations = (1...3).map { bankOp("candidate-income-\($0)", 100, description: "ПолучательТест север", kind: "income") }
+        history.categoryOverrides = Dictionary(uniqueKeysWithValues: history.operations.map { ($0.identity, food) })
+        require(CategorySuggestions.ruleCandidates(history).isEmpty, "income cannot become an expense rule candidate")
+    }
+
     static func testCardToSaveTransfer() {
         // The bank's shared history lists a card → Save transfer as two rows titled after the Save account.
         let day = BankDateParser.parse("2026-10-07T00:00:00Z")!
@@ -2025,6 +2122,8 @@ struct FinanceEngineTests {
         testBackdatedManualOperation()
         testExpenseCategories()
         testUncategorizedReview()
+        testCategorySuggestions()
+        testRuleCandidates()
         testFixedCostGroups()
         testIncomeCategories()
         testSaveStatementSource()
