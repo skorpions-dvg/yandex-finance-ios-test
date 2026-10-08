@@ -71,14 +71,18 @@ struct BudgetsView: View {
                 Section {
                     ContentUnavailableView("Бюджетов пока нет", systemImage: "target",
                                            description: Text("Задайте лимит на весь месяц или на группу расходов, например «Еда»."))
-                    Button("Добавить бюджет") { editing = BudgetFormTarget(group: nil, isNew: true) }
+                    Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
+                        Label { Text("Добавить бюджет").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(Color.accentColor) }
+                    }
                 }.glassRows()
             } else {
                 if let total = statuses.first(where: { $0.group == nil }) {
                     Section("Весь месяц") { row(total) }.glassRows()
                 } else {
                     Section {
-                        Button("Задать лимит на весь месяц") { editing = BudgetFormTarget(group: nil, isNew: true) }
+                        Button { editing = BudgetFormTarget(group: nil, isNew: true) } label: {
+                            Label { Text("Задать лимит на весь месяц").foregroundStyle(.primary) } icon: { Image(systemName: "plus.circle").foregroundStyle(Color.accentColor) }
+                        }
                     }.glassRows()
                 }
                 let groups = statuses.filter { $0.group != nil }

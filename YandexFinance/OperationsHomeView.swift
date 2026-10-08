@@ -555,7 +555,12 @@ private struct CustomDatesSheet: View {
                         through = last
                     }
                 } label: {
-                    Label("Текущий месяц (с 1 числа)", systemImage: "calendar")
+                    // Plain blue text sinks into the glass of the sheet: the words keep the main colour, the icon the accent.
+                    Label {
+                        Text("Текущий месяц (с 1 числа)").foregroundStyle(.primary)
+                    } icon: {
+                        Image(systemName: "calendar").foregroundStyle(Color.accentColor)
+                    }
                 }
                 DatePicker("С", selection: $from, displayedComponents: .date)
                 DatePicker("По", selection: $through, displayedComponents: .date)
