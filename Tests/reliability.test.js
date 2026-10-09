@@ -843,3 +843,15 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.ok(twins.includes('if dateIsPending && !(lastScan?.date.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false) { return [] }'),
             'no search by the placeholder date of an unread or future-dated receipt');
 }
+
+// (46.45) The greeting of a cold launch: over everything, on the colour of the launch screen, never longer than 2,5 s.
+{
+  const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
+  assert.ok(app.includes('SplashView(ready: !browser.loadingHistory)'), 'the greeting goes when the history is read');
+  const views = fs.readFileSync(path.join(__dirname, '../YandexFinance/SecurityViews.swift'), 'utf8');
+  const splash = views.slice(views.indexOf('struct SplashView'), views.indexOf('/// Set, change or switch off the code'));
+  assert.ok(splash.includes('Color("LaunchBackground")'), 'the greeting has the colour of the launch screen (no black flash)');
+  assert.ok(splash.includes('.onTapGesture { finish() }'), 'a tap closes the greeting');
+  assert.ok(splash.includes('if isReady { finish() }') && !/while !ready/.test(splash), 'the wait reads the live state, not the value the task began with');
+  assert.ok(fs.existsSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/SplashIcon.imageset/splash-icon.png')), 'the icon of the greeting is in the catalog');
+}

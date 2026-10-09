@@ -182,6 +182,81 @@ struct PrivacyCover: View {
     }
 }
 
+/// The greeting of a cold launch (block 5): the icon, the name and a line of the horizon on the colour of the launch screen
+/// (no flash between them). It goes when the history is read, not before 1,2 s and not after 2,5 s; a tap closes it at once.
+/// Nothing waits for it: the app loads underneath.
+@MainActor
+struct SplashView: View {
+    /// The history is read: the greeting may go.
+    let ready: Bool
+    let onFinish: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var iconShown = false
+    @State private var titleShown = false
+    @State private var lineShown = false
+    @State private var glow = false
+    @State private var finished = false
+    /// `ready` as it is now: the task below keeps the value of the view it began with, a state is read live.
+    @State private var isReady = false
+    @State private var minimumShown = false
+
+    var body: some View {
+        ZStack {
+            Color("LaunchBackground").ignoresSafeArea()
+            VStack(spacing: 18) {
+                Image("SplashIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 112, height: 112)
+                    .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    .shadow(color: Color(red: 0.35, green: 0.62, blue: 1).opacity(glow ? 0.55 : 0.15), radius: glow ? 28 : 10)
+                    .scaleEffect(reduceMotion ? 1 : (iconShown ? 1 : 0.82))
+                    .opacity(iconShown ? 1 : 0)
+                Text("Horizon")
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .tracking(1.5)
+                    .foregroundStyle(.white)
+                    .offset(y: reduceMotion ? 0 : (titleShown ? 0 : 10))
+                    .opacity(titleShown ? 1 : 0)
+                // The horizon: a thin light line that opens from the middle.
+                LinearGradient(colors: [.clear, Color(red: 0.55, green: 0.75, blue: 1), .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: lineShown ? 180 : 0, height: 1.5)
+                    .opacity(lineShown ? 0.9 : 0)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { finish() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Horizon")
+        .onAppear {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.25) : .spring(response: 0.55, dampingFraction: 0.75)) { iconShown = true }
+            withAnimation(.easeOut(duration: 0.45).delay(reduceMotion ? 0 : 0.25)) { titleShown = true }
+            withAnimation(.easeInOut(duration: 0.7).delay(reduceMotion ? 0 : 0.45)) { lineShown = true }
+            if !reduceMotion {
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true).delay(0.3)) { glow = true }
+            }
+        }
+        .onAppear { isReady = ready }
+        .onChange(of: ready) { _, now in
+            isReady = now
+            if now && minimumShown { finish() }
+        }
+        .task {
+            try? await Task.sleep(for: .seconds(1.2))
+            minimumShown = true
+            if isReady { finish() }
+            try? await Task.sleep(for: .seconds(1.3))
+            finish()
+        }
+    }
+
+    private func finish() {
+        guard !finished else { return }
+        finished = true
+        onFinish()
+    }
+}
+
 /// Set, change or switch off the code: the old code is asked first, a new one twice.
 @MainActor
 struct PinFlowView: View {

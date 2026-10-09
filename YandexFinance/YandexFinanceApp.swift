@@ -10,6 +10,8 @@ struct YandexFinanceApp: App {
     @StateObject private var lock = AppLock()
     @AppStorage("appearanceTheme") private var appearanceTheme = AppTheme.system.rawValue
     @Environment(\.scenePhase) private var scenePhase
+    /// The greeting of this launch (block 5): once, over everything, the lock included.
+    @State private var showsSplash = true
     var body: some Scene {
         WindowGroup {
             ZStack {
@@ -20,6 +22,13 @@ struct YandexFinanceApp: App {
                     LockScreenView(lock: lock).environmentObject(wallpaper)
                 } else if lock.hasPIN && scenePhase != .active && !lock.coverSuppressed {
                     PrivacyCover().environmentObject(wallpaper)
+                }
+                if showsSplash {
+                    SplashView(ready: !browser.loadingHistory) {
+                        withAnimation(.easeOut(duration: 0.35)) { showsSplash = false }
+                    }
+                    .transition(.opacity)
+                    .zIndex(10)
                 }
             }
             .preferredColorScheme(AppTheme(rawValue: appearanceTheme)?.colorScheme)
