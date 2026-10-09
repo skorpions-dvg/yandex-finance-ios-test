@@ -6,7 +6,7 @@
 1. Работай только в ветке текущего этапа `stage-NN` (узнать: `git branch --show-current`). В `main` не коммить и не пушь никогда.
 2. После правок запусти локальные проверки и не отправляй ничего при красном результате:
    `powershell -NoProfile -ExecutionPolicy Bypass -File .local\check.ps1`
-3. В каждой сборке подними версию: в `YandexFinance.xcodeproj/project.pbxproj` четыре строки `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` (например 40.1 → 40.2) и первую строку README `Текущий номер сборки — …` плюс короткий раздел «Изменения …» сверху README. Проверка `reliability.test.js` сверяет эти номера.
+3. В каждой сборке подними номер сборки: в `YandexFinance.xcodeproj/project.pbxproj` две строки `CURRENT_PROJECT_VERSION` (например 47 → 47.1 → 47.2) и строку README `Текущий номер сборки — …` плюс короткий раздел «Изменения …» сверху README. Две строки `MARKETING_VERSION` — номер версии (с релиза 9 окт 2026 — `1.0`) — меняет только Claude на следующем релизе по решению владельца. Проверка `reliability.test.js` сверяет номер сборки.
 4. Новый `.swift` файл добавь в `project.pbxproj` (PBXFileReference, PBXBuildFile, группа YandexFinance, Sources) — по образцу `AccountsView.swift`.
 5. Коммит с понятным сообщением на английском, затем:
    `git push` (если просит вход — пусть пользователь войдёт в окне браузера).
