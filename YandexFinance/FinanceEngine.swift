@@ -290,6 +290,13 @@ enum FinancialEngine {
         let refundText = !transferHint && containsAny([description, purpose].joined(separator: " "),
                                      ["возврат покупки", "возврат средств", "возврат оплаты", "возврат платежа", "возврат по операции",
                                       "отмена оплаты", "отмена покупки", "отмена платежа"])
+        // The bank shows an interest payout with the same green arrow as a refund, and the collector then tags its row
+        // «refund»; the bank's own words «Выплата процентов» / category «Проценты» decide: it is income (9 Oct 2026:
+        // 24,94 ₽ of interest lowered the day's spending instead of being income).
+        let interestWording = containsAny(combined, ["начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])
+        if kind == "refund" && amount > 0 && !split && !refundText && category != "возврат" && (category == "проценты" || interestWording) {
+            return FinancialAssessment(type: .interestIncome, reason: "Начисленные проценты считаются доходом.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
         let explicitRefund = kind == "refund" || category == "возврат" || category.contains("возврат покупки") || refundText
         if explicitRefund && amount > 0 && !split {
             return FinancialAssessment(type: .refund, reason: "Возврат уменьшает расходы, а не считается заработком.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: amount)

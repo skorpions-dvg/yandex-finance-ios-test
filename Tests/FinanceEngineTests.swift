@@ -3671,6 +3671,23 @@ struct FinanceEngineTests {
         require(FinancialEngine.saveTransferDirection(for: saveBack) == "Сейв → Карта", "positive own transfer moves money back to card")
         require(FinancialEngine.classify(op(31, kind: "transfer", category: "Пополнение", description: "Начисление процентов по Сейву")).type == .interestIncome, "explicit Save interest beats generic top-up label")
         require(FinancialEngine.classify(op(30, kind: "interest_income", category: "Проценты")).type == .interestIncome, "interest")
+        // An interest payout the collector tagged «refund» (the bank draws it with the refund arrow) is income, not a refund.
+        let taggedInterest = FinancialEngine.classify(op(2_494, kind: "refund", category: "Проценты", description: "Выплата процентов"))
+        require(taggedInterest.type == .interestIncome && taggedInterest.incomeContributionKopecks == 2_494 && taggedInterest.refundContributionKopecks == 0,
+                "interest tagged as refund is income")
+        require(FinancialEngine.classify(op(2_494, kind: "refund", category: "Перевод", description: "Выплата процентов")).type == .interestIncome,
+                "interest wording beats the refund tag")
+        // A real refund stays a refund: its own words, the bank's «Возврат» category, a purchase without interest words.
+        require(FinancialEngine.classify(op(2_494, kind: "refund", category: "Возврат", description: "Выплата процентов")).type == .refund,
+                "bank refund category stays a refund")
+        require(FinancialEngine.classify(op(2_494, kind: "refund", category: "Проценты", description: "Возврат покупки")).type == .refund,
+                "refund words stay a refund")
+        require(FinancialEngine.classify(op(2_494, kind: "refund", category: "Супермаркеты", description: "Магазин учебный")).type == .refund,
+                "ordinary refund stays a refund")
+        // The day of the payout: no spending below zero, the interest in income.
+        let payoutDay = FinancialEngine.report([op(2_494, kind: "refund", category: "Проценты", description: "Выплата процентов", date: "2032-06-02T08:00:00Z")],
+                                               in: DateInterval(start: Date(timeIntervalSince1970: 1_969_747_200), duration: 86_400))
+        require(payoutDay.netExpenseKopecks == 0 && payoutDay.incomeKopecks == 2_494, "interest payout day: spending 0, income 24,94")
         require(FinancialEngine.classify(op(-199, kind: "expense", description: "Комиссия банка")).type == .commission, "commission")
         require(FinancialEngine.classify(op(-200, kind: "expense", description: "Покупка без комиссии")).type == .expense, "no-commission phrase must not become a fee")
         require(FinancialEngine.classify(op(-201, kind: "expense", description: "Комиссия за перевод между своими счетами")).type == .commission, "own-transfer fee stays commission")
