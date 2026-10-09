@@ -200,6 +200,11 @@ struct ContentView: View {
         .onChange(of: widgetShowsSums) { _, _ in scheduleWidgetUpdate() }
         .onChange(of: reserveBufferRubles) { _, _ in scheduleWidgetUpdate() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in scheduleWidgetUpdate() }
+        // Leaving the app writes the summary at once: opening Horizon for a moment (the bank check still running) must be enough.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            widgetUpdate?.cancel()
+            publishWidget()
+        }
         // The app's own window for the code the bank sent; the bank page stays hidden under it (46.28).
         .sheet(isPresented: Binding(get: { browser.codeEntryVisible }, set: { _ in })) {
             BankCodeEntryView(browser: browser)
@@ -211,12 +216,14 @@ struct ContentView: View {
 
     private func openAccounts() { animate { page = 0 } }
 
-    /// A burst of changes (a scan saves several times) makes one summary, after the scan ends.
+    /// A burst of changes (a scan saves several times) makes one summary. A running bank check does not hold it back: the
+    /// saved history is whole at every moment, and the check starts on every opening (46.37 waited for it, and a short visit
+    /// to the app left the widget with the old summary).
     private func scheduleWidgetUpdate() {
         widgetUpdate?.cancel()
         widgetUpdate = Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled, !browser.busy else { return }
+            guard !Task.isCancelled else { return }
             publishWidget()
         }
     }

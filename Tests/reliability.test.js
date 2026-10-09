@@ -807,3 +807,11 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.ok(app.includes('presentation.budgetStatuses(history, month: now)') && app.includes('ReportEngine.slices(presentation.inputs(history), in: monthInterval, mode: .expenses'),
             'the widget budget and groups come from the home screen and the reports');
 }
+
+// (46.38) A short visit to the app refreshes the widget: no waiting for the bank check, and the summary is written on leaving.
+{
+  const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
+  const schedule = app.slice(app.indexOf('private func scheduleWidgetUpdate()'), app.indexOf('private func scheduleWidgetUpdate()') + 400);
+  assert.ok(!schedule.includes('browser.busy'), 'the widget summary must not wait for the bank check');
+  assert.match(app, /willResignActiveNotification\)\) \{ _ in\s+widgetUpdate\?\.cancel\(\)\s+publishWidget\(\)/, 'leaving the app writes the summary at once');
+}
