@@ -7,6 +7,8 @@ enum PinCheck: Equatable {
     case accepted
     case wrong(left: Int)
     case lockedOut(seconds: Int)
+    /// The record of the code cannot be read now (an error of the Keychain) or is lost or damaged: the code is not accepted.
+    case unavailable
 }
 
 /// The PIN as it is kept in the Keychain: never the code itself, only a salted hash, the failed attempts and the pause.
@@ -25,13 +27,17 @@ private enum PinKeychain {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
 
-    static func load() -> PinRecord? {
+    /// «No record» only for errSecItemNotFound: any other error of the Keychain is not a missing code.
+    static func read() -> (state: PinStoreRead, record: PinRecord?) {
         var query = base
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return try? JSONDecoder().decode(PinRecord.self, from: data)
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return (.notFound, nil) }
+        guard status == errSecSuccess, let data = item as? Data else { return (.unavailable, nil) }
+        guard let record = try? JSONDecoder().decode(PinRecord.self, from: data) else { return (.damaged, nil) }
+        return (.found, record)
     }
 
     @discardableResult
@@ -67,18 +73,45 @@ final class AppLock: ObservableObject {
     private var backgroundedAt: Date?
     /// The Face ID request in progress; it is cancelled when the code is entered first, or it would pop up over the app.
     private var biometricContext: LAContext?
+    /// The record of the code is lost or damaged: only «Забыли код?» (the phone's own passcode) opens the app.
+    @Published private(set) var needsReset = false
+    /// The Keychain did not answer (for example the app was started before the first unlock): read it again on coming back.
+    private var needsRetry = false
+    /// A code was set on this phone; kept apart from the Keychain, so a lost record is not taken for «no code».
+    private static let pinFlag = "pinWasSet"
 
     init() {
-        let stored = PinKeychain.load() != nil
-        hasPIN = stored
-        isLocked = stored
-        biometricsEnabled = stored && UserDefaults.standard.bool(forKey: "lockBiometrics")
+        let start = Self.readStart()
+        hasPIN = start.hasPIN
+        isLocked = start.locked
+        needsRetry = start.needsRetry
+        needsReset = start.needsReset
+        biometricsEnabled = start.hasPIN && UserDefaults.standard.bool(forKey: "lockBiometrics")
         // The first version asked at once after every minimize; since this one the default is «only at launch».
         if UserDefaults.standard.integer(forKey: "lockSettingsVersion") < 2 {
             UserDefaults.standard.set(-1, forKey: "lockAfterSeconds")
             UserDefaults.standard.set(2, forKey: "lockSettingsVersion")
         }
         lockAfterSeconds = UserDefaults.standard.object(forKey: "lockAfterSeconds") as? Int ?? -1
+    }
+
+    /// Reads the Keychain and decides (`AppLockLogic.start`); a found record also marks that a code is set (the versions
+    /// before 46.39 kept no such mark).
+    private static func readStart() -> LockStart {
+        let read = PinKeychain.read()
+        if read.state == .found { UserDefaults.standard.set(true, forKey: pinFlag) }
+        return AppLockLogic.start(store: read.state, pinWasSet: UserDefaults.standard.bool(forKey: pinFlag))
+    }
+
+    /// The Keychain did not answer at launch: read it again. It opens the app only when there is truly no code.
+    private func retryStore() {
+        let start = Self.readStart()
+        needsRetry = start.needsRetry
+        needsReset = start.needsReset
+        hasPIN = start.hasPIN
+        if !start.locked { isLocked = false }
+        let biometrics = start.hasPIN && UserDefaults.standard.bool(forKey: "lockBiometrics")
+        if biometricsEnabled != biometrics { biometricsEnabled = biometrics }
     }
 
     var biometricsAvailable: Bool {
@@ -97,12 +130,18 @@ final class AppLock: ObservableObject {
         guard AppLockLogic.isValid(pin: pin) else { return false }
         let salt = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
         guard PinKeychain.save(PinRecord(salt: salt, hash: Self.hash(pin: pin, salt: salt), failures: 0, lockedUntil: nil)) else { return false }
+        UserDefaults.standard.set(true, forKey: Self.pinFlag)
         hasPIN = true
+        needsReset = false
+        needsRetry = false
         return true
     }
 
     func removePIN() {
         PinKeychain.delete()
+        UserDefaults.standard.set(false, forKey: Self.pinFlag)
+        needsReset = false
+        needsRetry = false
         hasPIN = false
         isLocked = false
         biometricsEnabled = false
@@ -110,7 +149,16 @@ final class AppLock: ObservableObject {
 
     /// Checks a code; a wrong one counts, and after several the app makes a growing pause.
     func check(_ pin: String, unlock: Bool = true) -> PinCheck {
-        guard var record = PinKeychain.load() else { return .accepted }
+        let read = PinKeychain.read()
+        guard read.state == .found, var record = read.record else {
+            // Until 46.39 a record that could not be read accepted any code.
+            if AppLockLogic.checkWithoutRecord(store: read.state, pinWasSet: UserDefaults.standard.bool(forKey: Self.pinFlag)) {
+                if unlock { isLocked = false }
+                return .accepted
+            }
+            if read.state == .unavailable { needsRetry = true } else { needsReset = true }
+            return .unavailable
+        }
         let now = Date()
         if let until = record.lockedUntil, until > now {
             return .lockedOut(seconds: Int(until.timeIntervalSince(now).rounded(.up)))
@@ -176,6 +224,7 @@ final class AppLock: ObservableObject {
     }
 
     func becameActive() {
+        if needsRetry { retryStore() }
         guard hasPIN, !isLocked, let left = backgroundedAt else { return }
         backgroundedAt = nil
         if AppLockLogic.shouldLock(backgroundedAt: left, now: Date(), afterSeconds: lockAfterSeconds) { isLocked = true }

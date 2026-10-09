@@ -815,3 +815,13 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.ok(!schedule.includes('browser.busy'), 'the widget summary must not wait for the bank check');
   assert.match(app, /willResignActiveNotification\)\) \{ _ in\s+widgetUpdate\?\.cancel\(\)\s+publishWidget\(\)/, 'leaving the app writes the summary at once');
 }
+
+// (46.39) An error of the Keychain never opens the app without the code.
+{
+  const lock = fs.readFileSync(path.join(__dirname, '../YandexFinance/AppLock.swift'), 'utf8');
+  assert.ok(!/PinKeychain\.load\(\)/.test(lock), 'the PIN is read with its Keychain status, not as «nil = no code»');
+  assert.ok(!/guard var record = [^\n]*else \{ return \.accepted \}/.test(lock), 'a record that cannot be read must not accept any code');
+  assert.ok(lock.includes('if status == errSecItemNotFound { return (.notFound, nil) }'), 'only «item not found» means no code');
+  assert.ok(lock.includes('AppLockLogic.start(store: read.state'), 'the start of the lock is decided by the tested AppLockLogic.start');
+  assert.ok(lock.includes('if needsRetry { retryStore() }'), 'a Keychain that did not answer is read again on coming back');
+}

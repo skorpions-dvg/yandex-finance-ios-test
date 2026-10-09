@@ -28,6 +28,28 @@ struct FinanceEngineTests {
         require(AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(60), afterSeconds: 60), "a minute is over")
         require(AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(-5), afterSeconds: 900), "a clock set back locks")
         require(!AppLockLogic.shouldLock(backgroundedAt: left, now: left.addingTimeInterval(86_400), afterSeconds: -1), "only at launch: a day away does not lock")
+        // 46.39: an error of the Keychain never opens the app without the code.
+        let expected: [(PinStoreRead, Bool, LockStart, Bool)] = [
+            (.found, false, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: false), false),
+            (.found, true, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: false), false),
+            (.notFound, false, LockStart(hasPIN: false, locked: false, needsRetry: false, needsReset: false), true),
+            (.notFound, true, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true), false),
+            (.unavailable, false, LockStart(hasPIN: true, locked: true, needsRetry: true, needsReset: false), false),
+            (.unavailable, true, LockStart(hasPIN: true, locked: true, needsRetry: true, needsReset: false), false),
+            (.damaged, false, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true), false),
+            (.damaged, true, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true), false),
+        ]
+        for (store, wasSet, start, accepts) in expected {
+            let actual = AppLockLogic.start(store: store, pinWasSet: wasSet)
+            require(actual == start, "lock start \(store) pinWasSet=\(wasSet): expected \(start), got \(actual)")
+            require(AppLockLogic.checkWithoutRecord(store: store, pinWasSet: wasSet) == accepts,
+                    "code without a record \(store) pinWasSet=\(wasSet): accepted must be \(accepts)")
+        }
+        for store in [PinStoreRead.found, .notFound, .unavailable, .damaged] {
+            for wasSet in [false, true] where AppLockLogic.start(store: store, pinWasSet: wasSet).locked == false {
+                require(store == .notFound && !wasSet, "only «no record, no code ever» opens: \(store) \(wasSet)")
+            }
+        }
     }
 
     static func testForecastFixes() {

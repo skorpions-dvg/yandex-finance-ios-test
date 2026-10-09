@@ -137,6 +137,9 @@ struct LockScreenView: View {
                     case .lockedOut(let seconds):
                         message = "Слишком много попыток. Подождите \(seconds) с."
                         errors += 1
+                    case .unavailable:
+                        message = unavailableMessage
+                        errors += 1
                     }
                 })
                 Button("Забыли код?") {
@@ -149,6 +152,12 @@ struct LockScreenView: View {
         .environment(\.colorScheme, .dark)
         // Face ID is asked at once, and again every time the app locks.
         .task(id: lock.isLocked) { if lock.isLocked { await lock.unlockWithBiometrics() } }
+        .onAppear { if lock.needsReset { message = unavailableMessage } }
+    }
+
+    private var unavailableMessage: String {
+        lock.needsReset ? "Запись кода повреждена. Нажмите «Забыли код?» и подтвердите кодом телефона."
+                        : "Код сейчас недоступен. Разблокируйте телефон и откройте приложение снова или нажмите «Забыли код?»."
     }
 }
 
@@ -235,6 +244,9 @@ struct PinFlowView: View {
                 errors += 1
             case .lockedOut(let seconds):
                 message = "Слишком много попыток. Подождите \(seconds) с."
+                errors += 1
+            case .unavailable:
+                message = "Код сейчас недоступен. Закройте и откройте приложение снова."
                 errors += 1
             }
         case .new:

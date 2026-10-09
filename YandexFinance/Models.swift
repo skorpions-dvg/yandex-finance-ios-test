@@ -1214,9 +1214,41 @@ enum ReceiptLogic {
 
 /// The rules of the app lock that do not need the system: what a code is, how long the pauses after wrong codes are
 /// and when the app asks for the code again.
+/// What reading the PIN from the Keychain gave: the record, no record, an error of the Keychain (for example before the
+/// first unlock after a restart, when iOS starts the app in advance) or a record that cannot be read.
+enum PinStoreRead: Equatable {
+    case found, notFound, unavailable, damaged
+}
+
+/// How the app starts with the lock: is there a code, is the app closed, read the Keychain again later, reset only with the
+/// phone's own passcode.
+struct LockStart: Equatable {
+    let hasPIN: Bool
+    let locked: Bool
+    let needsRetry: Bool
+    let needsReset: Bool
+}
+
 enum AppLockLogic {
     /// Wrong codes in a row before the first pause.
     static let attemptsBeforePause = 5
+
+    /// Only «no record and no code was ever set» opens the app. An error of the Keychain or a lost or damaged record keeps it
+    /// closed (until 46.39 any error read as «no code» and opened the app without one).
+    static func start(store: PinStoreRead, pinWasSet: Bool) -> LockStart {
+        switch store {
+        case .found: return LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: false)
+        case .notFound where !pinWasSet: return LockStart(hasPIN: false, locked: false, needsRetry: false, needsReset: false)
+        case .notFound: return LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true)
+        case .unavailable: return LockStart(hasPIN: true, locked: true, needsRetry: true, needsReset: false)
+        case .damaged: return LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true)
+        }
+    }
+
+    /// A code typed while the record could not be read is accepted only when there is truly no code.
+    static func checkWithoutRecord(store: PinStoreRead, pinWasSet: Bool) -> Bool {
+        store == .notFound && !pinWasSet
+    }
 
     static func isValid(pin: String) -> Bool {
         pin.count == 4 && pin.allSatisfy { $0 >= "0" && $0 <= "9" }
