@@ -2,6 +2,36 @@ import Foundation
 
 @main
 struct FinanceEngineTests {
+    // Stage 63 contract checks: opt-in only, never called by the ordinary main().
+    // Each expected state is specified by the brief, independently of AppLockLogic's implementation.
+    static func testKnownLockStart63() {
+        let cases: [(PinStoreRead, Bool, LockStart, Bool)] = [
+            (.found, false, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: false), false),
+            (.found, true, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: false), false),
+            (.notFound, false, LockStart(hasPIN: false, locked: false, needsRetry: false, needsReset: false), true),
+            (.notFound, true, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true), false),
+            (.unavailable, false, LockStart(hasPIN: true, locked: true, needsRetry: true, needsReset: false), false),
+            (.unavailable, true, LockStart(hasPIN: true, locked: true, needsRetry: true, needsReset: false), false),
+            (.damaged, false, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true), false),
+            (.damaged, true, LockStart(hasPIN: true, locked: true, needsRetry: false, needsReset: true), false),
+        ]
+        var failed = 0
+        func fields(_ value: LockStart) -> [String: Bool] {
+            ["hasPIN": value.hasPIN, "locked": value.locked, "needsRetry": value.needsRetry, "needsReset": value.needsReset]
+        }
+        for (store, wasSet, expected, expectedAccepted) in cases {
+            let actual = AppLockLogic.start(store: store, pinWasSet: wasSet)
+            let accepted = AppLockLogic.checkWithoutRecord(store: store, pinWasSet: wasSet)
+            let passed = actual == expected && accepted == expectedAccepted
+            if !passed { failed += 1 }
+            let result: [String: Any] = ["store": String(describing: store), "pinWasSet": wasSet,
+                "expected": fields(expected), "actual": fields(actual), "expectedAccepted": expectedAccepted,
+                "actualAccepted": accepted, "passed": passed]
+            print("LOCK63: " + String(data: try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]), encoding: .utf8)!)
+        }
+        require(failed == 0, "63 PIN contract: \(failed) of \(cases.count) combinations failed")
+    }
+
     static func require(_ condition: @autoclosure () -> Bool, _ message: String) {
         if !condition() {
             fputs("FAIL: \(message)\n", stderr)
