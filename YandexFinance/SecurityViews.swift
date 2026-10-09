@@ -271,12 +271,24 @@ struct SplashView: View {
     /// The donut chart of the icon: six segments of blue glass with light edges.
     private func ring(side: CGFloat, band: CGFloat) -> some View {
         ZStack {
+            // The outline of the ring from the very first frame: while the phone is still drawing the screens underneath
+            // (46.47: about 0,7 s), the greeting shows the sign instead of an empty background.
+            ForEach(0..<6, id: \.self) { index in
+                Circle()
+                    .trim(from: Self.arcs[index].from, to: Self.arcs[index].to)
+                    .stroke(Self.cyan.opacity(0.10), style: StrokeStyle(lineWidth: band, lineCap: .butt))
+                    .frame(width: side, height: side)
+                Circle()
+                    .trim(from: Self.arcs[index].from, to: Self.arcs[index].to)
+                    .stroke(Self.cyan.opacity(0.28), style: StrokeStyle(lineWidth: 1))
+                    .frame(width: side + band - 1.5, height: side + band - 1.5)
+            }
             ForEach(0..<6, id: \.self) { index in
                 let arc = Self.arcs[index]
                 let end = shown[index] ? arc.to : arc.from
                 Circle()
                     .trim(from: arc.from, to: end)
-                    .stroke(LinearGradient(colors: [Self.cyan.opacity(0.6), Self.blue.opacity(0.32), Self.deep.opacity(0.8)],
+                    .stroke(LinearGradient(colors: [Self.cyan.opacity(0.85), Self.blue.opacity(0.55), Self.deep.opacity(0.7)],
                                            startPoint: .topLeading, endPoint: .bottomTrailing),
                             style: StrokeStyle(lineWidth: band, lineCap: .butt))
                     // Light adds to what is behind it, as through glass (Gemini's second answer).
@@ -285,7 +297,7 @@ struct SplashView: View {
                 // The light edges of the glass: outside and inside.
                 Circle()
                     .trim(from: arc.from, to: end)
-                    .stroke(Color.white.opacity(0.45), style: StrokeStyle(lineWidth: 1.5))
+                    .stroke(Color.white.opacity(0.7), style: StrokeStyle(lineWidth: 1.5))
                     .frame(width: side + band - 1.5, height: side + band - 1.5)
                 Circle()
                     .trim(from: arc.from, to: end)
@@ -296,12 +308,15 @@ struct SplashView: View {
             }
         }
         .rotationEffect(.degrees(-90))
-        .shadow(color: Self.cyan.opacity(glow ? 0.55 : 0.2), radius: glow ? 32 : 14)
+        .shadow(color: Self.cyan.opacity(glow ? 0.75 : 0.4), radius: glow ? 36 : 18)
     }
 
     /// The line of the horizon across the screen, with flares where it meets the ring.
     private func horizonLine(length: CGFloat, side: CGFloat, band: CGFloat) -> some View {
         ZStack {
+            Capsule()
+                .fill(LinearGradient(colors: [.clear, Self.cyan.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing))
+                .frame(width: length, height: 1)
             Capsule()
                 .fill(Self.cyan)
                 .frame(width: length * horizon, height: 8)
