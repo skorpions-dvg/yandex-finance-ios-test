@@ -851,10 +851,11 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.ok(app.includes('LockScreenView(lock: lock, canAskFaceID: !showsSplash)'), 'Face ID is asked after the greeting, not under it');
   const views = fs.readFileSync(path.join(__dirname, '../YandexFinance/SecurityViews.swift'), 'utf8');
   const splash = views.slice(views.indexOf('struct SplashView'), views.indexOf('/// Set, change or switch off the code'));
-  assert.ok(splash.includes('Color("LaunchBackground")'), 'the greeting has the colour of the launch screen (no black flash)');
+  assert.ok(splash.includes('private static let deep = Color(red: 0.02, green: 0.05, blue: 0.13)'), 'the greeting is on the dark blue of the icon');
+  assert.ok(fs.readFileSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/LaunchBackground.colorset/Contents.json'), 'utf8').includes('"blue" : "0.130", "green" : "0.050", "red" : "0.020"'), 'the launch screen has the same dark blue (no flash)');
   assert.ok(splash.includes('.onTapGesture { finish() }'), 'a tap closes the greeting');
   assert.ok(splash.includes('while !isReady && waited < 4') && !/while !ready/.test(splash), 'the wait reads the live state, not the value the task began with');
   assert.ok(/while !isReady && waited < 4 \{[\s\S]{0,120}\}\s*try\? await Task\.sleep\(for: \.seconds\(0\.8\)\)/.test(splash), 'the greeting stays 0,8 s on view after the history is read');
   assert.ok(splash.includes('.onChange(of: active) { _, now in if now { start() } }'), 'the time of the greeting starts when the app is on the screen');
-  assert.ok(fs.existsSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/SplashIcon.imageset/splash-icon.png')), 'the icon of the greeting is in the catalog');
+  assert.ok(splash.includes('private func ring(side: CGFloat, band: CGFloat)') && splash.includes('private func horizonLine('), 'the greeting draws the ring and the horizon of the icon');
 }
