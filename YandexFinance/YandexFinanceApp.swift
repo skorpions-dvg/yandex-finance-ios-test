@@ -218,7 +218,7 @@ struct ContentView: View {
         // Leaving the app writes the summary at once: opening Horizon for a moment (the bank check still running) must be enough.
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             widgetUpdate?.cancel()
-            publishWidget()
+            publishWidget(leaving: true)
         }
         // The app's own window for the code the bank sent; the bank page stays hidden under it (46.28).
         .sheet(isPresented: Binding(get: { browser.codeEntryVisible }, set: { _ in })) {
@@ -244,7 +244,7 @@ struct ContentView: View {
     }
 
     /// The same numbers as the home screen: the reserve card and the spending of today and of the month to date.
-    private func publishWidget() {
+    private func publishWidget(leaving: Bool = false) {
         let now = Date()
         // The sums switched off: hidden whatever the state of the history (the switch must not wait for it).
         guard widgetShowsSums else {
@@ -259,9 +259,17 @@ struct ContentView: View {
             return
         }
         presentation.prepare(history)
-        let reserve: Int64? = (history.accounts ?? []).isEmpty || history.reserveAccounts.isEmpty ? nil
-            : FinancialEngine.monthReserve(balanceKopecks: history.reserveAccounts.reduce(0) { $0 + presentation.accountBalance($1, history: history) },
-                                           forecast: presentation.forecast(history, now: now))
+        let needsForecast = !(history.accounts ?? []).isEmpty && !history.reserveAccounts.isEmpty
+        // The home screen computes the forecast in the background; until it lands the summary waits for it (computing it here
+        // would freeze the phone for about a second). Leaving the app there is no time to wait: then it is computed here.
+        let forecast = presentation.cachedForecast(history, now: now) ?? (leaving && needsForecast ? presentation.forecast(history, now: now) : nil)
+        if needsForecast && forecast == nil {
+            scheduleWidgetUpdate()
+            return
+        }
+        let reserve: Int64? = !needsForecast ? nil
+            : forecast.map { FinancialEngine.monthReserve(balanceKopecks: history.reserveAccounts.reduce(0) { $0 + presentation.accountBalance($1, history: history) },
+                                                          forecast: $0) }
         let today = presentation.report(history, interval: historyInterval(.lastDays(1), now: now)).netExpenseKopecks
         let monthInterval = historyInterval(HistoryPeriod.currentMonth(now: now), now: now)
         let month = presentation.report(history, interval: monthInterval).netExpenseKopecks

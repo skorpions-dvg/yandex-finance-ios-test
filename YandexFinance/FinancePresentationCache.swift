@@ -4,6 +4,8 @@ import Foundation
 final class FinancePresentationCache {
     private var snapshot: SavedHistory?
     private var values: [String: Any] = [:]
+    /// Grows each time the operations change: a forecast computed in the background for an older history is not kept.
+    private(set) var generation = 0
 
     func prepare(_ history: SavedHistory) {
         if let old = snapshot,
@@ -23,6 +25,7 @@ final class FinancePresentationCache {
             if Self.bankLinks(old) != Self.bankLinks(history) {
                 snapshot = history
                 values.removeAll(keepingCapacity: true)
+                generation += 1
                 return
             }
             // Only the accounts or their groups changed (hiding an account, a new name, another order): what is built from
@@ -33,6 +36,7 @@ final class FinancePresentationCache {
         }
         snapshot = history
         values.removeAll(keepingCapacity: true)
+        generation += 1
     }
 
     private static func bankLinks(_ history: SavedHistory) -> [String] {
@@ -103,11 +107,31 @@ final class FinancePresentationCache {
     }
 
     func forecast(_ history: SavedHistory, now: Date = Date()) -> FinancialEngine.MonthForecast {
-        // The answers about late payments are in the key, not in `prepare`: an answer recomputes the forecast only.
-        let answers = (history.paymentAnswers ?? [:]).sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value.kind.rawValue)\($0.value.movedTo.map { "@\($0.timeIntervalSince1970)" } ?? "")" }.joined(separator: ";")
-        return value("forecast:\(Calendar.current.startOfDay(for: now)):\(answers)") {
+        value(forecastKey(history, now: now)) {
             FinancialEngine.monthForecast(inputs(history), now: now, taxonomy: history.expenseTaxonomy, answers: history.paymentAnswers ?? [:])
         }
+    }
+
+    /// The answers about late payments are in the key, not in `prepare`: an answer recomputes the forecast only.
+    func forecastKey(_ history: SavedHistory, now: Date = Date()) -> String {
+        let answers = (history.paymentAnswers ?? [:]).sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value.kind.rawValue)\($0.value.movedTo.map { "@\($0.timeIntervalSince1970)" } ?? "")" }.joined(separator: ";")
+        return "forecast:\(Calendar.current.startOfDay(for: now)):\(answers)"
+    }
+
+    /// The forecast if it is already computed, without computing it (the home screen computes it in the background: about a
+    /// second on the first drawing after the launch, which froze the greeting — 46.47).
+    func cachedForecast(_ history: SavedHistory, now: Date = Date()) -> FinancialEngine.MonthForecast? {
+        values[forecastKey(history, now: now)] as? FinancialEngine.MonthForecast
+    }
+
+    /// Keeps a forecast computed in the background, unless the operations changed meanwhile. True when it was kept.
+    @discardableResult
+    func storeForecast(_ forecast: FinancialEngine.MonthForecast, history: SavedHistory, now: Date, generation: Int) -> Bool {
+        guard generation == self.generation else { return false }
+        let key = forecastKey(history, now: now)
+        guard values[key] == nil else { return false }
+        values[key] = forecast
+        return true
     }
 }

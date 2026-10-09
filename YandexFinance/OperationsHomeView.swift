@@ -15,6 +15,8 @@ struct OperationsHomeView: View {
     }
     @State private var historyExpanded: Bool? = nil
     @State private var showForecast = false
+    /// Grows when the forecast computed in the background lands: the card is drawn again with it.
+    @State private var forecastLanded = 0
     @State private var showBudgets = false
     /// «Доходы» / «Расходы» tapped: the report of the chosen period.
     @State private var periodReport: ReportMode?
@@ -60,6 +62,11 @@ struct OperationsHomeView: View {
                     periodRow.id("operations-top")
                     // Placeholders for the fraction of a second the history is still being read at launch.
                     summary.redacted(reason: browser.loadingHistory ? .placeholder : [])
+                        // The forecast in the background: about a second, which on the first drawing after the launch froze the
+                        // phone (and the greeting over it). The id changes with the operations and the answers.
+                        .task(id: "\(presentation.generation)|\(presentation.forecastKey(browser.history))|\(browser.loadingHistory)") {
+                            await computeForecast()
+                        }
                     if let operation = browser.history.manualOperations?.first(where: { $0.id == lastSavedOperationID }) {
                         Section {
                             HStack(alignment: .top) {
@@ -306,7 +313,8 @@ struct OperationsHomeView: View {
                 .buttonStyle(.plain)
             }
             let accounts = browser.history.accounts ?? []
-            let f = presentation.forecast(browser.history)
+            let _ = forecastLanded
+            let f = presentation.cachedForecast(browser.history)
             HStack(alignment: .top) {
                 Button { onAccounts() } label: {
                     VStack(alignment: .leading, spacing: 4) {
@@ -335,7 +343,10 @@ struct OperationsHomeView: View {
                         if accounts.isEmpty || browser.history.reserveAccounts.isEmpty {
                             Text("—").font(.title3.weight(.semibold))
                             Text(accounts.isEmpty ? "добавьте счета" : "выберите счета для запаса").font(.caption).foregroundStyle(.secondary)
-                        } else {
+                        } else if f == nil {
+                            Text("…").font(.title3.weight(.semibold))
+                            Text("считаю").font(.caption).foregroundStyle(.secondary)
+                        } else if let f {
                             let reserve = FinancialEngine.monthReserve(balanceKopecks: reserveBalance(), forecast: f)
                             Text(signedRubles(reserve))
                                 .font(.title3.weight(.semibold))
@@ -399,6 +410,21 @@ struct OperationsHomeView: View {
         .accessibilityLabel("Бюджет месяца")
         .accessibilityValue(spoken.joined(separator: ". "))
         .accessibilityHint("Открыть бюджеты")
+    }
+
+    /// The forecast of the reserve card, computed off the main thread and kept in the cache.
+    private func computeForecast() async {
+        let history = browser.history
+        guard !browser.loadingHistory, presentation.cachedForecast(history) == nil else { return }
+        let generation = presentation.generation
+        let now = Date()
+        let inputs = presentation.inputs(history)
+        let taxonomy = history.expenseTaxonomy
+        let answers = history.paymentAnswers ?? [:]
+        let result = await Task.detached(priority: .userInitiated) {
+            FinancialEngine.monthForecast(inputs, now: now, taxonomy: taxonomy, answers: answers)
+        }.value
+        if presentation.storeForecast(result, history: history, now: now, generation: generation) { forecastLanded += 1 }
     }
 
     private func reserveColor(_ reserve: Int64) -> Color {

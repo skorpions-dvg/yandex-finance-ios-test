@@ -787,8 +787,8 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
 // (46.35) The widget shows the home screen's own numbers, only a small summary leaves the app, and the test buttons are gone.
 {
   const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
-  const publish = app.slice(app.indexOf('private func publishWidget()'), app.indexOf('private func publishWidget()') + 2000);
-  assert.ok(publish.includes('FinancialEngine.monthReserve(') && publish.includes('presentation.forecast(history'), 'widget reserve = the reserve card');
+  const publish = app.slice(app.indexOf('private func publishWidget('), app.indexOf('private func publishWidget(') + 3200);
+  assert.ok(publish.includes('FinancialEngine.monthReserve(') && publish.includes('presentation.cachedForecast(history'), 'widget reserve = the reserve card');
   assert.ok(publish.includes('.netExpenseKopecks'), 'widget spending = the home screen expenses');
   assert.ok(publish.includes('guard !browser.loadingHistory, browser.storageAvailable'), 'no summary from a history still opening');
   assert.ok(app.includes('Toggle("Суммы в виджете"'), 'the sums of the widget can be switched off');
@@ -813,7 +813,7 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
   const schedule = app.slice(app.indexOf('private func scheduleWidgetUpdate()'), app.indexOf('private func scheduleWidgetUpdate()') + 400);
   assert.ok(!schedule.includes('browser.busy'), 'the widget summary must not wait for the bank check');
-  assert.match(app, /willResignActiveNotification\)\) \{ _ in\s+widgetUpdate\?\.cancel\(\)\s+publishWidget\(\)/, 'leaving the app writes the summary at once');
+  assert.match(app, /willResignActiveNotification\)\) \{ _ in\s+widgetUpdate\?\.cancel\(\)\s+publishWidget\(leaving: true\)/, 'leaving the app writes the summary at once');
 }
 
 // (46.39) An error of the Keychain never opens the app without the code.
@@ -858,4 +858,15 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.ok(/while !isReady && waited < 4 \{[\s\S]{0,120}\}\s*try\? await Task\.sleep\(for: \.seconds\(0\.8\)\)/.test(splash), 'the greeting stays 0,8 s on view after the history is read');
   assert.ok(splash.includes('.onChange(of: active) { _, now in if now { start() } }'), 'the time of the greeting starts when the app is on the screen');
   assert.ok(splash.includes('private func ring(side: CGFloat, band: CGFloat)') && splash.includes('private func horizonLine('), 'the greeting draws the ring and the horizon of the icon');
+}
+
+// (46.47) The forecast of the home screen is computed in the background: on the first drawing after the launch it froze the
+// phone for about a second (and the greeting over it).
+{
+  const home = fs.readFileSync(path.join(__dirname, '../YandexFinance/OperationsHomeView.swift'), 'utf8');
+  assert.ok(home.includes('let f = presentation.cachedForecast(browser.history)') && !home.includes('let f = presentation.forecast(browser.history)'),
+            'the reserve card does not compute the forecast while drawing');
+  assert.ok(home.includes('Task.detached(priority: .userInitiated)') && home.includes('FinancialEngine.monthForecast(inputs'), 'the forecast is computed off the main thread');
+  const cache = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinancePresentationCache.swift'), 'utf8');
+  assert.ok(cache.includes('guard generation == self.generation else { return false }'), 'a forecast of an older history is not kept');
 }
