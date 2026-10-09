@@ -114,6 +114,9 @@ struct PinPad: View {
 @MainActor
 struct LockScreenView: View {
     @ObservedObject var lock: AppLock
+    /// False while the greeting of the launch is shown: Face ID is asked after it (46.46 — asked at once, it made the app
+    /// inactive and the greeting ran its time unseen behind the launch screen).
+    var canAskFaceID = true
     @State private var message: String?
     @State private var errors = 0
 
@@ -151,7 +154,7 @@ struct LockScreenView: View {
         }
         .environment(\.colorScheme, .dark)
         // Face ID is asked at once, and again every time the app locks.
-        .task(id: lock.isLocked) { if lock.isLocked { await lock.unlockWithBiometrics() } }
+        .task(id: lock.isLocked && canAskFaceID) { if lock.isLocked && canAskFaceID { await lock.unlockWithBiometrics() } }
         .onAppear { if lock.needsReset { message = unavailableMessage } }
     }
 
@@ -189,6 +192,8 @@ struct PrivacyCover: View {
 struct SplashView: View {
     /// The history is read: the greeting may go.
     let ready: Bool
+    /// The app is on the screen: the greeting begins only then (behind Face ID or the launch screen nobody sees it).
+    let active: Bool
     let onFinish: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var iconShown = false
@@ -199,6 +204,7 @@ struct SplashView: View {
     /// `ready` as it is now: the task below keeps the value of the view it began with, a state is read live.
     @State private var isReady = false
     @State private var minimumShown = false
+    @State private var started = false
 
     var body: some View {
         ZStack {
@@ -229,19 +235,27 @@ struct SplashView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Horizon")
         .onAppear {
-            withAnimation(reduceMotion ? .easeOut(duration: 0.25) : .spring(response: 0.55, dampingFraction: 0.75)) { iconShown = true }
-            withAnimation(.easeOut(duration: 0.45).delay(reduceMotion ? 0 : 0.25)) { titleShown = true }
-            withAnimation(.easeInOut(duration: 0.7).delay(reduceMotion ? 0 : 0.45)) { lineShown = true }
-            if !reduceMotion {
-                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true).delay(0.3)) { glow = true }
-            }
+            isReady = ready
+            if active { start() }
         }
-        .onAppear { isReady = ready }
+        .onChange(of: active) { _, now in if now { start() } }
         .onChange(of: ready) { _, now in
             isReady = now
             if now && minimumShown { finish() }
         }
-        .task {
+    }
+
+    /// The animation and the time of the greeting, from the moment the app is on the screen.
+    private func start() {
+        guard !started else { return }
+        started = true
+        withAnimation(reduceMotion ? .easeOut(duration: 0.25) : .spring(response: 0.55, dampingFraction: 0.75)) { iconShown = true }
+        withAnimation(.easeOut(duration: 0.45).delay(reduceMotion ? 0 : 0.25)) { titleShown = true }
+        withAnimation(.easeInOut(duration: 0.7).delay(reduceMotion ? 0 : 0.45)) { lineShown = true }
+        if !reduceMotion {
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true).delay(0.3)) { glow = true }
+        }
+        Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.2))
             minimumShown = true
             if isReady { finish() }

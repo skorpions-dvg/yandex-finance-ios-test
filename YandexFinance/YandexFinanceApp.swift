@@ -19,12 +19,12 @@ struct YandexFinanceApp: App {
                     .environmentObject(wallpaper)
                     .environmentObject(lock)
                 if lock.isLocked {
-                    LockScreenView(lock: lock).environmentObject(wallpaper)
+                    LockScreenView(lock: lock, canAskFaceID: !showsSplash).environmentObject(wallpaper)
                 } else if lock.hasPIN && scenePhase != .active && !lock.coverSuppressed {
                     PrivacyCover().environmentObject(wallpaper)
                 }
                 if showsSplash {
-                    SplashView(ready: !browser.loadingHistory) {
+                    SplashView(ready: !browser.loadingHistory, active: scenePhase == .active) {
                         withAnimation(.easeOut(duration: 0.35)) { showsSplash = false }
                     }
                     .transition(.opacity)
