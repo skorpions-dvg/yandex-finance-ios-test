@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WidgetKit
 
 /// «Настройки → Данные и копии»: the copies of the history and of the receipt photos, and the imports. The exporters
 /// and importers themselves stay in Settings (they need its state); this screen only starts them and shows what came of it.
@@ -20,6 +21,8 @@ struct DataAndCopiesView: View {
     @State private var photoNames: [String]?
     @State private var photoError: String?
     @State private var confirmOrphans = false
+    /// What the widget test file holds now, as the widget would read it.
+    @State private var widgetState = ""
 
     private var photos: Int? { photoNames?.count }
     /// Photos that no operation points to.
@@ -67,6 +70,16 @@ struct DataAndCopiesView: View {
                 Text("Один файл (ZIP) с фото чеков, текстом, который прочитал телефон, и тем, что сохранено в операциях. В файле только чеки, которых ещё не было в прошлых сборах. Пришлите его и напишите «проверь диагностику чека»: по нему чтение станет точнее.")
             }.glassRows()
             Section {
+                LabeledContent("Сейчас в файле", value: widgetState)
+                Button("Сводка A") { writeWidget(WidgetShared.sample("A")) }
+                Button("Сводка B") { writeWidget(WidgetShared.sample("B")) }
+                Button("Очистить", role: .destructive) { writeWidget(nil) }
+            } header: {
+                Text("Проверка виджета")
+            } footer: {
+                Text("Пробные вымышленные суммы, не ваши. Добавьте виджет Horizon на экран «Домой» и нажмите A или B: виджет должен показать те же числа, букву и время.")
+            }.glassRows()
+            Section {
                 Button("Импортировать PDF-выписки") { run(importStatements) }
                     .disabled(!browser.storageAvailable || browser.busy)
                 Button("Импортировать разметку категорий") { run(importCategories) }
@@ -89,7 +102,10 @@ struct DataAndCopiesView: View {
         .appSurface()
         .navigationTitle("Данные и копии")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { refreshPhotos() }
+        .onAppear {
+            refreshPhotos()
+            refreshWidgetState()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in refreshPhotos() }
         .onChange(of: browser.message) { _, text in
             refreshPhotos()
@@ -105,6 +121,31 @@ struct DataAndCopiesView: View {
         tappedAt = Date()
         browser.message = ""
         action()
+    }
+
+    private func writeWidget(_ summary: WidgetSummary?) {
+        do {
+            try WidgetShared.write(summary)
+            WidgetCenter.shared.reloadAllTimelines()
+            refreshWidgetState()
+        } catch {
+            widgetState = "Ошибка записи"
+            notice = WidgetShared.resolvedGroup() == nil
+                ? "Нет общей папки с виджетом: эта сборка или подпись SideStore её не получила."
+                : "Не удалось записать сводку: \(error.localizedDescription)"
+        }
+    }
+
+    private func refreshWidgetState() {
+        let group = WidgetShared.resolvedGroup()
+        let place = group.map { $0.name == WidgetShared.baseGroup ? "группа без Team ID" : "группа с Team ID" } ?? ""
+        switch WidgetShared.read() {
+        case .summary(let summary):
+            widgetState = (summary.label ?? "сводка") + " · " + summary.updatedAt.formatted(date: .omitted, time: .standard) + " · " + place
+        case .empty: widgetState = "пусто · " + place
+        case .noGroup: widgetState = "нет общей папки"
+        case .unreadable: widgetState = "не читается · " + place
+        }
     }
 
     private func refreshPhotos() {

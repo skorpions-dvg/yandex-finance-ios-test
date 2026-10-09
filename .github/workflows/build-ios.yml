@@ -34,6 +34,11 @@ jobs:
           swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift YandexFinance/PeriodSelectionLogic.swift YandexFinance/Models.swift YandexFinance/UncategorizedReview.swift YandexFinance/CategorySuggestions.swift YandexFinance/ReportSeries.swift YandexFinance/ReportEngine.swift YandexFinance/Budgets.swift YandexFinance/RegularPayments.swift YandexFinance/ReceiptParser.swift YandexFinance/ReceiptArchive.swift Tests/FinanceEngineTests.swift -o /tmp/finance-tests
           /tmp/finance-tests
 
+      - name: Проверка сводки виджета
+        run: |
+          swiftc -warnings-as-errors -parse-as-library YandexFinance/WidgetSummary.swift Tests/WidgetSummaryTests.swift -o /tmp/widget-tests
+          /tmp/widget-tests
+
       - name: Проверка импорта выписки
         run: |
           swiftc -warnings-as-errors -parse-as-library YandexFinance/FinanceEngine.swift YandexFinance/Models.swift YandexFinance/StatementImporter.swift Tests/StatementImporterTests.swift -framework PDFKit -o /tmp/statement-tests
