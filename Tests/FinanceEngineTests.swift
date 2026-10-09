@@ -848,6 +848,30 @@ struct FinanceEngineTests {
                 "a shifted list is not paired")
         require(ReceiptParser.pairGoods(named: [], priced: []) == nil && ReceiptParser.pairGoods(named: named, priced: [priced[0]]) == nil, "different counts")
         require(ReceiptParser.similarity("Хлеб", "Хлеб") == 1 && ReceiptParser.similarity("Хлеб", "Сыр") < 0.3, "similarity of texts")
+        // 46.41, GPT stage 55: a price its own columns confirm is not repaired up to the total (service charge, tips, missing goods).
+        let header = "ЦЕНА КОЛ-ВО СУММА"
+        for tail in [["ИТОГО 120.00", "СЕРВИСНЫЙ СБОР 20.00"], ["ИТОГО 120.00", "ЧАЕВЫЕ 20.00"], ["ИТОГО 150.00"]] {
+            let name = tail.count == 1 ? "Молоко учебное 150.00 100.00 100.00" : "Пирог учебный 120.00 100.00 100.00"
+            let read = ReceiptParser.parseText([header, name] + tail, now: now, calendar: calendar)
+            require(read.goods.map(\.kopecks) == [10_000], "a confirmed price stays: \(tail) → \(read.goods)")
+        }
+        // A good without a price takes the gap only from the row of the very next good, not from a far one.
+        let far = ReceiptParser.parseText([header, "Позиция учебная без цены", "", "Товар учебный посредине 70.00", "Товар учебный последний 50.00", "ИТОГО 170.00"],
+                                          now: now, calendar: calendar)
+        require(far.goods.map(\.kopecks) == [nil, 7_000, 5_000], "no price from a far good: \(far.goods)")
+        // Two equal lines: two goods when the total adds up with both, one read twice when it adds up with one.
+        let twice = ReceiptParser.parseText([header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 200.00"], now: now, calendar: calendar)
+        require(twice.goods.map(\.kopecks) == [10_000, 10_000], "two equal goods: \(twice.goods)")
+        let once = ReceiptParser.parseText([header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 100.00"], now: now, calendar: calendar)
+        require(once.goods.map(\.kopecks) == [10_000], "one good read twice: \(once.goods)")
+        require(ReceiptParser.itemEntries(in: [header, "Товар учебный 100.00", "Товар учебный 100.00"]).count == 1, "without a total a repeated line is one good")
+        // Similar names listed in another order by the second pass: each name keeps its own price.
+        let first = [ReceiptGood(name: "Йогурт учебный клубника"), ReceiptGood(name: "Йогурт учебный вишня")]
+        let second = [ReceiptGood(name: "Йогурт учебный вишня", kopecks: 12_000), ReceiptGood(name: "Йогурт учебный клубника", kopecks: 8_000)]
+        require(ReceiptParser.pairGoods(named: first, priced: second)?.map(\.kopecks) == [8_000, 12_000], "pairing by the names, not by the order")
+        require(ReceiptParser.pairGoods(named: [ReceiptGood(name: "Товар учебный"), ReceiptGood(name: "Товар учебный")],
+                                        priced: [ReceiptGood(name: "Товар учебный", kopecks: 100), ReceiptGood(name: "Товар учебный", kopecks: 200)])?.map(\.kopecks) == [100, 200],
+                "two goods of the same name pair in their order")
         // photo names from outside
         var history = SavedHistory()
         history.receipts = ["manual:1": ["receipt-00000000-0000-0000-0000-000000000001.jpg", "../outside.txt", "sub/a.jpg", "/etc/hosts"],

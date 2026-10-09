@@ -252,6 +252,8 @@ enum ReceiptParser {
         // are gathered, and `lineTotal` picks the one that is the total of this line.
         var names: [String] = []
         var bands: [[Int64]] = []
+        /// Lines that repeat the line before them: the same good read twice, or two equal goods; the total decides below.
+        var repeats: [Int] = []
         var index = start
         while index < lines.count {
             let line = lines[index]
@@ -269,8 +271,12 @@ enum ReceiptParser {
                     index += 1
                     continue
                 }
-                // The same line read twice is one good; the same name with other sums is another good (two notebooks, 60 and 100).
-                if names.last == name, bands.last == found { continue }
+                // The same line read twice: one good read twice or two equal goods (two yoghurts, 100 and 100); the total of
+                // the receipt decides. The same name with other sums is another good (two notebooks, 60 and 100).
+                if names.last == name, bands.last == found {
+                    guard expectedTotal != nil else { continue }
+                    repeats.append(names.count)
+                }
                 names.append(name)
                 bands.append(found)
                 if names.count >= 60 { break }
@@ -278,14 +284,25 @@ enum ReceiptParser {
                 bands[bands.count - 1] += amounts(in: line)
             }
         }
-        let goods = zip(names, bands).map { ReceiptGood(name: $0, kopecks: lineTotal($1)) }
+        var goods = zip(names, bands).map { ReceiptGood(name: $0, kopecks: lineTotal($1)) }
         guard let expectedTotal else { return goods }
+        if !repeats.isEmpty {
+            // Kept when the total adds up with them; otherwise they are the same line read twice (as before 46.41).
+            let all = goods.compactMap(\.kopecks).reduce(0, +)
+            if all != expectedTotal {
+                let dropped = Set(repeats)
+                goods = goods.indices.filter { !dropped.contains($0) }.map { goods[$0] }
+                bands = bands.indices.filter { !dropped.contains($0) }.map { bands[$0] }
+            }
+        }
         return reconcilePrices(goods, bands: bands, expected: expectedTotal)
     }
 
-    /// The prices fall short of the total of the receipt by `gap`. One good without a price and the gap seen among the sums near
-    /// another good: its row of figures stuck to the next name. All goods priced and the price of one good plus the gap seen
-    /// among its own sums: it took a repeated misreading («19,99») instead of the price («73,99»). Nothing else is guessed:
+    /// The prices fall short of the total of the receipt by `gap`. One good without a price and the gap seen among the sums of the
+    /// very next good, which has more than one sum: its row of figures stuck to the next name. All goods priced and the price of
+    /// one good plus the gap seen among its own sums: it took a repeated misreading («19,99») instead of the price («73,99»);
+    /// but not when the last two sums of its line are its price (the price after the discount and the sum of the line agree:
+    /// the price is confirmed, the gap is a service charge or a missing good — GPT stage 55). Nothing else is guessed:
     /// receipts with a discount on the whole receipt, with service charges or incomplete ones are left as they are.
     static func reconcilePrices(_ goods: [ReceiptGood], bands: [[Int64]], expected: Int64) -> [ReceiptGood] {
         guard goods.count == bands.count, !goods.isEmpty else { return goods }
@@ -294,21 +311,41 @@ enum ReceiptParser {
         var result = goods
         let unpriced = goods.indices.filter { goods[$0].kopecks == nil }
         if unpriced.count == 1 {
-            if bands.contains(where: { $0.contains(gap) }) { result[unpriced[0]].kopecks = gap }
+            // Only the next name can carry the row of figures of this one (a gap among the sums of a far good is a coincidence).
+            let next = unpriced[0] + 1
+            if next < bands.count, bands[next].count >= 2, bands[next].contains(gap) { result[unpriced[0]].kopecks = gap }
             return result
         }
         guard unpriced.isEmpty else { return goods }
-        let fixable = goods.indices.filter { index in goods[index].kopecks.map { bands[index].contains($0 + gap) } ?? false }
+        func confirmed(_ index: Int) -> Bool {
+            let band = bands[index]
+            guard band.count >= 2, let price = goods[index].kopecks else { return false }
+            return band[band.count - 1] == price && band[band.count - 2] == price
+        }
+        let fixable = goods.indices.filter { index in
+            !confirmed(index) && (goods[index].kopecks.map { bands[index].contains($0 + gap) } ?? false)
+        }
         if fixable.count == 1, let price = goods[fixable[0]].kopecks { result[fixable[0]].kopecks = price + gap }
         return result
     }
 
     /// Names read with the correction of words and prices read exactly are the same goods only if the lines are alike; a pass that
     /// missed a line shifts the prices to other names, and then nothing is paired.
+    /// Each name takes the price of the free line most like it, the first one of equally alike lines (46.41: two yoghurts of one
+    /// brand were alike enough to be paired by their order, and their prices swapped when the passes listed them differently;
+    /// two goods of the same name still pair in their order). Nothing is paired unless every name finds a line alike enough.
     static func pairGoods(named: [ReceiptGood], priced: [ReceiptGood]) -> [ReceiptGood]? {
         guard !named.isEmpty, named.count == priced.count else { return nil }
-        for (a, b) in zip(named, priced) where similarity(a.name, b.name) < 0.3 { return nil }
-        return zip(named, priced).map { ReceiptGood(name: $0.name, kopecks: $1.kopecks) }
+        var used = Set<Int>()
+        var chosen: [Int] = []
+        for good in named {
+            let scores = priced.map { similarity(good.name, $0.name) }
+            let free = priced.indices.filter { !used.contains($0) }
+            guard let best = free.max(by: { scores[$0] < scores[$1] || (scores[$0] == scores[$1] && $0 > $1) }), scores[best] >= 0.3 else { return nil }
+            used.insert(best)
+            chosen.append(best)
+        }
+        return zip(named, chosen).map { ReceiptGood(name: $0.name, kopecks: priced[$1].kopecks) }
     }
 
     /// How alike two texts are, 0…1 (the share of common pairs of letters; letters and digits only, case ignored).
