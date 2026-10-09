@@ -267,7 +267,9 @@ struct ForecastDetailView: View {
     private func spreadLine(_ text: @escaping (FinancialEngine.ForecastRange) -> String) -> some View {
         if let spread {
             if spread.isShown {
-                Text("весь прошлый разброс за \(spread.months) мес.: " + text(spread)).foregroundStyle(.secondary)
+                // «8 из 10» only where it was measured (GPT stage 60: 82,2 % with 9+ months, 73,2 % with 4–8).
+                Text((spread.months >= 9 ? "в 8 из 10 похожих месяцев: " : "весь прошлый разброс за \(spread.months) мес.: ") + text(spread))
+                    .foregroundStyle(.secondary)
             } else {
                 Text("Диапазон появится, когда для сверки наберётся 4 прошлых месяца (сейчас \(spread.months)).").foregroundStyle(.secondary)
             }
