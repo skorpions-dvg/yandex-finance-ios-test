@@ -1153,6 +1153,8 @@ struct ReceiptScan: Codable, Equatable {
     var goods: [ReceiptGood]
     /// False when the date was read but not the time.
     var dateHasTime: Bool
+    /// How the receipt was read (`ParsedReceipt.readingNotes`); nil in the scans saved before 46.43.
+    var notes: [String]?
 }
 
 /// Receipt photos are files in the app's own folder; these rules are the only place that decides how they look.

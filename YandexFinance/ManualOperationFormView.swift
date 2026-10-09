@@ -412,7 +412,8 @@ struct ManualOperationFormView: View {
         if isBetter {
             scanScore = score
             lastScan = ReceiptScan(scannedAt: Date(), readLines: parsed.readLines, totalKopecks: parsed.totalKopecks, date: parsed.date,
-                                   merchant: parsed.merchant, goods: parsed.goods, dateHasTime: parsed.dateHasTime)
+                                   merchant: parsed.merchant, goods: parsed.goods, dateHasTime: parsed.dateHasTime,
+                                   notes: parsed.readingNotes.isEmpty ? nil : parsed.readingNotes)
         }
         // Neither a sum nor a date: nothing useful was read, and the owner is told so instead of getting a guessed form.
         if parsed.totalKopecks == nil && parsed.date == nil {

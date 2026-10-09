@@ -848,6 +848,17 @@ struct FinanceEngineTests {
                 "a shifted list is not paired")
         require(ReceiptParser.pairGoods(named: [], priced: []) == nil && ReceiptParser.pairGoods(named: named, priced: [priced[0]]) == nil, "different counts")
         require(ReceiptParser.similarity("Хлеб", "Хлеб") == 1 && ReceiptParser.similarity("Хлеб", "Сыр") < 0.3, "similarity of texts")
+        // 46.43 (Gemini): the row of the date read again gives only what the first reading lacks.
+        let day = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 12))!
+        let timed = calendar.date(from: DateComponents(year: 2032, month: 10, day: 8, hour: 18, minute: 37))!
+        let otherDay = calendar.date(from: DateComponents(year: 2032, month: 10, day: 6, hour: 18, minute: 37))!
+        let withTime = ReceiptParser.refinedDate(first: (day, false), reread: (timed, true), calendar: calendar)
+        require(withTime?.date == timed && withTime?.hasTime == true, "the time of the same day is taken from the re-read row")
+        require(ReceiptParser.refinedDate(first: (day, false), reread: (otherDay, true), calendar: calendar) == nil, "another day changes nothing")
+        require(ReceiptParser.refinedDate(first: (timed, true), reread: (otherDay, true), calendar: calendar) == nil, "a read time is kept")
+        require(ReceiptParser.refinedDate(first: (day, false), reread: (day, false), calendar: calendar) == nil, "a re-read without time adds nothing")
+        require(ReceiptParser.refinedDate(first: nil, reread: (timed, true), calendar: calendar)?.date == timed, "a date when none was read")
+        require(ReceiptParser.refinedDate(first: (day, false), reread: nil, calendar: calendar) == nil, "nothing re-read")
         // 46.41, GPT stage 55: a price its own columns confirm is not repaired up to the total (service charge, tips, missing goods).
         let header = "ЦЕНА КОЛ-ВО СУММА"
         for tail in [["ИТОГО 120.00", "СЕРВИСНЫЙ СБОР 20.00"], ["ИТОГО 120.00", "ЧАЕВЫЕ 20.00"], ["ИТОГО 150.00"]] {

@@ -14,6 +14,9 @@ enum ReceiptRecognizer {
         var qr: ParsedReceipt?
         var lines: [String]
         var nameLines: [String]
+        /// The row of the date read once more, alone (Gemini): it may give the time the whole page missed.
+        var dateLines: [String] = []
+        var notes: [String] = []
     }
 
     nonisolated private static func read(_ images: [UIImage]) -> ParsedReceipt {
@@ -22,15 +25,26 @@ enum ReceiptRecognizer {
             guard let cgImage = image.cgImage else { continue }
             let direction = orientation(image.imageOrientation)
             var best = reading(of: cgImage, orientation: direction)
+            best.notes.append("проход: фото как есть")
             // A photo is also read after the receipt is found in it and straightened (as the scanner does): the one that gives
             // more (sum, date and time, prices that add up, QR) is taken; the original wins a tie.
             if let flat = straightened(cgImage, orientation: direction) {
-                let other = reading(of: flat, orientation: .up)
+                var other = reading(of: flat, orientation: .up)
+                other.notes.append("проход: выровненное фото")
+                if score(other) > score(best) { best = other }
+            }
+            // Pale or dot-matrix print (Gemini): only when the date or the sum was not read and there is no QR code, the photo is
+            // read once more with more contrast and a slight blur that joins the dots into digits; taken only if it gives more.
+            let parsed = assemble(best)
+            if best.qr == nil, parsed.date == nil || parsed.totalKopecks == nil, let pale = contrasted(cgImage, orientation: direction) {
+                var other = reading(of: pale, orientation: .up)
+                other.notes.append("проход: запасной для бледной печати")
                 if score(other) > score(best) { best = other }
             }
             chosen.append(best)
         }
-        return assemble(Reading(qr: chosen.compactMap(\.qr).first, lines: chosen.flatMap(\.lines), nameLines: chosen.flatMap(\.nameLines)))
+        return assemble(Reading(qr: chosen.compactMap(\.qr).first, lines: chosen.flatMap(\.lines), nameLines: chosen.flatMap(\.nameLines),
+                                dateLines: chosen.flatMap(\.dateLines), notes: chosen.flatMap(\.notes)))
     }
 
     nonisolated private static func reading(of cgImage: CGImage, orientation: CGImagePropertyOrientation) -> Reading {
@@ -49,20 +63,76 @@ enum ReceiptRecognizer {
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         try? handler.perform([text, words, codes])
         var qr: ParsedReceipt?
+        var notes: [String] = []
         for code in codes.results ?? [] {
             if let payload = code.payloadStringValue, let parsed = ReceiptParser.parseQR(payload) {
                 qr = parsed
+                notes.append("QR: прочитан на целом фото")
                 break
             }
         }
-        if qr == nil { qr = qrInParts(of: cgImage) }
-        return Reading(qr: qr, lines: rows(from: text.results ?? []), nameLines: rows(from: words.results ?? []))
+        if qr == nil {
+            qr = qrInParts(of: cgImage)
+            notes.append(qr == nil ? "QR: не найден" : "QR: прочитан по частям фото")
+        }
+        let observations = text.results ?? []
+        let lines = rows(from: observations)
+        // The time was not read with the date: the row of the date alone, read again (Vision sees a region larger).
+        var dateLines: [String] = []
+        if qr == nil, ReceiptParser.dateAndTime(in: lines, now: Date(), calendar: .current)?.hasTime != true,
+           let box = dateRowBox(observations) {
+            let again = VNRecognizeTextRequest()
+            again.recognitionLevel = .accurate
+            again.recognitionLanguages = ["ru-RU", "en-US"]
+            again.usesLanguageCorrection = false
+            let margin = box.height * 2
+            let minY = max(0, box.minY - margin), maxY = min(1, box.maxY + margin)
+            again.regionOfInterest = CGRect(x: 0, y: minY, width: 1, height: maxY - minY)
+            try? VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:]).perform([again])
+            dateLines = rows(from: again.results ?? [])
+        }
+        return Reading(qr: qr, lines: lines, nameLines: rows(from: words.results ?? []), dateLines: dateLines, notes: notes)
+    }
+
+    /// Where the date is printed: the first piece of text with a date in it, in the coordinates of the picture (0…1).
+    nonisolated private static func dateRowBox(_ observations: [VNRecognizedTextObservation]) -> CGRect? {
+        for observation in observations {
+            guard let text = observation.topCandidates(1).first?.string else { continue }
+            let fixed = ReceiptParser.digitsFixed(text)
+            if fixed.range(of: #"\d{1,2}\s?[./-]\s?\d{1,2}\s?[./-]\s?\d{2,4}"#, options: .regularExpression) != nil {
+                return observation.boundingBox
+            }
+        }
+        return nil
+    }
+
+    /// The photo with more contrast, in grey, slightly blurred: the dots of a dot-matrix print and a pale print become lines.
+    nonisolated private static func contrasted(_ cgImage: CGImage, orientation: CGImagePropertyOrientation) -> CGImage? {
+        let image = CIImage(cgImage: cgImage).oriented(orientation)
+        let extent = image.extent
+        let processed = image
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 0, kCIInputContrastKey: 1.6])
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 1.0])
+            .cropped(to: extent)
+        return CIContext().createCGImage(processed, from: extent)
     }
 
     /// Names from the pass with the correction of words, prices from the exact pass (the same order of goods in both). When the
     /// passes found different numbers of goods, the exact pass is taken as it is: worse names, but with their prices.
     nonisolated private static func assemble(_ reading: Reading) -> ParsedReceipt {
         var result = ReceiptParser.merge(qr: reading.qr, text: ReceiptParser.parseText(reading.lines))
+        result.readingNotes = reading.notes
+        if !result.dateFromQR, !reading.dateLines.isEmpty {
+            let first = result.date.map { (date: $0, hasTime: result.dateHasTime) }
+            let again = ReceiptParser.dateAndTime(in: reading.dateLines, now: Date(), calendar: .current)
+            if let refined = ReceiptParser.refinedDate(first: first, reread: again) {
+                result.date = refined.date
+                result.dateHasTime = refined.hasTime
+                result.readingNotes.append(refined.note)
+            } else if let again, let first, !Calendar.current.isDate(first.date, inSameDayAs: again.date) {
+                result.readingNotes.append("повторное чтение даты дало другой день — сверьте")
+            }
+        }
         let named = ReceiptParser.itemEntries(in: reading.nameLines)
         let priced = ReceiptParser.itemEntries(in: reading.lines, expectedTotal: result.totalKopecks)
         if let paired = ReceiptParser.pairGoods(named: named, priced: priced) {
@@ -194,7 +264,7 @@ enum ReceiptDiagnostics {
             let source: String
             if let scan = history.receiptScans?[identity] {
                 read = ParsedReceipt(totalKopecks: scan.totalKopecks, date: scan.date, merchant: scan.merchant, goods: scan.goods,
-                                     readLines: scan.readLines, dateHasTime: scan.dateHasTime)
+                                     readLines: scan.readLines, dateHasTime: scan.dateHasTime, readingNotes: scan.notes ?? [])
                 source = "прочитано при добавлении чека"
             } else {
                 read = await ReceiptRecognizer.recognize(images)

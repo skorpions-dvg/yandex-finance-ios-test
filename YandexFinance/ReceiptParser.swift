@@ -13,6 +13,9 @@ struct ParsedReceipt: Equatable {
     var dateHasTime = true
     /// The date and time come from the QR code: exact, unlike the printed text, where a digit may be misread.
     var dateFromQR = false
+    /// How the receipt was read (the QR code found or not, the pass that was taken, the time read again): for the check of the
+    /// reading in «Собрать чеки для проверки», never shown in the form.
+    var readingNotes: [String] = []
 
     var isEmpty: Bool { totalKopecks == nil && date == nil && merchant == nil }
 }
@@ -154,6 +157,19 @@ enum ReceiptParser {
             if let date, date <= limit { return (min(date, now), hasTime) }
         }
         return nil
+    }
+
+    /// The date of the receipt after the row of the date was read once more, alone and so larger (Gemini, 9 Oct). Only what the
+    /// first reading lacks is taken: a date when none was read, a time for the same day; a re-read that gives another day changes
+    /// nothing (one of the two readings is wrong, and the owner is asked to set the time anyway). nil keeps the first reading.
+    static func refinedDate(first: (date: Date, hasTime: Bool)?, reread: (date: Date, hasTime: Bool)?,
+                            calendar: Calendar = .current) -> (date: Date, hasTime: Bool, note: String)? {
+        guard let reread else { return nil }
+        guard let first else { return (reread.date, reread.hasTime, "дата дочитана по строке даты") }
+        guard !first.hasTime else { return nil }
+        guard calendar.isDate(first.date, inSameDayAs: reread.date) else { return nil }
+        guard reread.hasTime else { return nil }
+        return (reread.date, true, "время дочитано по строке даты")
     }
 
     /// A printed date and time are read with digits taken for letters («D8.10.26», «l8:37»): inside a token of digits and
@@ -572,6 +588,7 @@ enum ReceiptCheckReport {
         lines.append("Сумма: \(read.totalKopecks.map { ReceiptGood.rubles($0) } ?? "не прочитана")")
         lines.append("Дата: \(read.date.map { stamp($0, calendar) + (read.dateHasTime ? "" : " (время не прочиталось)") } ?? "не прочитана")")
         lines.append("Магазин: \(read.merchant ?? "не определён")")
+        if !read.readingNotes.isEmpty { lines.append("Как читалось: " + read.readingNotes.joined(separator: "; ")) }
         lines.append("Товары (\(read.goods.count)):")
         lines += read.goods.map { "  " + $0.line }
         lines += ["", "== Сравнение =="]
