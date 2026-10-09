@@ -237,6 +237,7 @@ struct SplashView: View {
                     .fill(Self.cyan.opacity(0.16))
                     .frame(width: geometry.size.width * 1.3, height: side * 0.32)
                     .blur(radius: 36)
+                    .scaleEffect(glow ? 1.08 : 1)
                     .opacity(Double(horizon))
                 ring(side: side, band: band)
                     .scaleEffect(leaving ? 1.4 : (reduceMotion || settled ? 1 : 0.9))
@@ -244,9 +245,10 @@ struct SplashView: View {
                     .opacity(leaving ? 0 : 1)
                 horizonLine(length: geometry.size.width, side: side, band: band)
                 Text("Horizon")
-                    .font(.system(size: 30, weight: .semibold, design: .rounded))
-                    .tracking(2)
+                    .font(.system(size: 32, weight: .medium, design: .rounded))
+                    .tracking(4)
                     .foregroundStyle(.white)
+                    .shadow(color: Self.cyan.opacity(0.5), radius: 8, y: 3)
                     .offset(y: side / 2 + band / 2 + 44 + (titleShown || reduceMotion ? 0 : 12))
                     .opacity(titleShown && !leaving ? 1 : 0)
             }
@@ -284,8 +286,10 @@ struct SplashView: View {
                     .frame(width: side + band - 1.5, height: side + band - 1.5)
                 Circle()
                     .trim(from: arc.from, to: end)
-                    .stroke(Self.cyan.opacity(0.55), style: StrokeStyle(lineWidth: 1))
-                    .frame(width: side - band + 1, height: side - band + 1)
+                    .stroke(LinearGradient(colors: [.white.opacity(0.75), Self.cyan.opacity(0.35), .clear],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            style: StrokeStyle(lineWidth: 1.5))
+                    .frame(width: side - band + 1.5, height: side - band + 1.5)
             }
         }
         .rotationEffect(.degrees(-90))
@@ -312,6 +316,8 @@ struct SplashView: View {
                     .opacity(Double(horizon))
             }
         }
+        // Leaving, the line draws in to the middle while the ring flies towards the viewer (Gemini's idea).
+        .scaleEffect(x: leaving ? 0.01 : 1, y: 1, anchor: .center)
         .opacity(leaving ? 0 : 1)
     }
 
