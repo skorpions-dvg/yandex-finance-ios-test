@@ -930,13 +930,15 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
 
     func backupData() throws -> Data { try HistoryBackup.encode(pendingHistory ?? history) }
 
-    /// Replaces the local history with a backup file chosen by the user.
-    func restoreBackup(from url: URL) {
-        guard !busy else { return }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+    /// Replaces the local history with the history of a copy chosen by the user; false when it could not be restored.
+    @discardableResult
+    func restoreBackup(data: Data) -> Bool {
+        guard !busy else {
+            message = "Дождитесь конца проверки банка и повторите восстановление."
+            return false
+        }
         do {
-            var restored = try HistoryBackup.decode(Data(contentsOf: url))
+            var restored = try HistoryBackup.decode(data)
             restored.moveTransfersToOwnGroup()
             try vault.save(restored)
             pendingHistory = nil
@@ -946,8 +948,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             storageError = nil
             storageRetryFailed = false
             message = "Восстановлено из копии: \(restored.operations.count) операций, счетов: \(restored.accounts?.count ?? 0)."
+            return true
         } catch {
             message = "Не удалось восстановить копию: \(error.localizedDescription)"
+            return false
         }
     }
 

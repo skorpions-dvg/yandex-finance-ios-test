@@ -7,10 +7,8 @@ import UIKit
 struct DataAndCopiesView: View {
     @ObservedObject var browser: BankBrowser
     let exportBackup: () -> Void
-    let exportReceipts: () -> Void
     let collectReceipts: () -> Void
     let restoreBackup: () -> Void
-    let restoreReceipts: () -> Void
     let importStatements: () -> Void
     let importCategories: () -> Void
     @State private var notice: String?
@@ -28,34 +26,23 @@ struct DataAndCopiesView: View {
     var body: some View {
         List {
             Section {
-                Button("Сохранить копию (JSON)") { run(exportBackup) }
+                Button("Сохранить копию") { run(exportBackup) }
                     .disabled(!browser.storageAvailable || browser.busy)
-                Button("Восстановить из копии (JSON)") { run(restoreBackup) }
+                Button("Восстановить из копии") { run(restoreBackup) }
                     .disabled(browser.busy)
-            } header: {
-                Text("Резервная копия")
-            } footer: {
-                Text("Операции, счета, категории и правила. Фото чеков в неё не входят.")
-            }.glassRows()
-            Section {
-                LabeledContent("Фото на телефоне", value: photos.map { String($0) } ?? (photoError == nil ? "Проверяем…" : "Ошибка чтения"))
+                LabeledContent("Фото чеков на телефоне", value: photos.map { String($0) } ?? (photoError == nil ? "Проверяем…" : "Ошибка чтения"))
                 if photoError != nil { Button("Повторить чтение списка фото") { refreshPhotos() } }
                 if !orphans.isEmpty {
                     LabeledContent("Привязано к операциям", value: String((photos ?? 0) - orphans.count))
                     Button("Удалить фото без операции (\(orphans.count))", role: .destructive) { confirmOrphans = true }
                 }
-                Button("Сохранить архив (ZIP)") { run(exportReceipts) }
-                    .disabled(photos == nil || photos == 0 || browser.busy)
-                Button("Восстановить фото из архива") { run(restoreReceipts) }
-                    .disabled(browser.busy)
             } header: {
-                Text("Фото чеков")
+                Text("Копия всех данных")
             } footer: {
                 if let photoError {
                     Text(photoError).foregroundStyle(.primary)
                 } else {
-                    Text(photos == 0 ? "Фото ещё нет: их добавляют в операции, в разделе «Чек»."
-                                     : "ZIP сохраняйте рядом с JSON: iCloud Drive → Finance Test.")
+                    Text("Один файл: операции, счета, категории, правила и фото чеков. Сохраняйте его в iCloud Drive → Finance Test. Восстановление принимает и прежние копии — JSON и архив фото.")
                 }
             }.glassRows()
             Section {
@@ -72,7 +59,7 @@ struct DataAndCopiesView: View {
                 Button("Импортировать разметку категорий") { run(importCategories) }
                     .disabled(!browser.storageAvailable || browser.busy)
             } header: {
-                Text("Импорт")
+                Text("Ещё")
             } footer: {
                 Text("Выписки — один или несколько PDF. Разметка категорий — JSON, его можно просмотреть перед применением.")
             }.glassRows()

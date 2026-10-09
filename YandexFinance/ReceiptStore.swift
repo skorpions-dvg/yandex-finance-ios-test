@@ -54,6 +54,11 @@ enum ReceiptStore {
     /// nil means the file is not a valid archive of this app.
     static func restoreArchive(_ zip: Data) -> ReceiptLogic.ReceiptRestoreResult? {
         guard let entries = ReceiptArchive.read(zip) else { return nil }
+        return restorePhotos(entries)
+    }
+
+    /// The photos of a copy: existing files stay, every entry is counted.
+    static func restorePhotos(_ entries: [(name: String, data: Data)]) -> ReceiptLogic.ReceiptRestoreResult {
         var result = ReceiptLogic.ReceiptRestoreResult()
         for entry in entries {
             guard ReceiptLogic.isValid(fileName: entry.name) else { result.damaged += 1; continue }

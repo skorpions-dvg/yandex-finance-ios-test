@@ -922,44 +922,56 @@ struct SettingsView: View {
     @State private var pendingCollected: [String] = []
     /// A collection of receipts is being prepared or saved: a second one is not started meanwhile.
     @State private var collecting = false
-    @State private var showReceiptsImporter = false
     @State private var showBackupImporter = false
     @State private var showCategoryImporter = false
     @State private var importedCategoryPlan: ExpenseCategoryImport?
     @State private var categoryImportError: String?
-    @State private var pendingRestore: URL?
+    /// A chosen copy with a history in it, waiting for «Заменить данные копией».
+    @State private var pendingRestore: FullBackup.Contents?
 
-    private func exportBackupJSON() {
+    /// «Сохранить копию» (46.50): one file with the history and the photos of the receipts that belong to an operation.
+    private func exportFullBackup() {
         exportedNotice = nil
         do {
-            let data = try browser.backupData()
-            exportedType = .json
-            exportedName = "FinanceTest-\(Date().formatted(.iso8601.year().month().day()))"
-            exportedBackup = BackupDocument(data: data)
+            let history = try browser.backupData()
+            let attached = Set((browser.history.receipts ?? [:]).values.flatMap { $0 })
+            var photos: [(name: String, data: Data)] = []
+            var skipped = 0
+            for name in (try? ReceiptStore.photoFiles()) ?? [] where attached.contains(name) {
+                if let data = try? Data(contentsOf: ReceiptStore.folder.appendingPathComponent(name)) { photos.append((name, data)) } else { skipped += 1 }
+            }
+            exportedType = .zip
+            exportedName = "Horizon-copy-\(Date().formatted(.iso8601.year().month().day()))"
+            exportedNotice = "Копия сохранена: \(browser.history.operations.count) операций, фото чеков: \(photos.count)"
+                + (skipped > 0 ? ", не удалось прочитать фото: \(skipped)" : "") + "."
+            exportedBackup = BackupDocument(data: FullBackup.make(history: history, photos: photos.sorted { $0.name < $1.name }))
         } catch {
             browser.message = "Не удалось подготовить копию: \(error.localizedDescription)"
         }
     }
 
-    private func exportReceiptsZIP() {
-        do {
-            // Only photos that belong to an operation go into the archive (the others are listed in «Данные и копии»).
-            let attached = Set((browser.history.receipts ?? [:]).values.flatMap { $0 })
-            guard let archive = try ReceiptStore.exportArchive(only: attached) else {
-                browser.message = "Фото чеков на этом телефоне пока нет."
-                return
-            }
-            guard archive.count > 0 else {
-                browser.message = ReceiptLogic.exportMessage(saved: 0, skipped: archive.skipped)
-                return
-            }
-            exportedType = .zip
-            exportedName = "FinanceTest-receipts-\(Date().formatted(.iso8601.year().month().day()))"
-            exportedNotice = ReceiptLogic.exportMessage(saved: archive.count, skipped: archive.skipped)
-            exportedBackup = BackupDocument(data: archive.data)
-        } catch {
-            browser.message = "Не удалось прочитать список фото чеков: \(error.localizedDescription). Попробуйте ещё раз."
+    /// «Восстановить из копии»: the new copy, an old JSON copy or an old archive of photos. A history replaces the data only
+    /// after the confirmation; photos alone are added at once (nothing is replaced).
+    private func openCopy(_ result: Result<URL, Error>) {
+        guard case .success(let url) = result else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url), let contents = FullBackup.read(data) else {
+            browser.message = "Это не копия Horizon: выберите файл, сохранённый кнопкой «Сохранить копию»."
+            return
         }
+        if contents.history != nil {
+            pendingRestore = contents
+        } else {
+            browser.message = "Фото чеков: " + ReceiptStore.restorePhotos(contents.photos).message.lowercased() + "."
+        }
+    }
+
+    private func restore(_ contents: FullBackup.Contents) {
+        // The history first: a copy whose history cannot be read restores nothing, not half of it.
+        guard let history = contents.history, browser.restoreBackup(data: history) else { return }
+        guard !contents.photos.isEmpty else { return }
+        browser.message += " Фото чеков: " + ReceiptStore.restorePhotos(contents.photos).message.lowercased() + "."
     }
     /// «Собрать чеки для проверки»: the photos with the text read from them, for the check of the reading.
     private func collectReceiptChecks() {
@@ -1068,9 +1080,9 @@ struct SettingsView: View {
                 }.glassRows()
                 Section {
                     NavigationLink {
-                        DataAndCopiesView(browser: browser, exportBackup: exportBackupJSON, exportReceipts: exportReceiptsZIP,
+                        DataAndCopiesView(browser: browser, exportBackup: exportFullBackup,
                                           collectReceipts: collectReceiptChecks,
-                                          restoreBackup: { showBackupImporter = true }, restoreReceipts: { showReceiptsImporter = true },
+                                          restoreBackup: { showBackupImporter = true },
                                           importStatements: { browser.syncSixMonthsHistory() }, importCategories: { showCategoryImporter = true })
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1139,16 +1151,6 @@ struct SettingsView: View {
             }
             exportedNotice = nil
         }
-        .fileImporter(isPresented: $showReceiptsImporter, allowedContentTypes: [.zip]) { result in
-            guard case .success(let url) = result else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            guard let data = try? Data(contentsOf: url), let restored = ReceiptStore.restoreArchive(data) else {
-                browser.message = "Это не архив фото чеков, сделанный приложением."
-                return
-            }
-            browser.message = restored.message
-        }
         .alert("Импорт PDF-выписок", isPresented: Binding(get: { browser.statementPreview != nil }, set: { _ in })) {
             Button("Применить") { browser.applyStatementImport() }
             Button("Отмена", role: .cancel) { browser.cancelStatementImport() }
@@ -1169,18 +1171,16 @@ struct SettingsView: View {
         .alert("Не удалось импортировать разметку", isPresented: Binding(get: { categoryImportError != nil }, set: { if !$0 { categoryImportError = nil } })) {
             Button("OK", role: .cancel) { categoryImportError = nil }
         } message: { Text(categoryImportError ?? "") }
-        .fileImporter(isPresented: $showBackupImporter, allowedContentTypes: [.json]) { result in
-            if case .success(let url) = result { pendingRestore = url }
-        }
+        .fileImporter(isPresented: $showBackupImporter, allowedContentTypes: [.zip, .json]) { result in openCopy(result) }
         .confirmationDialog("Восстановить из копии?", isPresented: Binding(get: { pendingRestore != nil }, set: { if !$0 { pendingRestore = nil } }),
                             titleVisibility: .visible) {
             Button("Заменить данные копией", role: .destructive) {
-                if let url = pendingRestore { browser.restoreBackup(from: url) }
+                if let contents = pendingRestore { restore(contents) }
                 pendingRestore = nil
             }
             Button("Отмена", role: .cancel) { pendingRestore = nil }
         } message: {
-            Text("Текущие операции, счета и группы на этом iPhone заменятся содержимым файла. Если хранилище недоступно, сначала сбросьте его.")
+            Text("Текущие операции, счета и группы на этом iPhone заменятся содержимым файла; фото чеков из копии добавятся к имеющимся. Если хранилище недоступно, сначала сбросьте его.")
         }
         .confirmationDialog("Сбросить локальное хранилище?", isPresented: $confirmStorageReset, titleVisibility: .visible) {
             Button("Сбросить и удалить локальную историю", role: .destructive) { browser.resetLocalStorage() }

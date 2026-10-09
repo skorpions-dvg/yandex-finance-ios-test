@@ -95,3 +95,30 @@ enum ReceiptArchive {
         return entries
     }
 }
+
+/// The copy of everything (46.50): the history (the JSON of `HistoryBackup`) and the photos of the receipts in one archive.
+/// Restoring takes this copy and the two older ones as well: a JSON copy of the history and an archive of the photos.
+enum FullBackup {
+    /// The history inside the archive; every other file is a photo of a receipt.
+    static let historyName = "horizon-history.json"
+
+    struct Contents {
+        var history: Data?
+        var photos: [(name: String, data: Data)]
+    }
+
+    static func make(history: Data, photos: [(name: String, data: Data)]) -> Data {
+        ReceiptArchive.make([(historyName, history)] + photos)
+    }
+
+    /// What a chosen file holds; nil when it is none of the three kinds of copy.
+    static func read(_ data: Data) -> Contents? {
+        if let entries = ReceiptArchive.read(data) {
+            return Contents(history: entries.first { $0.name == historyName }?.data, photos: entries.filter { $0.name != historyName })
+        }
+        // A JSON copy of the versions before 46.50 begins with «{».
+        let blank: Set<UInt8> = [0x20, 0x0A, 0x0D, 0x09]
+        guard data.first(where: { !blank.contains($0) }) == UInt8(ascii: "{") else { return nil }
+        return Contents(history: data, photos: [])
+    }
+}

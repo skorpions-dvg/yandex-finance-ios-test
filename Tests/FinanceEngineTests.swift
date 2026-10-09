@@ -249,6 +249,16 @@ struct FinanceEngineTests {
         require(ReceiptArchive.read(ReceiptArchive.make([]))?.isEmpty == true, "an archive without files is valid and empty")
         require(ReceiptArchive.read(Data("not a zip at all, just text".utf8)) == nil, "a text is not an archive")
         require(ReceiptArchive.read(Data()) == nil, "an empty file is not an archive")
+        // 46.50: one copy of everything, and the older copies still restore.
+        let historyJSON = Data("{\"formatVersion\":1}".utf8)
+        let full = FullBackup.read(FullBackup.make(history: historyJSON, photos: [(first, photo), (second, big)]))
+        require(full?.history == historyJSON && full?.photos.map(\.name) == [first, second] && full?.photos.map(\.data) == [photo, big],
+                "the copy of everything holds the history and the photos")
+        let oldJSON = FullBackup.read(Data("  \n{\"formatVersion\":1}".utf8))
+        require(oldJSON?.history != nil && oldJSON?.photos.isEmpty == true, "an old JSON copy is a history without photos")
+        let oldPhotos = FullBackup.read(ReceiptArchive.make([(first, photo)]))
+        require(oldPhotos?.history == nil && oldPhotos?.photos.count == 1, "an old archive of photos is photos without a history")
+        require(FullBackup.read(Data("not a copy".utf8)) == nil && FullBackup.read(Data()) == nil, "anything else is not a copy")
         var damaged = zip
         damaged[30 + first.count] ^= 0xFF
         require(ReceiptArchive.read(damaged) == nil, "a changed byte is found by the checksum")

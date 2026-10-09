@@ -716,16 +716,15 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
 {
   const settings = appSwift.slice(appSwift.indexOf('struct SettingsView:'), appSwift.indexOf('enum FinanceOperationSelection:'));
   const dataView = fs.readFileSync(path.join(__dirname, '../YandexFinance/DataAndCopiesView.swift'), 'utf8');
-  for (const label of ['Сохранить копию (JSON)', 'Восстановить из копии (JSON)', 'Импортировать PDF-выписки', 'Импортировать разметку категорий']) {
+  for (const label of ['Сохранить копию', 'Восстановить из копии', 'Собрать чеки для проверки', 'Импортировать PDF-выписки', 'Импортировать разметку категорий']) {
     assert.ok(dataView.includes('Button("' + label + '"'), 'Data screen action: ' + label);
   }
   assert.match(settings, /importStatements: \{ browser\.syncSixMonthsHistory\(\) \}/);
   assert.match(swift, /UIDocumentPickerViewController\(forOpeningContentTypes: \[\.pdf\], asCopy: true\)/);
   assert.match(swift, /picker\.allowsMultipleSelection = true/);
   assert.match(settings, /document: exportedBackup, contentType: exportedType/);
-  assert.match(settings, /exportedType = \.json/);
-  assert.match(settings, /fileImporter\(isPresented: \$showReceiptsImporter, allowedContentTypes: \[\.zip\]\)/);
-  assert.match(settings, /fileImporter\(isPresented: \$showBackupImporter, allowedContentTypes: \[\.json\]\)/);
+  assert.match(settings, /exportedType = \.zip/);
+  assert.match(settings, /fileImporter\(isPresented: \$showBackupImporter, allowedContentTypes: \[\.zip, \.json\]\)/);
   assert.match(settings, /fileImporter\(isPresented: \$showCategoryImporter, allowedContentTypes: \[\.json\]\)/);
   console.log('Stage 41.13: four Settings actions use PDF selection and JSON backup/category files.');
 }
@@ -877,4 +876,14 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   const plist = fs.readFileSync(path.join(__dirname, '../YandexFinance/Info.plist'), 'utf8');
   assert.ok(plist.includes('<string>LaunchNavy</string>') && !fs.existsSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/LaunchBackground.colorset')),
             'the launch screen uses the renamed dark blue colour');
+}
+
+// (46.50) One copy of everything: the history and the photos in one file; the restore takes the old copies too, and a history
+// that cannot be read restores nothing.
+{
+  const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
+  assert.ok(app.includes('FullBackup.make(history: history, photos:'), 'the copy holds the history and the photos');
+  assert.ok(app.includes('guard let history = contents.history, browser.restoreBackup(data: history) else { return }'), 'photos are restored only after the history');
+  const data = fs.readFileSync(path.join(__dirname, '../YandexFinance/DataAndCopiesView.swift'), 'utf8');
+  assert.ok(!data.includes('(JSON)') && !data.includes('Сохранить архив (ZIP)'), 'no separate JSON and photo buttons any more');
 }
