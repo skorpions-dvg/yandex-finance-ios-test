@@ -77,6 +77,22 @@ struct ManualOperationFormView: View {
         return NSDecimalNumber(decimal: kopecks).int64Value
     }
 
+    /// The bank purchases this receipt may already be (46.40, `ReceiptBankMatch`): a receipt saved as its own operation would
+    /// count the purchase twice (8 Oct: the same shop, 1 656,87 ₽, in the bank and by hand). Only for a new expense with a photo.
+    private var bankTwins: [BankOperation] {
+        guard operation == nil, kind == .expense, !pendingReceipts.isEmpty, !recognizing, !dateIsPending,
+              let amount = parsedAmount else { return [] }
+        let bank = browser.history.operations
+        let candidates = bank.map { ReceiptMatchCandidate(identity: $0.identity, input: $0.financialInput) }
+        let identities: [String]
+        switch ReceiptBankMatch.match(totalKopecks: amount, date: date, hasTime: lastScan?.dateHasTime == true, candidates: candidates) {
+        case .confirmed(let identity, _): identities = [identity]
+        case .ambiguous(let list): identities = list
+        case .none: return []
+        }
+        return identities.compactMap { identity in bank.first { $0.identity == identity } }
+    }
+
     /// A receipt was read but its date was not: the date must be set by hand (or confirmed as it is).
     private var dateIsPending: Bool { dateConfirmBase.map { $0 == date } ?? false }
     private var timeNeedsCheck: Bool { timeCheckBase.map { $0 == date } ?? false }
@@ -137,6 +153,28 @@ struct ManualOperationFormView: View {
                                 }
                             }.glassRows()
                         }
+                    }
+                    let twins = bankTwins
+                    if !twins.isEmpty {
+                        Section {
+                            ForEach(twins, id: \.identity) { twin in
+                                Button { attach(to: twin) } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(twin.description).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                                        Text(balanceText(-twin.amountKopecks) + " · "
+                                             + (BankDateParser.parse(twin.occurredAt)?.formatted(date: .abbreviated, time: .shortened) ?? twin.occurredAt))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Text("Прикрепить чек к этой покупке").font(.caption.weight(.semibold))
+                                    }
+                                }
+                                .disabled(saved)
+                            }
+                        } header: {
+                            Label(twins.count == 1 ? "Эта покупка уже есть в банке" : "Похожие покупки в банке", systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                        } footer: {
+                            Text("Если сохранить чек отдельной операцией, покупка посчитается дважды. Прикрепите чек к покупке банка: фото и товары перейдут к ней.")
+                        }.glassRows()
                     }
                     fields
                     if operation != nil {
@@ -469,6 +507,30 @@ struct ManualOperationFormView: View {
             pendingReceipts = []
             saved = true
             onSave?(operationToSave)
+            dismiss()
+        } else {
+            saveErrorMessage = browser.message
+            saveError = true
+        }
+    }
+
+    /// The receipt goes to the bank purchase instead of a new operation: its photos, and the goods and the reading when that
+    /// purchase has none yet. Nothing is added by hand, so the purchase counts once.
+    private func attach(to twin: BankOperation) {
+        guard !saved else { return }
+        fieldFocused = false
+        let photos = pendingReceipts
+        let goods = itemsText.split(separator: "\n").map { ReceiptGood(line: String($0)) }.filter { !$0.name.isEmpty }
+        let scan = lastScan
+        let identity = twin.identity
+        let success = browser.updateUserData { history in
+            for name in photos { history.addReceipt(name, toIdentity: identity) }
+            if history.receiptGoods(forIdentity: identity).isEmpty, !goods.isEmpty { history.setReceiptGoods(goods, forIdentity: identity) }
+            if let scan, history.receiptScans?[identity] == nil { history.setReceiptScan(scan, forIdentity: identity) }
+        }
+        if success {
+            pendingReceipts = []
+            saved = true
             dismiss()
         } else {
             saveErrorMessage = browser.message

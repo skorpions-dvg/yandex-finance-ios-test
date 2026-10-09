@@ -52,6 +52,65 @@ struct FinanceEngineTests {
         }
     }
 
+    /// 46.40: which bank purchase a receipt is (contract of GPT stage 58; fictional sums).
+    static func testReceiptBankMatch() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        func at(_ text: String) -> Date { BankDateParser.parse(text)! }
+        func bank(_ id: String, _ amount: Int64, _ date: String, status: String = "Выполнено", kind: String = "expense") -> ReceiptMatchCandidate {
+            ReceiptMatchCandidate(identity: id, input: op(amount, kind: kind, status: status, category: "Супермаркеты", description: "Магазин учебный", date: date))
+        }
+        func match(_ total: Int64?, _ date: String?, time: Bool = true, _ candidates: [ReceiptMatchCandidate]) -> ReceiptMatchOutcome {
+            ReceiptBankMatch.match(totalKopecks: total, date: date.map(at), hasTime: time, candidates: candidates, calendar: utc)
+        }
+        func expect(_ actual: ReceiptMatchOutcome, _ wanted: ReceiptMatchOutcome, _ name: String) {
+            require(actual == wanted, "receipt match \(name): expected \(wanted), got \(actual)")
+        }
+        // One purchase, ten minutes apart (18:27 on the receipt, 18:37 in the bank): found, the bank time fixes the receipt's.
+        expect(match(165_687, "2032-06-02T18:27:00Z", [bank("b1", -165_687, "2032-06-02T18:37:00Z"), bank("b2", -9_900, "2032-06-02T18:30:00Z")]),
+               .confirmed(identity: "b1", timeFix: at("2032-06-02T18:37:00Z")), "ten minutes")
+        // Over midnight: 23:58 on the receipt, 00:05 of the next day in the bank.
+        expect(match(50_000, "2032-06-02T23:58:00Z", [bank("b1", -50_000, "2032-06-03T00:05:00Z")]),
+               .confirmed(identity: "b1", timeFix: at("2032-06-03T00:05:00Z")), "over midnight")
+        // Twenty minutes apart: still the purchase, but its time does not replace the receipt's.
+        expect(match(50_000, "2032-06-02T12:00:00Z", [bank("b1", -50_000, "2032-06-02T12:20:00Z")]),
+               .confirmed(identity: "b1", timeFix: nil), "twenty minutes: no time fix")
+        // Two equal sums the same day and a receipt without time: the owner chooses.
+        expect(match(30_000, "2032-06-02T00:00:00Z", time: false, [bank("b2", -30_000, "2032-06-02T18:00:00Z"), bank("b1", -30_000, "2032-06-02T10:00:00Z")]),
+               .ambiguous(["b1", "b2"]), "two equal sums")
+        // Five days later: not this purchase.
+        expect(match(30_000, "2032-06-02T10:00:00Z", [bank("b1", -30_000, "2032-06-07T10:00:00Z")]), .none, "five days later")
+        // One digit misread by a known pair (729,99 against 739,99): found.
+        expect(match(72_999, "2032-06-02T10:00:00Z", [bank("b1", -73_999, "2032-06-02T10:05:00Z")]),
+               .confirmed(identity: "b1", timeFix: at("2032-06-02T10:05:00Z")), "misread digit")
+        // A digit pair that the reading does not mix up (2↔4), or two digits off: not this purchase.
+        expect(match(72_999, "2032-06-02T10:00:00Z", [bank("b1", -74_999, "2032-06-02T10:00:00Z")]), .none, "unknown digit pair")
+        expect(match(72_999, "2032-06-02T10:00:00Z", [bank("b1", -73_899, "2032-06-02T10:00:00Z")]), .none, "two digits off")
+        // A receipt without time: the time does not count and fixes nothing.
+        expect(match(12_345, "2032-06-02T00:00:00Z", time: false, [bank("b1", -12_345, "2032-06-02T23:00:00Z")]),
+               .confirmed(identity: "b1", timeFix: nil), "no time")
+        // A manual entry, a cancelled purchase and money coming in are never the purchase.
+        expect(match(12_345, "2032-06-02T10:00:00Z", [bank("manual:1", -12_345, "2032-06-02T10:00:00Z")]), .none, "manual entry")
+        expect(match(12_345, "2032-06-02T10:00:00Z", [bank("b1", -12_345, "2032-06-02T10:00:00Z", status: "Отменена")]), .none, "cancelled")
+        expect(match(12_345, "2032-06-02T10:00:00Z", [bank("b1", 12_345, "2032-06-02T10:00:00Z", kind: "income")]), .none, "income")
+        // A purchase still «в обработке» is the purchase.
+        expect(match(12_345, "2032-06-02T10:00:00Z", [bank("b1", -12_345, "2032-06-02T10:01:00Z", status: "В обработке")]),
+               .confirmed(identity: "b1", timeFix: at("2032-06-02T10:01:00Z")), "pending purchase")
+        // The exact sum wins over a misread one of the same day.
+        expect(match(72_999, "2032-06-02T10:00:00Z", time: false, [bank("b2", -73_999, "2032-06-02T10:00:00Z"), bank("b1", -72_999, "2032-06-02T10:00:00Z")]),
+               .confirmed(identity: "b1", timeFix: nil), "exact before misread")
+        // No sum or no date read: nothing to look for.
+        expect(match(nil, "2032-06-02T10:00:00Z", [bank("b1", -12_345, "2032-06-02T10:00:00Z")]), .none, "no sum")
+        expect(match(12_345, nil, [bank("b1", -12_345, "2032-06-02T10:00:00Z")]), .none, "no date")
+        // At most five candidates.
+        let many = (1...7).map { bank("b\($0)", -10_000, "2032-06-02T10:00:00Z") }
+        if case .ambiguous(let ids) = match(10_000, "2032-06-02T10:00:00Z", many) {
+            require(ids == ["b1", "b2", "b3", "b4", "b5"], "at most five candidates, in a stable order: \(ids)")
+        } else { require(false, "seven equal purchases are ambiguous") }
+        require(ReceiptBankMatch.amountScore(receipt: 1_000, bank: 1_000) == 100 && ReceiptBankMatch.amountScore(receipt: 2_000, bank: 3_000) == 40
+                && ReceiptBankMatch.amountScore(receipt: 2_000, bank: 30_000) == nil, "amount score")
+    }
+
     static func testForecastFixes() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -4115,6 +4174,7 @@ struct FinanceEngineTests {
         testForecastFixes()
         testConfirmedNature()
         testAppLockLogic()
+        testReceiptBankMatch()
         testAccountMovements()
         testReportSeries()
         testAccountSeries()

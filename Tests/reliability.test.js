@@ -825,3 +825,12 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.ok(lock.includes('AppLockLogic.start(store: read.state'), 'the start of the lock is decided by the tested AppLockLogic.start');
   assert.ok(lock.includes('if needsRetry { retryStore() }'), 'a Keychain that did not answer is read again on coming back');
 }
+
+// (46.40) A receipt that is already a bank purchase is offered to that purchase instead of becoming a second operation.
+{
+  const form = fs.readFileSync(path.join(__dirname, '../YandexFinance/ManualOperationFormView.swift'), 'utf8');
+  assert.ok(form.includes('ReceiptBankMatch.match(totalKopecks: amount, date: date'), 'the form looks for the bank purchase of a receipt');
+  assert.ok(form.includes('private func attach(to twin: BankOperation)'), 'the receipt can be attached to the bank purchase');
+  const attach = form.slice(form.indexOf('private func attach(to twin: BankOperation)'), form.indexOf('private func attach(to twin: BankOperation)') + 1200);
+  assert.ok(!attach.includes('manualOperations'), 'attaching never adds a manual operation');
+}

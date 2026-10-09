@@ -546,3 +546,65 @@ enum ReceiptCheckReport {
         return lines.joined(separator: "\n")
     }
 }
+
+// MARK: - Receipt and bank operation
+
+/// A bank operation the receipt may belong to: its identity in the history and what the engine reads from it.
+struct ReceiptMatchCandidate {
+    let identity: String
+    let input: FinancialOperationInput
+}
+
+enum ReceiptMatchOutcome: Equatable {
+    /// One operation clearly leads; `timeFix` is its time when the receipt has a time and the two differ by 15 minutes at most.
+    case confirmed(identity: String, timeFix: Date?)
+    /// Several are close: the owner chooses (at most five, the best first).
+    case ambiguous([String])
+    case none
+}
+
+/// Which bank purchase a receipt is (GPT stage 58 contract, DeepSeek's answer of 9 Oct). The sum leads: the same in kopecks,
+/// or one digit misread by the pairs 3↔2, 8↔6, 5↔6, 1↔7; the day of the receipt or the next/previous one; the time only
+/// refines. The sum of the receipt is never changed.
+enum ReceiptBankMatch {
+    /// The digits the reading of a receipt mixes up (either way).
+    static let digitSwaps: Set<String> = ["32", "23", "86", "68", "56", "65", "17", "71"]
+
+    static func match(totalKopecks: Int64?, date: Date?, hasTime: Bool, candidates: [ReceiptMatchCandidate],
+                      calendar: Calendar = .current) -> ReceiptMatchOutcome {
+        guard let total = totalKopecks, total > 0, let date else { return .none }
+        let receiptDay = calendar.startOfDay(for: date)
+        var ranked: [(identity: String, date: Date, score: Double)] = []
+        for candidate in candidates {
+            let input = candidate.input
+            // A purchase of the bank: not a manual entry, not cancelled; a purchase still «в обработке» counts.
+            // The cheap checks first: the form asks on every change of its fields, over the whole history.
+            guard !candidate.identity.hasPrefix(ManualOperation.identityPrefix), input.amountKopecks < 0, input.amountKopecks != Int64.min,
+                  let amountScore = amountScore(receipt: total, bank: -input.amountKopecks),
+                  let when = BankDateParser.parse(input.occurredAt),
+                  let days = calendar.dateComponents([.day], from: receiptDay, to: calendar.startOfDay(for: when)).day,
+                  abs(days) <= 1 else { continue }
+            let type = FinancialEngine.classify(input).type
+            guard type == .expense || type == .pending else { continue }
+            let timeScore = hasTime ? max(0, 60 - abs(when.timeIntervalSince(date)) / 60) : 0
+            ranked.append((candidate.identity, when, amountScore + (days == 0 ? 50 : 20) + timeScore))
+        }
+        ranked.sort { $0.score == $1.score ? $0.identity < $1.identity : $0.score > $1.score }
+        guard let best = ranked.first else { return .none }
+        if ranked.count == 1 || best.score - ranked[1].score >= 20 {
+            let fix = hasTime && abs(best.date.timeIntervalSince(date)) <= 15 * 60 ? best.date : nil
+            return .confirmed(identity: best.identity, timeFix: fix)
+        }
+        return .ambiguous(Array(ranked.prefix(5).map(\.identity)))
+    }
+
+    /// 100 for the same sum, 40 for one digit misread by a known pair (in the same number of digits), nil otherwise.
+    static func amountScore(receipt: Int64, bank: Int64) -> Double? {
+        if receipt == bank { return 100 }
+        let left = Array(String(receipt)), right = Array(String(bank))
+        guard left.count == right.count else { return nil }
+        let differing = left.indices.filter { left[$0] != right[$0] }
+        guard differing.count == 1, let at = differing.first, digitSwaps.contains(String([left[at], right[at]])) else { return nil }
+        return 40
+    }
+}
