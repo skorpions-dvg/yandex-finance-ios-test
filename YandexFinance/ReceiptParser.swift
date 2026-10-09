@@ -646,11 +646,13 @@ enum ReceiptBankMatch {
                   let when = BankDateParser.parse(input.occurredAt),
                   let days = calendar.dateComponents([.day], from: receiptDay, to: calendar.startOfDay(for: when)).day,
                   abs(days) <= 1 else { continue }
-            // «В обработке» is decided before what the row is: a pending row counts only when the bank calls it a purchase
-            // (a pending Split instalment or move between own accounts is not a receipt's purchase — GPT stage 64, R64-1).
+            // «В обработке» is decided before what the row is: a pending row counts unless it is known not to be a purchase
+            // (a pending Split instalment or move between own accounts — GPT stage 64, R64-1). 46.44 asked for the kind
+            // «expense» instead, and a pending purchase of the owner's history was no longer found (8 Oct, 1 656,87 ₽).
             // A purchase paid with Split or the points is the purchase of the receipt and stays.
             let type = FinancialEngine.classify(input).type
-            guard type == .expense || (type == .pending && input.kind == "expense") else { continue }
+            let notPurchases: Set<String> = ["installment_payment", "internal_transfer", "transfer", "refund", "interest_income", "unclassified_income"]
+            guard type == .expense || (type == .pending && !notPurchases.contains(input.kind)) else { continue }
             let timeScore = hasTime ? max(0, 60 - abs(when.timeIntervalSince(date)) / 60) : 0
             ranked.append((candidate.identity, when, amountScore + (days == 0 ? 50 : 20) + timeScore))
         }

@@ -706,6 +706,7 @@ private struct StackedBarsChart: View {
         let labels = Dictionary(uniqueKeysWithValues: buckets.map { (Self.key($0.start), label($0)) })
         let every = max(1, Int((Double(buckets.count) / 6).rounded(.up)))
         let shownKeys = keys.enumerated().filter { $0.offset % every == 0 }.map(\.element)
+        let shown = Set(shownKeys)
         Chart {
             ForEach(bars) { bar in
                 BarMark(x: .value("Период", Self.key(bar.bucket.start)), y: .value("Сумма", Double(bar.amountKopecks) / 100))
@@ -722,7 +723,11 @@ private struct StackedBarsChart: View {
         .chartXAxis {
             AxisMarks(values: shownKeys) { value in
                 AxisValueLabel {
-                    if let key = value.as(String.self), let text = labels[key] { Text(text).font(.caption2).lineLimit(1).fixedSize() }
+                    // Only the chosen days carry a label: built with the iOS 27 SDK the chart labelled every day of a
+                    // month anyway, and the labels ran into one another (46.50).
+                    if let key = value.as(String.self), shown.contains(key), let text = labels[key] {
+                        Text(text).font(.caption2).lineLimit(1).fixedSize()
+                    }
                 }
             }
         }
@@ -945,7 +950,12 @@ private struct FlowContent: View {
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 Text("+ " + reportRubles(income)).foregroundStyle(income == 0 ? Color.secondary : Color.green)
-                Text("− " + reportRubles(expense)).foregroundStyle(expense == 0 ? Color.secondary : Color.primary)
+                // A day whose refunds are larger than its purchases: «возврат +…», not «− -…» (46.50).
+                if expense < 0 {
+                    Text("возврат + " + reportRubles(-expense)).foregroundStyle(Color.green)
+                } else {
+                    Text("− " + reportRubles(expense)).foregroundStyle(expense == 0 ? Color.secondary : Color.primary)
+                }
             }
             .font(bold ? .headline : .subheadline).monospacedDigit()
         }

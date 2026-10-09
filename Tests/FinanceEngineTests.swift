@@ -99,6 +99,9 @@ struct FinanceEngineTests {
                .none, "pending instalment")
         expect(match(10_000, "2032-06-02T10:00:00Z", [bank("b1", -10_000, "2032-06-02T10:00:00Z", status: "В обработке", kind: "internal_transfer")]),
                .none, "pending own transfer")
+        // A pending purchase whose kind is not «expense» (older rows of the history) is still the purchase (46.50).
+        expect(match(165_687, "2032-06-02T00:00:00Z", time: false, [bank("b1", -165_687, "2032-06-02T18:39:00Z", status: "В обработке", kind: "purchase")]),
+               .confirmed(identity: "b1", timeFix: nil), "pending purchase of another kind")
         // A purchase still «в обработке» is the purchase.
         expect(match(12_345, "2032-06-02T10:00:00Z", [bank("b1", -12_345, "2032-06-02T10:01:00Z", status: "В обработке")]),
                .confirmed(identity: "b1", timeFix: at("2032-06-02T10:01:00Z")), "pending purchase")
