@@ -231,8 +231,9 @@ struct SplashView: View {
             let band = side * 0.15
             ZStack {
                 // The background of the icon: dark blue, lighter towards the middle, a haze along the horizon.
-                RadialGradient(colors: [Self.navy, Self.deep], center: .center, startRadius: 0,
-                               endRadius: max(geometry.size.width, geometry.size.height) * 0.65)
+                // Towards the corners into black: more depth (Gemini's second answer).
+                RadialGradient(colors: [Self.navy, Self.deep, .black], center: .center, startRadius: 0,
+                               endRadius: max(geometry.size.width, geometry.size.height) * 0.7)
                 Ellipse()
                     .fill(Self.cyan.opacity(0.16))
                     .frame(width: geometry.size.width * 1.3, height: side * 0.32)
@@ -275,9 +276,11 @@ struct SplashView: View {
                 let end = shown[index] ? arc.to : arc.from
                 Circle()
                     .trim(from: arc.from, to: end)
-                    .stroke(LinearGradient(colors: [Self.cyan.opacity(0.55), Self.blue.opacity(0.35)],
+                    .stroke(LinearGradient(colors: [Self.cyan.opacity(0.6), Self.blue.opacity(0.32), Self.deep.opacity(0.8)],
                                            startPoint: .topLeading, endPoint: .bottomTrailing),
                             style: StrokeStyle(lineWidth: band, lineCap: .butt))
+                    // Light adds to what is behind it, as through glass (Gemini's second answer).
+                    .blendMode(.screen)
                     .frame(width: side, height: side)
                 // The light edges of the glass: outside and inside.
                 Circle()
@@ -312,6 +315,7 @@ struct SplashView: View {
                     .fill(Color.white)
                     .frame(width: 12, height: 12)
                     .blur(radius: 6)
+                    .shadow(color: Self.cyan, radius: 10)
                     .offset(x: direction * (side / 2 + band / 2))
                     .opacity(Double(horizon))
             }
