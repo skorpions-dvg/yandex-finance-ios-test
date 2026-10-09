@@ -834,3 +834,11 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   const attach = form.slice(form.indexOf('private func attach(to twin: BankOperation)'), form.indexOf('private func attach(to twin: BankOperation)') + 1200);
   assert.ok(!attach.includes('manualOperations'), 'attaching never adds a manual operation');
 }
+
+// (46.41) A receipt whose day was read without a time is still matched with the bank purchase (the case of 8 Oct).
+{
+  const form = fs.readFileSync(path.join(__dirname, '../YandexFinance/ManualOperationFormView.swift'), 'utf8');
+  const twins = form.slice(form.indexOf('private var bankTwins'), form.indexOf('/// A receipt was read but its date was not'));
+  assert.ok(!/guard [^\n]*!dateIsPending/.test(twins), 'a date waiting for confirmation must not switch the search off');
+  assert.ok(twins.includes('if dateIsPending && lastScan?.date == nil { return [] }'), 'no search by the placeholder date of an unread receipt');
+}

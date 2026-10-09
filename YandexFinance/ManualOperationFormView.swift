@@ -80,12 +80,16 @@ struct ManualOperationFormView: View {
     /// The bank purchases this receipt may already be (46.40, `ReceiptBankMatch`): a receipt saved as its own operation would
     /// count the purchase twice (8 Oct: the same shop, 1 656,87 ₽, in the bank and by hand). Only for a new expense with a photo.
     private var bankTwins: [BankOperation] {
-        guard operation == nil, kind == .expense, !pendingReceipts.isEmpty, !recognizing, !dateIsPending,
-              let amount = parsedAmount else { return [] }
+        guard operation == nil, kind == .expense, !pendingReceipts.isEmpty, !recognizing, let amount = parsedAmount else { return [] }
+        // A day read without a time leaves the date «to confirm», but the day itself is the receipt's: look for the purchase by
+        // it, without the time (46.40 waited for the confirmation and so missed the very case of 8 Oct). A date that was not
+        // read at all is today's placeholder: no search by it.
+        if dateIsPending && lastScan?.date == nil { return [] }
+        let hasTime = lastScan?.dateHasTime == true && !dateIsPending
         let bank = browser.history.operations
         let candidates = bank.map { ReceiptMatchCandidate(identity: $0.identity, input: $0.financialInput) }
         let identities: [String]
-        switch ReceiptBankMatch.match(totalKopecks: amount, date: date, hasTime: lastScan?.dateHasTime == true, candidates: candidates) {
+        switch ReceiptBankMatch.match(totalKopecks: amount, date: date, hasTime: hasTime, candidates: candidates) {
         case .confirmed(let identity, _): identities = [identity]
         case .ambiguous(let list): identities = list
         case .none: return []
