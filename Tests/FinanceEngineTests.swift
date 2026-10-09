@@ -3789,6 +3789,11 @@ struct FinanceEngineTests {
                 "refund words stay a refund")
         require(FinancialEngine.classify(op(2_494, kind: "refund", category: "Супермаркеты", description: "Магазин учебный")).type == .refund,
                 "ordinary refund stays a refund")
+        // GPT stage 63 (W63-2): the category «Проценты» alone, or the phrase inside a shop's name, is not an interest payout.
+        require(FinancialEngine.classify(op(2_494, kind: "refund", category: "Проценты", description: "Магазин учебный")).type == .refund,
+                "a refund with the category «Проценты» stays a refund")
+        require(FinancialEngine.classify(op(2_494, kind: "refund", category: "Супермаркеты", description: "Учебный магазин выплата процентов")).type == .refund,
+                "the payout phrase inside a shop's name does not make income")
         // The day of the payout: no spending below zero, the interest in income.
         let payoutDay = FinancialEngine.report([op(2_494, kind: "refund", category: "Проценты", description: "Выплата процентов", date: "2032-06-02T08:00:00Z")],
                                                in: DateInterval(start: Date(timeIntervalSince1970: 1_969_747_200), duration: 86_400))

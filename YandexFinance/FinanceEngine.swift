@@ -291,10 +291,12 @@ enum FinancialEngine {
                                      ["возврат покупки", "возврат средств", "возврат оплаты", "возврат платежа", "возврат по операции",
                                       "отмена оплаты", "отмена покупки", "отмена платежа"])
         // The bank shows an interest payout with the same green arrow as a refund, and the collector then tags its row
-        // «refund»; the bank's own words «Выплата процентов» / category «Проценты» decide: it is income (9 Oct 2026:
-        // 24,94 ₽ of interest lowered the day's spending instead of being income).
-        let interestWording = containsAny(combined, ["начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"])
-        if kind == "refund" && amount > 0 && !split && !refundText && category != "возврат" && (category == "проценты" || interestWording) {
+        // «refund»; the bank's own title of the payout («Выплата процентов…») decides: it is income (9 Oct 2026: 24,94 ₽ of
+        // interest lowered the day's spending instead of being income). Only the title begins with it: the category
+        // «Проценты» alone or the words inside a shop's name do not turn a refund into income (GPT stage 63, W63-2).
+        let interestTitle = ["начисление процентов", "начислены проценты", "выплата процентов", "выплачены проценты", "процентный доход"]
+            .contains { description.hasPrefix($0) }
+        if kind == "refund" && amount > 0 && !split && !refundText && category != "возврат" && interestTitle {
             return FinancialAssessment(type: .interestIncome, reason: "Начисленные проценты считаются доходом.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
         let explicitRefund = kind == "refund" || category == "возврат" || category.contains("возврат покупки") || refundText

@@ -21,7 +21,9 @@ struct SummaryProvider: TimelineProvider {
         let now = Date()
         let state = WidgetShared.read()
         // A second entry at midnight marks the day's sums as old; the widget does not recount anything itself.
-        let midnight = Calendar.current.startOfDay(for: now.addingTimeInterval(86_400))
+        let calendar = Calendar.current
+        // The next day by the calendar: on the day the clocks go back it has 25 hours (GPT stage 63, W63-5).
+        let midnight = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now.addingTimeInterval(86_400)
         // The file is read again every 30 minutes (about 48 times a day, within the system's budget): the app's request to
         // redraw, sent as it goes to the background, may be put off by the system for a long time.
         let next = min(now.addingTimeInterval(30 * 60), midnight)
@@ -50,8 +52,11 @@ private struct Shown {
 
     init(_ summary: WidgetSummary, at date: Date) {
         self.summary = summary
-        today = summary.dayKey == WidgetShared.dayKey(date)
-        month = summary.monthKey == WidgetShared.monthKey(date)
+        // Taken in another time zone, the day and the month had other bounds: dashes until the app writes a new summary
+        // (GPT stage 63, W63-3).
+        let sameZone = summary.timeZoneIdentifier == TimeZone.current.identifier
+        today = sameZone && summary.dayKey == WidgetShared.dayKey(date)
+        month = sameZone && summary.monthKey == WidgetShared.monthKey(date)
     }
 
     var reserve: Int64? { month ? summary.reserveEndOfMonthKopecks : nil }
@@ -231,8 +236,8 @@ struct SummaryWidgetView: View {
     private func budgetBlock(_ budget: (limit: Int64, spent: Int64), short: Bool) -> some View {
         let level = WidgetShared.budgetLevel(spent: budget.spent, limit: budget.limit)
         let color: Color = level == .exceeded ? .red : level == .warning ? .orange : Palette.bar
-        let left = budget.limit - budget.spent
-        let percent = Int(Double(max(0, budget.spent)) * 100 / Double(budget.limit))
+        let left = budget.limit - budget.spent  // both within a trillion rubles (`WidgetSummary.isSane`)
+        let percent = Int(min(9_999, Double(max(0, budget.spent)) * 100 / Double(budget.limit)))
         let words = left >= 0 ? "осталось " + rubles(left) : "превышен на " + rubles(-left)
         return VStack(alignment: .leading, spacing: 4) {
             HStack {

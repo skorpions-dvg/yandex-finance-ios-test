@@ -131,6 +131,18 @@ struct WidgetSummaryTests {
         check(WidgetShared.budgetLevel(spent: 6_000_000, limit: 6_000_000) == .warning, "100 % warning, not exceeded")
         check(WidgetShared.budgetLevel(spent: 6_000_001, limit: 6_000_000) == .exceeded, "over the limit")
 
+        // GPT stage 63 (W63-4): a damaged file with sums near the limits of Int64 is not read.
+        var damaged = full
+        damaged.budgetSpentKopecks = Int64.max
+        check(full.isSane && !damaged.isSane, "a summary with absurd sums is not read")
+        var crowded = full
+        crowded.topCategories = groups
+        check(!crowded.isSane, "more than three groups is not a summary of ours")
+        var negative = full
+        negative.reserveEndOfMonthKopecks = Int64.min
+        check(!negative.isSane && WidgetShared.summary(reserve: -5_000_000_000, spentToday: 0, spentMonth: 0, now: date, showSums: true).isSane,
+              "Int64.min is not read; a large real minus is")
+
         if failures > 0 {
             print("WidgetSummaryTests: \(failures) failed")
             exit(1)

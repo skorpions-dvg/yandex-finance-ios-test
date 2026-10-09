@@ -197,7 +197,13 @@ struct ContentView: View {
         // The widget's summary follows every change of the history, the switch in Settings and the new day on opening.
         .onReceive(browser.$history) { _ in scheduleWidgetUpdate() }
         .onChange(of: browser.loadingHistory) { _, _ in scheduleWidgetUpdate() }
-        .onChange(of: widgetShowsSums) { _, _ in scheduleWidgetUpdate() }
+        // Switching the sums off hides them at once, not after the pause of the other changes (GPT stage 63, W63-1).
+        .onChange(of: widgetShowsSums) { _, shows in
+            if shows { scheduleWidgetUpdate() } else {
+                widgetUpdate?.cancel()
+                publishWidget()
+            }
+        }
         .onChange(of: reserveBufferRubles) { _, _ in scheduleWidgetUpdate() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in scheduleWidgetUpdate() }
         // Leaving the app writes the summary at once: opening Horizon for a moment (the bank check still running) must be enough.
@@ -230,16 +236,17 @@ struct ContentView: View {
 
     /// The same numbers as the home screen: the reserve card and the spending of today and of the month to date.
     private func publishWidget() {
+        let now = Date()
+        // The sums switched off: hidden whatever the state of the history (the switch must not wait for it).
+        guard widgetShowsSums else {
+            WidgetShared.publish(WidgetShared.summary(reserve: nil, spentToday: nil, spentMonth: nil, now: now, showSums: false))
+            return
+        }
         // While the history is still opening or the vault is closed the last summary stays.
         guard !browser.loadingHistory, browser.storageAvailable else { return }
         let history = browser.history
         guard !history.allOperations.isEmpty else {
             WidgetShared.publish(nil)
-            return
-        }
-        let now = Date()
-        guard widgetShowsSums else {
-            WidgetShared.publish(WidgetShared.summary(reserve: nil, spentToday: nil, spentMonth: nil, now: now, showSums: false))
             return
         }
         presentation.prepare(history)

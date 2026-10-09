@@ -29,6 +29,15 @@ struct WidgetSummary: Codable, Equatable {
     /// The largest expense groups of the month to date, largest first (at most three; «Отчёты → Структура»).
     var topCategories: [WidgetCategory]?
 
+    /// Every sum within a trillion rubles: a damaged file is not read (its sums would overflow the widget's arithmetic —
+    /// GPT stage 63, W63-4).
+    var isSane: Bool {
+        let limit: Int64 = 100_000_000_000_000
+        let sums = [reserveEndOfMonthKopecks, spentTodayKopecks, spentMonthKopecks, budgetLimitKopecks, budgetSpentKopecks].compactMap { $0 }
+            + (topCategories ?? []).map(\.kopecks)
+        return sums.allSatisfy { $0 > -limit && $0 < limit } && (topCategories?.count ?? 0) <= 3
+    }
+
     /// The same numbers for the same day: rewriting it would only spend the widget's reloads.
     func sameContent(as other: WidgetSummary) -> Bool {
         var a = self, b = other
@@ -184,7 +193,8 @@ enum WidgetShared {
         guard FileManager.default.fileExists(atPath: url.path) else { return .empty }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let data = try? Data(contentsOf: url), let summary = try? decoder.decode(WidgetSummary.self, from: data) else { return .unreadable }
+        guard let data = try? Data(contentsOf: url), let summary = try? decoder.decode(WidgetSummary.self, from: data),
+              summary.isSane else { return .unreadable }
         return .summary(summary)
     }
 
@@ -206,6 +216,12 @@ enum WidgetShared {
         default: break
         }
         do { try write(summary) } catch {
+            // A summary that hides the sums must not leave the old one with them: then the file goes (GPT stage 63, W63-1).
+            if summary?.sumsHidden == true, (try? write(nil)) != nil {
+                lastPublish = stamp + " · суммы убраны (запись не удалась, файл удалён)"
+                WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
+                return
+            }
             lastPublish = stamp + " · ошибка записи: " + error.localizedDescription
             return
         }
