@@ -852,7 +852,7 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   const views = fs.readFileSync(path.join(__dirname, '../YandexFinance/SecurityViews.swift'), 'utf8');
   const splash = views.slice(views.indexOf('struct SplashView'), views.indexOf('/// Set, change or switch off the code'));
   assert.ok(splash.includes('private static let deep = Color(red: 0.02, green: 0.05, blue: 0.13)'), 'the greeting is on the dark blue of the icon');
-  assert.ok(fs.readFileSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/LaunchBackground.colorset/Contents.json'), 'utf8').includes('"blue" : "0.130", "green" : "0.050", "red" : "0.020"'), 'the launch screen has the same dark blue (no flash)');
+  assert.ok(fs.readFileSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/LaunchNavy.colorset/Contents.json'), 'utf8').includes('"blue" : "0.130", "green" : "0.050", "red" : "0.020"'), 'the launch screen has the same dark blue (no flash)');
   assert.ok(splash.includes('.onTapGesture { finish() }'), 'a tap closes the greeting');
   assert.ok(splash.includes('while !isReady && waited < 4') && !/while !ready/.test(splash), 'the wait reads the live state, not the value the task began with');
   assert.ok(/while !isReady && waited < 4 \{[\s\S]{0,120}\}\s*try\? await Task\.sleep\(for: \.seconds\(0\.8\)\)/.test(splash), 'the greeting stays 0,8 s on view after the history is read');
@@ -869,4 +869,12 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.ok(home.includes('Task.detached(priority: .userInitiated)') && home.includes('FinancialEngine.monthForecast(inputs'), 'the forecast is computed off the main thread');
   const cache = fs.readFileSync(path.join(__dirname, '../YandexFinance/FinancePresentationCache.swift'), 'utf8');
   assert.ok(cache.includes('guard generation == self.generation else { return false }'), 'a forecast of an older history is not kept');
+}
+
+// (46.49) The launch colour has a new name: iOS kept its picture of the old grey launch screen even after a restart, and a new
+// name makes it draw the screen again.
+{
+  const plist = fs.readFileSync(path.join(__dirname, '../YandexFinance/Info.plist'), 'utf8');
+  assert.ok(plist.includes('<string>LaunchNavy</string>') && !fs.existsSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/LaunchBackground.colorset')),
+            'the launch screen uses the renamed dark blue colour');
 }
