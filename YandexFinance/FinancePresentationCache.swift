@@ -36,8 +36,11 @@ final class FinancePresentationCache {
     }
 
     private static func bankLinks(_ history: SavedHistory) -> [String] {
-        (history.accounts ?? []).filter { $0.tracksBankCard || $0.tracksSave == true }
-            .map { "\($0.id)|\($0.tracksBankCard)|\($0.tracksSave ?? false)" }
+        // The first account of each link is the one the operations follow (`SavedHistory.financialInputs`); the order of the
+        // linked accounts among themselves means nothing else.
+        let accounts = history.accounts ?? []
+        return ["card:" + (accounts.first { $0.tracksBankCard }?.id.uuidString ?? "-"),
+                "save:" + (accounts.first { $0.tracksSave == true }?.id.uuidString ?? "-")]
     }
 
     /// Keys of values made from the accounts: the balances of accounts, of the reserve, the pages of one account.

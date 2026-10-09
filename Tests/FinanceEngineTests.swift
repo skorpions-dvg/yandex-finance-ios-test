@@ -1482,6 +1482,18 @@ struct FinanceEngineTests {
         save.tracksSave = true
         require(history.bankBalance(for: cardAccount) == 8_082_995 && history.bankBalance(for: save) == 7_000_000 && history.bankBalance(for: card) == nil,
                 "the card and Save accounts get the bank's balances, others none")
+        // the dates of the readings (GPT stage 61): an old copy keeps the date of Save when only the card is read now
+        let hourAgo = day.addingTimeInterval(-3_600)
+        let legacy = BankBalanceReading(cardKopecks: 100_000, saveKopecks: 7_000_010, readAt: hourAgo)
+        let cardOnly = legacy.updated(card: 123_456, save: nil, at: day)
+        require(cardOnly.cardReadAt == day && cardOnly.saveReadAt == hourAgo && cardOnly.saveKopecks == 7_000_010 && cardOnly.readAt == day,
+                "a reading of the card alone does not make Save fresh")
+        var dated = SavedHistory()
+        dated.bankBalances = cardOnly
+        dated.lastSync = day.addingTimeInterval(-30)
+        require(dated.bankBalanceIsFresh(for: cardAccount) && !dated.bankBalanceIsFresh(for: save), "the card is fresh, Save is not")
+        dated.lastSync = day.addingTimeInterval(1)
+        require(!dated.bankBalanceIsFresh(for: cardAccount), "an operation saved after the reading makes it old, even a second later")
     }
 
     /// The range of the forecast from the errors of the past forecasts of the same day (decision 4).

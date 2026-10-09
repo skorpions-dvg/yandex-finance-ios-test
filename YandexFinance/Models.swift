@@ -875,6 +875,18 @@ struct BankBalanceReading: Codable, Equatable {
     /// When each balance itself was read (older copies have none: then `readAt`).
     var cardReadAt: Date?
     var saveReadAt: Date?
+
+    /// A new reading of `card` and/or `save` at `now`. A balance not read now keeps its own time: an old copy had one time for
+    /// both, so each balance first takes that time as its own (B61-3, GPT stage 61); the shared time moves on.
+    func updated(card: Int64?, save: Int64?, at now: Date) -> BankBalanceReading {
+        var next = self
+        if next.cardKopecks != nil, next.cardReadAt == nil { next.cardReadAt = readAt }
+        if next.saveKopecks != nil, next.saveReadAt == nil { next.saveReadAt = readAt }
+        if let card { next.cardKopecks = card; next.cardReadAt = now }
+        if let save { next.saveKopecks = save; next.saveReadAt = now }
+        next.readAt = now
+        return next
+    }
 }
 
 extension SavedHistory {
@@ -897,7 +909,8 @@ extension SavedHistory {
     /// for aligning (an older one may miss operations of the bank or count ones we already have).
     func bankBalanceIsFresh(for account: Account) -> Bool {
         guard let read = bankBalanceReadAt(for: account) else { return false }
-        return read >= (lastSync ?? .distantPast).addingTimeInterval(-60)
+        // Strictly after: an operation saved even a second after the reading may be missing from it (B61-4).
+        return read >= (lastSync ?? .distantPast)
     }
 
     /// The operations of the last `days` days that move `account`, for the explanation of a difference with the bank.

@@ -133,6 +133,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
                 // The bank's main page is open for a moment to read the balances: that is not a request to sign in.
                 if self.readingBalances { continue }
                 let state = await self.bankPageState()
+                // The answer may come late: whatever started meanwhile (a reading, a refresh) decides, not this answer.
+                guard !Task.isCancelled, self.foreground, self.autoUpdate, !self.busy else { return }
+                if self.readingBalances { continue }
                 if state == .codeRequested {
                     self.automaticTask = nil
                     self.requestSignIn()
@@ -146,7 +149,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             }
             guard let self else { return }
             self.automaticTask = nil
-            guard self.foreground, self.autoUpdate, !self.busy else { return }
+            // A reading of the balances still on the main page is not a request to sign in.
+            guard self.foreground, self.autoUpdate, !self.busy, !self.readingBalances else { return }
             // A page that loaded but shows no history means the bank wants a sign-in; without any page we are offline.
             if self.webView.url != nil && !self.webView.isLoading {
                 self.requestSignIn()
@@ -385,8 +389,10 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         defer { readingBalances = false }
         balanceReaderGeneration += 1
         let generation = balanceReaderGeneration
-        // Still this reading's page: no refresh, no scan and no sign-in started meanwhile.
-        func owns() -> Bool { balanceReaderGeneration == generation && !busy && !signInRequested }
+        let session = signInGeneration
+        // Still this reading's page: no refresh, no scan and no sign-in started meanwhile (a sign-in started and cancelled
+        // meanwhile changes its number, so the reading does not come back to life).
+        func owns() -> Bool { balanceReaderGeneration == generation && signInGeneration == session && !busy && !signInRequested }
         if await readBalancesOnPage(owns) { return }
         guard owns() else { return }
         let tap = """
@@ -442,11 +448,7 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let save = (found["save"] as? String).flatMap(FinancialEngine.rublesKopecks)
         guard card != nil || save != nil else { return false }
         let now = Date()
-        var reading = history.bankBalances ?? BankBalanceReading(readAt: now)
-        if let card { reading.cardKopecks = card; reading.cardReadAt = now }
-        if let save { reading.saveKopecks = save; reading.saveReadAt = now }
-        reading.readAt = now
-        let read = reading
+        let read = (history.bankBalances ?? BankBalanceReading(readAt: now)).updated(card: card, save: save, at: now)
         // Saved or not: a failed save is reported by `updateUserData` and is not taken for a reading.
         return updateUserData { $0.bankBalances = read }
     }
@@ -491,7 +493,9 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
         let probe = """
         const visible = element => !!element && element.getClientRects().length > 0;
         const text = document.body?.innerText || '';
+        const notCode = /post|zip|index|индекс|почт|promo|промо|coupon|купон/i;
         const codeField = [...document.querySelectorAll('input')].some(input => visible(input) &&
+            !notCode.test([input.name, input.id, input.placeholder].filter(Boolean).join(' ')) &&
             (input.autocomplete === 'one-time-code' || /код/i.test(input.placeholder || '') || /otp|sms|code/i.test(input.name || '')));
         if (codeField || /введите код|код из sms|код из смс|код подтверждения/i.test(text)) return 'code';
         if (location.hostname === 'bank.yandex.ru' && location.pathname === '/my/transactions-history' && text.includes('Все карты и счета')) return 'history';
