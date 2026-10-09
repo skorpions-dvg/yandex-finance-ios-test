@@ -16,7 +16,8 @@ concurrency:
 jobs:
   build:
     if: ${{ github.event.repository.private == false }}
-    runs-on: macos-latest
+    # Xcode 27 and the iOS 27 SDK (block 5, 46.44): GitHub's image `xcode-27` (macOS 27, Xcode 27.0 by default; public preview).
+    runs-on: xcode-27
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
