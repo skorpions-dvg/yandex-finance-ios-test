@@ -840,5 +840,6 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   const form = fs.readFileSync(path.join(__dirname, '../YandexFinance/ManualOperationFormView.swift'), 'utf8');
   const twins = form.slice(form.indexOf('private var bankTwins'), form.indexOf('/// A receipt was read but its date was not'));
   assert.ok(!/guard [^\n]*!dateIsPending/.test(twins), 'a date waiting for confirmation must not switch the search off');
-  assert.ok(twins.includes('if dateIsPending && lastScan?.date == nil { return [] }'), 'no search by the placeholder date of an unread receipt');
+  assert.ok(twins.includes('if dateIsPending && !(lastScan?.date.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false) { return [] }'),
+            'no search by the placeholder date of an unread or future-dated receipt');
 }

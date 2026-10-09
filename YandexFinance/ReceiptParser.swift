@@ -303,12 +303,13 @@ enum ReceiptParser {
         var goods = zip(names, bands).map { ReceiptGood(name: $0, kopecks: lineTotal($1)) }
         guard let expectedTotal else { return goods }
         if !repeats.isEmpty {
-            // Kept when the total adds up with them; otherwise they are the same line read twice (as before 46.41).
-            let all = goods.compactMap(\.kopecks).reduce(0, +)
-            if all != expectedTotal {
-                let dropped = Set(repeats)
-                goods = goods.indices.filter { !dropped.contains($0) }.map { goods[$0] }
-                bands = bands.indices.filter { !dropped.contains($0) }.map { bands[$0] }
+            // Dropped only when the total adds up without them: then they are the same line read twice. When it adds up with
+            // neither, both stay and the sum of the goods does not match — the owner checks (GPT stage 64, R64-3).
+            let dropped = Set(repeats)
+            let without = goods.indices.filter { !dropped.contains($0) }
+            if without.compactMap({ goods[$0].kopecks }).reduce(0, +) == expectedTotal {
+                goods = without.map { goods[$0] }
+                bands = without.map { bands[$0] }
             }
         }
         return reconcilePrices(goods, bands: bands, expected: expectedTotal)
@@ -347,21 +348,28 @@ enum ReceiptParser {
 
     /// Names read with the correction of words and prices read exactly are the same goods only if the lines are alike; a pass that
     /// missed a line shifts the prices to other names, and then nothing is paired.
-    /// Each name takes the price of the free line most like it, the first one of equally alike lines (46.41: two yoghurts of one
-    /// brand were alike enough to be paired by their order, and their prices swapped when the passes listed them differently;
-    /// two goods of the same name still pair in their order). Nothing is paired unless every name finds a line alike enough.
+    /// Names and priced lines are paired the closest pairs first, over the whole list (46.41: two yoghurts of one brand were
+    /// paired by their order and their prices swapped; GPT stage 64, R64-4: a general name took the line of an exact one).
+    /// Equally close pairs go in their order, so two goods of the same name still pair in their order. Nothing is paired
+    /// unless every name gets a line alike enough.
     static func pairGoods(named: [ReceiptGood], priced: [ReceiptGood]) -> [ReceiptGood]? {
         guard !named.isEmpty, named.count == priced.count else { return nil }
-        var used = Set<Int>()
-        var chosen: [Int] = []
-        for good in named {
-            let scores = priced.map { similarity(good.name, $0.name) }
-            let free = priced.indices.filter { !used.contains($0) }
-            guard let best = free.max(by: { scores[$0] < scores[$1] || (scores[$0] == scores[$1] && $0 > $1) }), scores[best] >= 0.3 else { return nil }
-            used.insert(best)
-            chosen.append(best)
+        var pairs: [(name: Int, line: Int, score: Double)] = []
+        for i in named.indices {
+            for j in priced.indices {
+                let score = similarity(named[i].name, priced[j].name)
+                if score >= 0.3 { pairs.append((i, j, score)) }
+            }
         }
-        return zip(named, chosen).map { ReceiptGood(name: $0.name, kopecks: priced[$1].kopecks) }
+        pairs.sort { $0.score != $1.score ? $0.score > $1.score : ($0.name != $1.name ? $0.name < $1.name : $0.line < $1.line) }
+        var lineOf: [Int: Int] = [:]
+        var taken = Set<Int>()
+        for pair in pairs where lineOf[pair.name] == nil && !taken.contains(pair.line) {
+            lineOf[pair.name] = pair.line
+            taken.insert(pair.line)
+        }
+        guard lineOf.count == named.count else { return nil }
+        return named.indices.map { ReceiptGood(name: named[$0].name, kopecks: priced[lineOf[$0]!].kopecks) }
     }
 
     /// How alike two texts are, 0…1 (the share of common pairs of letters; letters and digits only, case ignored).
@@ -638,8 +646,11 @@ enum ReceiptBankMatch {
                   let when = BankDateParser.parse(input.occurredAt),
                   let days = calendar.dateComponents([.day], from: receiptDay, to: calendar.startOfDay(for: when)).day,
                   abs(days) <= 1 else { continue }
+            // «В обработке» is decided before what the row is: a pending row counts only when the bank calls it a purchase
+            // (a pending Split instalment or move between own accounts is not a receipt's purchase — GPT stage 64, R64-1).
+            // A purchase paid with Split or the points is the purchase of the receipt and stays.
             let type = FinancialEngine.classify(input).type
-            guard type == .expense || type == .pending else { continue }
+            guard type == .expense || (type == .pending && input.kind == "expense") else { continue }
             let timeScore = hasTime ? max(0, 60 - abs(when.timeIntervalSince(date)) / 60) : 0
             ranked.append((candidate.identity, when, amountScore + (days == 0 ? 50 : 20) + timeScore))
         }

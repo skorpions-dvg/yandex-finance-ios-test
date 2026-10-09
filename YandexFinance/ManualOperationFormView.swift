@@ -84,7 +84,8 @@ struct ManualOperationFormView: View {
         // A day read without a time leaves the date «to confirm», but the day itself is the receipt's: look for the purchase by
         // it, without the time (46.40 waited for the confirmation and so missed the very case of 8 Oct). A date that was not
         // read at all is today's placeholder: no search by it.
-        if dateIsPending && lastScan?.date == nil { return [] }
+        // A date read as a day to come leaves today's placeholder in the form: not a day of the receipt (GPT stage 64, R64-2).
+        if dateIsPending && !(lastScan?.date.map { Calendar.current.isDate($0, inSameDayAs: date) } ?? false) { return [] }
         let hasTime = lastScan?.dateHasTime == true && !dateIsPending
         let bank = browser.history.operations
         let candidates = bank.map { ReceiptMatchCandidate(identity: $0.identity, input: $0.financialInput) }

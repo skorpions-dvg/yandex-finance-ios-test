@@ -93,6 +93,12 @@ struct FinanceEngineTests {
         expect(match(12_345, "2032-06-02T10:00:00Z", [bank("manual:1", -12_345, "2032-06-02T10:00:00Z")]), .none, "manual entry")
         expect(match(12_345, "2032-06-02T10:00:00Z", [bank("b1", -12_345, "2032-06-02T10:00:00Z", status: "Отменена")]), .none, "cancelled")
         expect(match(12_345, "2032-06-02T10:00:00Z", [bank("b1", 12_345, "2032-06-02T10:00:00Z", kind: "income")]), .none, "income")
+        // GPT stage 64 (R64-1): a pending Split instalment or move between own accounts is not the purchase; a purchase paid
+        // with the points or Split is.
+        expect(match(10_000, "2032-06-02T10:00:00Z", [bank("b1", -10_000, "2032-06-02T10:00:00Z", status: "В обработке", kind: "installment_payment")]),
+               .none, "pending instalment")
+        expect(match(10_000, "2032-06-02T10:00:00Z", [bank("b1", -10_000, "2032-06-02T10:00:00Z", status: "В обработке", kind: "internal_transfer")]),
+               .none, "pending own transfer")
         // A purchase still «в обработке» is the purchase.
         expect(match(12_345, "2032-06-02T10:00:00Z", [bank("b1", -12_345, "2032-06-02T10:01:00Z", status: "В обработке")]),
                .confirmed(identity: "b1", timeFix: at("2032-06-02T10:01:00Z")), "pending purchase")
@@ -876,6 +882,14 @@ struct FinanceEngineTests {
         let once = ReceiptParser.parseText([header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 100.00"], now: now, calendar: calendar)
         require(once.goods.map(\.kopecks) == [10_000], "one good read twice: \(once.goods)")
         require(ReceiptParser.itemEntries(in: [header, "Товар учебный 100.00", "Товар учебный 100.00"]).count == 1, "without a total a repeated line is one good")
+        // GPT stage 64 (R64-3): a total that adds up with neither one nor two equal lines keeps both (the owner checks the sum).
+        let neither = ReceiptParser.parseText([header, "Товар учебный 100.00", "Товар учебный 100.00", "ИТОГО 250.00"], now: now, calendar: calendar)
+        require(neither.goods.map(\.kopecks) == [10_000, 10_000], "no proof of a repeat: both lines stay: \(neither.goods)")
+        // GPT stage 64 (R64-4): an exact name keeps its own line, the general one gets the rest.
+        let general = [ReceiptGood(name: "Йогурт учебный"), ReceiptGood(name: "Йогурт учебный вишня")]
+        let lines = [ReceiptGood(name: "Йогурт учебный вишня", kopecks: 12_000), ReceiptGood(name: "Йогурт учебный клубника", kopecks: 8_000)]
+        require(ReceiptParser.pairGoods(named: general, priced: lines)?.map(\.kopecks) == [8_000, 12_000], "the exact name keeps its line")
+        require(ReceiptParser.pairGoods(named: Array(general.reversed()), priced: lines)?.map(\.kopecks) == [12_000, 8_000], "in either order")
         // Similar names listed in another order by the second pass: each name keeps its own price.
         let first = [ReceiptGood(name: "Йогурт учебный клубника"), ReceiptGood(name: "Йогурт учебный вишня")]
         let second = [ReceiptGood(name: "Йогурт учебный вишня", kopecks: 12_000), ReceiptGood(name: "Йогурт учебный клубника", kopecks: 8_000)]
