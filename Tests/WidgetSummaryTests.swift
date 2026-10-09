@@ -76,6 +76,28 @@ struct WidgetSummaryTests {
         let json = (try? encoder.encode(unknown)).map { String(decoding: $0, as: UTF8.self) } ?? ""
         check(!json.contains("\"spentTodayKopecks\":0"), "unknown is not zero")
 
+        // The real summary: the sums as given; switched off — no sum at all, only the mark.
+        let shown = WidgetShared.summary(reserve: -1_297_800, spentToday: 0, spentMonth: 4_500_000, now: date, showSums: true)
+        check(shown.reserveEndOfMonthKopecks == -1_297_800 && shown.spentTodayKopecks == 0 && shown.spentMonthKopecks == 4_500_000
+              && shown.sumsHidden == nil && shown.label == nil, "summary keeps the sums")
+        let hidden = WidgetShared.summary(reserve: -1_297_800, spentToday: 0, spentMonth: 4_500_000, now: date, showSums: false)
+        check(hidden.reserveEndOfMonthKopecks == nil && hidden.spentTodayKopecks == nil && hidden.spentMonthKopecks == nil
+              && hidden.sumsHidden == true, "hidden summary has no sums")
+        let hiddenJSON = (try? encoder.encode(hidden)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        check(!hiddenJSON.contains("1297800") && !hiddenJSON.contains("4500000"), "hidden sums never reach the file")
+        // Same numbers later the same day: no rewrite; another number or another day: rewrite.
+        let later = WidgetShared.summary(reserve: -1_297_800, spentToday: 0, spentMonth: 4_500_000, now: date.addingTimeInterval(600), showSums: true)
+        check(shown.sameContent(as: later), "same content ignores the time")
+        let changed = WidgetShared.summary(reserve: -1_297_800, spentToday: 100, spentMonth: 4_500_100, now: date, showSums: true)
+        check(!shown.sameContent(as: changed), "changed sum is new content")
+        let nextDay = WidgetShared.summary(reserve: -1_297_800, spentToday: 0, spentMonth: 4_500_000, now: date.addingTimeInterval(86_400), showSums: true)
+        check(!shown.sameContent(as: nextDay), "a new day is new content")
+        check(!shown.sameContent(as: hidden), "switching the sums off is new content")
+        // A file of 46.34 (no sumsHidden field) still opens.
+        let old = #"{"schemaVersion":1,"currency":"RUB","reserveEndOfMonthKopecks":123456,"updatedAt":"2025-10-09T08:53:20Z","dayKey":"2025-10-09","monthKey":"2025-10","timeZoneIdentifier":"UTC","label":"A"}"#
+        let oldSummary = try? decoder.decode(WidgetSummary.self, from: Data(old.utf8))
+        check(oldSummary?.reserveEndOfMonthKopecks == 123_456 && oldSummary?.sumsHidden == nil, "old file opens")
+
         if failures > 0 {
             print("WidgetSummaryTests: \(failures) failed")
             exit(1)

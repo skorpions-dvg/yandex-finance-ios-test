@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 /// The only thing the app hands to the Home Screen widget: three ready sums and when they were taken. No operations,
 /// accounts, payees or keys leave the app; the widget never reads the vault and computes nothing itself.
@@ -16,6 +19,16 @@ struct WidgetSummary: Codable, Equatable {
     var timeZoneIdentifier: String
     /// The widget test marks which button wrote the file («A», «B»); a real summary leaves it nil.
     var label: String?
+    /// «Суммы в виджете» is off: the widget shows only the name, every sum is nil.
+    var sumsHidden: Bool?
+
+    /// The same numbers for the same day: rewriting it would only spend the widget's reloads.
+    func sameContent(as other: WidgetSummary) -> Bool {
+        var a = self, b = other
+        a.updatedAt = .distantPast
+        b.updatedAt = .distantPast
+        return a == b
+    }
 }
 
 enum WidgetShared {
@@ -66,6 +79,16 @@ enum WidgetShared {
 
     static func monthKey(_ date: Date, calendar: Calendar = .current) -> String {
         String(dayKey(date, calendar: calendar).prefix(7))
+    }
+
+    /// The summary of the app's own numbers (the reserve card and the spending of today and of the month on the home screen).
+    /// With the sums switched off nothing but the date goes to the widget.
+    static func summary(reserve: Int64?, spentToday: Int64?, spentMonth: Int64?, now: Date, showSums: Bool) -> WidgetSummary {
+        WidgetSummary(reserveEndOfMonthKopecks: showSums ? reserve : nil,
+                      spentTodayKopecks: showSums ? spentToday : nil,
+                      spentMonthKopecks: showSums ? spentMonth : nil,
+                      updatedAt: now, dayKey: dayKey(now), monthKey: monthKey(now),
+                      timeZoneIdentifier: TimeZone.current.identifier, sumsHidden: showSums ? nil : true)
     }
 
     /// Fictional sums for the widget test; nothing of the user's history.
@@ -128,5 +151,19 @@ enum WidgetShared {
         guard let data = try? Data(contentsOf: url), let summary = try? decoder.decode(WidgetSummary.self, from: data) else { return .unreadable }
         return .summary(summary)
     }
+
+#if canImport(WidgetKit)
+    /// Writes the summary (nil removes it) and asks the widget to redraw, but only when it differs from what the widget
+    /// already shows: the system gives a widget a limited number of reloads a day.
+    static func publish(_ summary: WidgetSummary?) {
+        switch (read(), summary) {
+        case (.summary(let old), .some(let new)) where old.sameContent(as: new): return
+        case (.empty, .none), (.noGroup, _): return
+        default: break
+        }
+        do { try write(summary) } catch { return }
+        WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
+    }
+#endif
 #endif
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 @main
@@ -57,6 +58,9 @@ struct ContentView: View {
     /// Tab pages with a screen pushed over their root. On such a page the pages do not turn under the finger: the swipe to the
     /// right is the system «back» (the two gestures fought, and every other swipe opened the neighbouring tab).
     @StateObject private var pagerLocks = PagerLocks()
+    /// «Настройки → Суммы в виджете».
+    @AppStorage("widgetShowsSums") private var widgetShowsSums = true
+    @State private var widgetUpdate: Task<Void, Never>?
     var body: some View {
         ZStack(alignment: .top) {
             // The bank page stays in the window behind the tabs so scanning keeps running while it is hidden.
@@ -186,7 +190,13 @@ struct ContentView: View {
             // Automatic refresh can start before the sign-in watcher gets its next turn.
             // Hide the login page while leaving the same WebView mounted for scanning.
             if busy && browser.signInRequested { browser.finishSignIn() }
+            if !busy { scheduleWidgetUpdate() }
         }
+        // The widget's summary follows every change of the history, the switch in Settings and the new day on opening.
+        .onReceive(browser.$history) { _ in scheduleWidgetUpdate() }
+        .onChange(of: browser.loadingHistory) { _, _ in scheduleWidgetUpdate() }
+        .onChange(of: widgetShowsSums) { _, _ in scheduleWidgetUpdate() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in scheduleWidgetUpdate() }
         // The app's own window for the code the bank sent; the bank page stays hidden under it (46.28).
         .sheet(isPresented: Binding(get: { browser.codeEntryVisible }, set: { _ in })) {
             BankCodeEntryView(browser: browser)
@@ -197,6 +207,39 @@ struct ContentView: View {
     }
 
     private func openAccounts() { animate { page = 0 } }
+
+    /// A burst of changes (a scan saves several times) makes one summary, after the scan ends.
+    private func scheduleWidgetUpdate() {
+        widgetUpdate?.cancel()
+        widgetUpdate = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled, !browser.busy else { return }
+            publishWidget()
+        }
+    }
+
+    /// The same numbers as the home screen: the reserve card and the spending of today and of the month to date.
+    private func publishWidget() {
+        // While the history is still opening or the vault is closed the last summary stays.
+        guard !browser.loadingHistory, browser.storageAvailable else { return }
+        let history = browser.history
+        guard !history.allOperations.isEmpty else {
+            WidgetShared.publish(nil)
+            return
+        }
+        let now = Date()
+        guard widgetShowsSums else {
+            WidgetShared.publish(WidgetShared.summary(reserve: nil, spentToday: nil, spentMonth: nil, now: now, showSums: false))
+            return
+        }
+        presentation.prepare(history)
+        let reserve: Int64? = (history.accounts ?? []).isEmpty || history.reserveAccounts.isEmpty ? nil
+            : FinancialEngine.monthReserve(balanceKopecks: history.reserveAccounts.reduce(0) { $0 + presentation.accountBalance($1, history: history) },
+                                           forecast: presentation.forecast(history, now: now))
+        let today = presentation.report(history, interval: historyInterval(.lastDays(1), now: now)).netExpenseKopecks
+        let month = presentation.report(history, interval: historyInterval(HistoryPeriod.currentMonth(now: now), now: now)).netExpenseKopecks
+        WidgetShared.publish(WidgetShared.summary(reserve: reserve, spentToday: today, spentMonth: month, now: now, showSums: true))
+    }
 
     private func closeAccounts() { animate { page = 1 } }
 
@@ -822,6 +865,7 @@ struct SettingsView: View {
     @EnvironmentObject private var lock: AppLock
     @State private var confirmStorageReset = false
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
+    @AppStorage("widgetShowsSums") private var widgetShowsSums = true
     @State private var exportedBackup: BackupDocument?
     @State private var exportedType: UTType = .json
     @State private var exportedName = ""
@@ -915,6 +959,9 @@ struct SettingsView: View {
                     Text("Иначе список операций на главном экране открывается по нажатию на «Операции».")
                         .font(.caption).foregroundStyle(.secondary)
                     NavigationLink("Обои", destination: WallpaperSettingsView())
+                    Toggle("Суммы в виджете", isOn: $widgetShowsSums)
+                    Text("Виджет Horizon на экране «Домой»: запас до конца месяца, траты за сегодня и за месяц. Выключите — виджет покажет только название.")
+                        .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Отображение") }.glassRows()
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }

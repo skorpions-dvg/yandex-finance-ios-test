@@ -33,12 +33,16 @@ struct SummaryWidgetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             switch entry.state {
+            case .summary(let summary) where summary.sumsHidden == true:
+                notice("Суммы скрыты", "Включаются в настройках")
             case .summary(let summary):
                 let today = summary.dayKey == WidgetShared.dayKey(entry.date)
                 let month = summary.monthKey == WidgetShared.monthKey(entry.date)
+                let reserve = month ? summary.reserveEndOfMonthKopecks : nil
                 Text("Запас").font(.caption2).foregroundStyle(.secondary)
-                Text(month ? rubles(summary.reserveEndOfMonthKopecks) : "—")
+                Text(reserve.map { signedRubles($0) } ?? "—")
                     .font(.title3.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.6)
+                    .foregroundStyle((reserve ?? 0) < 0 ? Color.red : Color.primary)
                     .privacySensitive()
                 Text("Сегодня " + (today ? rubles(summary.spentTodayKopecks) : "—"))
                     .font(.caption).lineLimit(1).minimumScaleFactor(0.7)
@@ -47,8 +51,8 @@ struct SummaryWidgetView: View {
                     .font(.caption).lineLimit(1).minimumScaleFactor(0.7)
                     .privacySensitive()
                 Spacer(minLength: 0)
-                Text((summary.label.map { "\($0) · " } ?? "") + summary.updatedAt.formatted(date: today ? .omitted : .numeric, time: .shortened))
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text((summary.label.map { "\($0) · " } ?? "обновлено ") + summary.updatedAt.formatted(date: today ? .omitted : .numeric, time: .shortened))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
             case .empty:
                 notice("Откройте Horizon", "Сводки ещё нет")
             case .noGroup:
@@ -67,6 +71,11 @@ struct SummaryWidgetView: View {
             Text(title).font(.headline)
             Text(detail).font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    /// As on the reserve card of the home screen: «+1 234 ₽», «−12 978 ₽».
+    private func signedRubles(_ kopecks: Int64) -> String {
+        (kopecks >= 0 ? "+" : "−") + rubles(kopecks >= 0 ? kopecks : -kopecks)
     }
 
     private func rubles(_ kopecks: Int64?) -> String {

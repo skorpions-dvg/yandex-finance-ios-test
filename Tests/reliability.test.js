@@ -783,3 +783,18 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   assert.match(bank, /func finishSignIn\(\) \{[\s\S]{0,120}signInGeneration \+= 1/, 'finishing a sign-in makes its late answers harmless');
   assert.ok(!/maxLength >= 4 && el\.maxLength <= 6\) score/.test(bank), 'a numeric field alone is not taken for the code');
 }
+
+// (46.35) The widget shows the home screen's own numbers, only a small summary leaves the app, and the test buttons are gone.
+{
+  const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
+  const publish = app.slice(app.indexOf('private func publishWidget()'), app.indexOf('private func publishWidget()') + 2000);
+  assert.ok(publish.includes('FinancialEngine.monthReserve(') && publish.includes('presentation.forecast(history'), 'widget reserve = the reserve card');
+  assert.ok(publish.includes('.netExpenseKopecks'), 'widget spending = the home screen expenses');
+  assert.ok(publish.includes('guard !browser.loadingHistory, browser.storageAvailable'), 'no summary from a history still opening');
+  assert.ok(app.includes('Toggle("Суммы в виджете"'), 'the sums of the widget can be switched off');
+  const data = fs.readFileSync(path.join(__dirname, '../YandexFinance/DataAndCopiesView.swift'), 'utf8');
+  assert.ok(!data.includes('Сводка A'), 'the fictional test summary must not overwrite the real one');
+  const widget = fs.readFileSync(path.join(__dirname, '../HorizonWidget/HorizonWidget.swift'), 'utf8');
+  for (const forbidden of ['Vault', 'SavedHistory', 'FinancialEngine']) assert.ok(!widget.includes(forbidden), `the widget must not touch ${forbidden}`);
+  assert.ok(!/A\.HorizonWidget[^\n]*Vault\.swift/.test(fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodeproj/project.pbxproj'), 'utf8')), 'no vault in the widget');
+}
