@@ -71,8 +71,10 @@ struct SummaryWidgetView: View {
 
     private func rubles(_ kopecks: Int64?) -> String {
         guard let kopecks else { return "—" }
+        // Whole rubles without kopecks, otherwise always two digits: «21 000,50 ₽», not «21 000,5 ₽».
         let value = Double(kopecks) / 100
-        return value.formatted(.number.precision(.fractionLength(0...2)).locale(Locale(identifier: "ru_RU"))) + " ₽"
+        let digits = kopecks % 100 == 0 ? 0 : 2
+        return value.formatted(.number.precision(.fractionLength(digits)).locale(Locale(identifier: "ru_RU"))) + " ₽"
     }
 }
 
