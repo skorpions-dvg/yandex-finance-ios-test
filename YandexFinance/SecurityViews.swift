@@ -186,7 +186,8 @@ struct PrivacyCover: View {
 }
 
 /// The greeting of a cold launch (block 5): the icon, the name and a line of the horizon on the colour of the launch screen
-/// (no flash between them). It goes when the history is read, not before 1,2 s and not after 2,5 s; a tap closes it at once.
+/// (no flash between them). It goes 0,8 s after the history is read and the screens under it are drawn, not before 1,2 s;
+/// a tap closes it at once.
 /// Nothing waits for it: the app loads underneath.
 @MainActor
 struct SplashView: View {
@@ -203,7 +204,6 @@ struct SplashView: View {
     @State private var finished = false
     /// `ready` as it is now: the task below keeps the value of the view it began with, a state is read live.
     @State private var isReady = false
-    @State private var minimumShown = false
     @State private var started = false
 
     var body: some View {
@@ -239,10 +239,7 @@ struct SplashView: View {
             if active { start() }
         }
         .onChange(of: active) { _, now in if now { start() } }
-        .onChange(of: ready) { _, now in
-            isReady = now
-            if now && minimumShown { finish() }
-        }
+        .onChange(of: ready) { _, now in isReady = now }
     }
 
     /// The animation and the time of the greeting, from the moment the app is on the screen.
@@ -257,9 +254,15 @@ struct SplashView: View {
         }
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.2))
-            minimumShown = true
-            if isReady { finish() }
-            try? await Task.sleep(for: .seconds(1.3))
+            // Then the history (4 s at most in all). A task of the main actor resumes only when the main thread is free: the
+            // pause after it is time the greeting is really seen, after the first heavy drawing of the screens under it
+            // (46.46: the reports and the forecast took the phone for about a second, and the greeting was seen for 0,5 s).
+            var waited = 1.2
+            while !isReady && waited < 4 {
+                try? await Task.sleep(for: .seconds(0.1))
+                waited += 0.1
+            }
+            try? await Task.sleep(for: .seconds(0.8))
             finish()
         }
     }

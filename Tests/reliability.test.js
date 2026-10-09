@@ -853,7 +853,8 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   const splash = views.slice(views.indexOf('struct SplashView'), views.indexOf('/// Set, change or switch off the code'));
   assert.ok(splash.includes('Color("LaunchBackground")'), 'the greeting has the colour of the launch screen (no black flash)');
   assert.ok(splash.includes('.onTapGesture { finish() }'), 'a tap closes the greeting');
-  assert.ok(splash.includes('if isReady { finish() }') && !/while !ready/.test(splash), 'the wait reads the live state, not the value the task began with');
+  assert.ok(splash.includes('while !isReady && waited < 4') && !/while !ready/.test(splash), 'the wait reads the live state, not the value the task began with');
+  assert.ok(/while !isReady && waited < 4 \{[\s\S]{0,120}\}\s*try\? await Task\.sleep\(for: \.seconds\(0\.8\)\)/.test(splash), 'the greeting stays 0,8 s on view after the history is read');
   assert.ok(splash.includes('.onChange(of: active) { _, now in if now { start() } }'), 'the time of the greeting starts when the app is on the screen');
   assert.ok(fs.existsSync(path.join(__dirname, '../YandexFinance/Assets.xcassets/SplashIcon.imageset/splash-icon.png')), 'the icon of the greeting is in the catalog');
 }
