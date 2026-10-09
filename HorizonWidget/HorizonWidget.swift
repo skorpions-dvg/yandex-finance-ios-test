@@ -22,8 +22,11 @@ struct SummaryProvider: TimelineProvider {
         let state = WidgetShared.read()
         // A second entry at midnight marks the day's sums as old; the widget does not recount anything itself.
         let midnight = Calendar.current.startOfDay(for: now.addingTimeInterval(86_400))
+        // The file is read again every 30 minutes (about 48 times a day, within the system's budget): the app's request to
+        // redraw, sent as it goes to the background, may be put off by the system for a long time.
+        let next = min(now.addingTimeInterval(30 * 60), midnight)
         completion(Timeline(entries: [SummaryEntry(date: now, state: state), SummaryEntry(date: midnight, state: state)],
-                            policy: .after(midnight)))
+                            policy: .after(next)))
     }
 }
 
