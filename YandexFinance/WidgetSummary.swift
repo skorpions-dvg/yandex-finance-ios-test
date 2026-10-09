@@ -192,13 +192,44 @@ enum WidgetShared {
     /// Writes the summary (nil removes it) and asks the widget to redraw, but only when it differs from what the widget
     /// already shows: the system gives a widget a limited number of reloads a day.
     static func publish(_ summary: WidgetSummary?) {
+        let stamp = Date().formatted(date: .omitted, time: .standard)
         switch (read(), summary) {
-        case (.summary(let old), .some(let new)) where old.sameContent(as: new): return
-        case (.empty, .none), (.noGroup, _): return
+        case (.summary(let old), .some(let new)) where old.sameContent(as: new):
+            lastPublish = stamp + " · без изменений"
+            return
+        case (.empty, .none):
+            lastPublish = stamp + " · сводки нет"
+            return
+        case (.noGroup, _):
+            lastPublish = stamp + " · нет общей папки"
+            return
         default: break
         }
-        do { try write(summary) } catch { return }
+        do { try write(summary) } catch {
+            lastPublish = stamp + " · ошибка записи: " + error.localizedDescription
+            return
+        }
+        lastPublish = stamp + " · записано"
         WidgetCenter.shared.reloadTimelines(ofKind: widgetKind)
+    }
+
+    /// What the last publish did, for «Настройки → Суммы в виджете» (only this run of the app).
+    static var lastPublish = "ещё не записывали"
+
+    /// One line about the widget's file: what is in it now and whether the shared group is there.
+    static func diagnostics() -> String {
+        let group = resolvedGroup().map { $0.name == baseGroup ? "группа без Team ID" : "группа с Team ID" } ?? "нет общей папки"
+        let file: String
+        switch read() {
+        case .summary(let summary):
+            let parts = [summary.reserveStatus == nil ? nil : "подпись", summary.budgetLimitKopecks == nil ? nil : "бюджет",
+                         summary.topCategories == nil ? nil : "группы", summary.sumsHidden == true ? "скрыто" : nil].compactMap { $0 }
+            file = "сводка " + summary.updatedAt.formatted(date: .omitted, time: .shortened) + (parts.isEmpty ? "" : " (" + parts.joined(separator: ", ") + ")")
+        case .empty: file = "сводки нет"
+        case .noGroup: file = "файла нет"
+        case .unreadable: file = "файл не читается"
+        }
+        return "Виджет: " + file + " · " + group + " · последняя запись " + lastPublish
     }
 #endif
 #endif

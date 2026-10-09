@@ -986,6 +986,8 @@ struct SettingsView: View {
                     Toggle("Суммы в виджете", isOn: $widgetShowsSums)
                     Text("Виджет Horizon на экране «Домой»: запас до конца месяца, траты за сегодня и за месяц, в большом — бюджет и главные категории. Выключите — виджет покажет только название.")
                         .font(.caption).foregroundStyle(.secondary)
+                    // What the widget's file holds and how the last write ended: the widget cannot be checked on the PC.
+                    Text(WidgetShared.diagnostics()).font(.caption2).foregroundStyle(.secondary)
                 } header: { Text("Отображение") }.glassRows()
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
