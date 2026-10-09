@@ -21,6 +21,13 @@ struct WidgetSummary: Codable, Equatable {
     var label: String?
     /// «Суммы в виджете» is off: the widget shows only the name, every sum is nil.
     var sumsHidden: Bool?
+    /// The words of the reserve card: «fine» (с запасом), «tight» (впритык), «short» (не хватает).
+    var reserveStatus: String?
+    /// The budget of the whole month, when one is set (the bar of the home screen).
+    var budgetLimitKopecks: Int64?
+    var budgetSpentKopecks: Int64?
+    /// The largest expense groups of the month to date, largest first (at most three; «Отчёты → Структура»).
+    var topCategories: [WidgetCategory]?
 
     /// The same numbers for the same day: rewriting it would only spend the widget's reloads.
     func sameContent(as other: WidgetSummary) -> Bool {
@@ -29,6 +36,12 @@ struct WidgetSummary: Codable, Equatable {
         b.updatedAt = .distantPast
         return a == b
     }
+}
+
+/// One expense group of the month for the large widget: its name and the sum, nothing per operation.
+struct WidgetCategory: Codable, Equatable {
+    var name: String
+    var kopecks: Int64
 }
 
 enum WidgetShared {
@@ -83,12 +96,35 @@ enum WidgetShared {
 
     /// The summary of the app's own numbers (the reserve card and the spending of today and of the month on the home screen).
     /// With the sums switched off nothing but the date goes to the widget.
-    static func summary(reserve: Int64?, spentToday: Int64?, spentMonth: Int64?, now: Date, showSums: Bool) -> WidgetSummary {
-        WidgetSummary(reserveEndOfMonthKopecks: showSums ? reserve : nil,
-                      spentTodayKopecks: showSums ? spentToday : nil,
-                      spentMonthKopecks: showSums ? spentMonth : nil,
-                      updatedAt: now, dayKey: dayKey(now), monthKey: monthKey(now),
-                      timeZoneIdentifier: TimeZone.current.identifier, sumsHidden: showSums ? nil : true)
+    static func summary(reserve: Int64?, spentToday: Int64?, spentMonth: Int64?, now: Date, showSums: Bool,
+                        reserveStatus: String? = nil, budgetLimit: Int64? = nil, budgetSpent: Int64? = nil,
+                        topCategories: [WidgetCategory] = []) -> WidgetSummary {
+        let top = Array(topCategories.filter { $0.kopecks > 0 }.prefix(3))
+        return WidgetSummary(reserveEndOfMonthKopecks: showSums ? reserve : nil,
+                             spentTodayKopecks: showSums ? spentToday : nil,
+                             spentMonthKopecks: showSums ? spentMonth : nil,
+                             updatedAt: now, dayKey: dayKey(now), monthKey: monthKey(now),
+                             timeZoneIdentifier: TimeZone.current.identifier, sumsHidden: showSums ? nil : true,
+                             reserveStatus: showSums && reserve != nil ? reserveStatus : nil,
+                             budgetLimitKopecks: showSums && (budgetLimit ?? 0) > 0 ? budgetLimit : nil,
+                             budgetSpentKopecks: showSums && (budgetLimit ?? 0) > 0 ? budgetSpent : nil,
+                             topCategories: showSums && !top.isEmpty ? top : nil)
+    }
+
+    enum BudgetLevel { case calm, warning, exceeded }
+
+    /// As `BudgetEngine.level`: over the limit — exceeded, from 90 % — warning.
+    static func budgetLevel(spent: Int64, limit: Int64) -> BudgetLevel {
+        guard limit > 0 else { return .calm }
+        if spent > limit { return .exceeded }
+        return Double(spent) >= Double(limit) * 0.9 ? .warning : .calm
+    }
+
+    /// Whole rubles for the widget, rounded half away from zero (12 952,98 → 12 953; −0,49 → 0).
+    static func wholeRubles(_ kopecks: Int64) -> Int64 {
+        let magnitude = kopecks == Int64.min ? Int64.max : abs(kopecks)
+        let rounded = magnitude / 100 + (magnitude % 100 >= 50 ? 1 : 0)
+        return kopecks < 0 ? -rounded : rounded
     }
 
     /// Fictional sums for the widget test; nothing of the user's history.

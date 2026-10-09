@@ -60,6 +60,8 @@ struct ContentView: View {
     @StateObject private var pagerLocks = PagerLocks()
     /// «Настройки → Суммы в виджете».
     @AppStorage("widgetShowsSums") private var widgetShowsSums = true
+    /// The buffer of the reserve card (its words «с запасом / впритык / не хватает»).
+    @AppStorage("reserveBufferRubles") private var reserveBufferRubles = 25_000
     @State private var widgetUpdate: Task<Void, Never>?
     var body: some View {
         ZStack(alignment: .top) {
@@ -196,6 +198,7 @@ struct ContentView: View {
         .onReceive(browser.$history) { _ in scheduleWidgetUpdate() }
         .onChange(of: browser.loadingHistory) { _, _ in scheduleWidgetUpdate() }
         .onChange(of: widgetShowsSums) { _, _ in scheduleWidgetUpdate() }
+        .onChange(of: reserveBufferRubles) { _, _ in scheduleWidgetUpdate() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in scheduleWidgetUpdate() }
         // The app's own window for the code the bank sent; the bank page stays hidden under it (46.28).
         .sheet(isPresented: Binding(get: { browser.codeEntryVisible }, set: { _ in })) {
@@ -237,8 +240,22 @@ struct ContentView: View {
             : FinancialEngine.monthReserve(balanceKopecks: history.reserveAccounts.reduce(0) { $0 + presentation.accountBalance($1, history: history) },
                                            forecast: presentation.forecast(history, now: now))
         let today = presentation.report(history, interval: historyInterval(.lastDays(1), now: now)).netExpenseKopecks
-        let month = presentation.report(history, interval: historyInterval(HistoryPeriod.currentMonth(now: now), now: now)).netExpenseKopecks
-        WidgetShared.publish(WidgetShared.summary(reserve: reserve, spentToday: today, spentMonth: month, now: now, showSums: true))
+        let monthInterval = historyInterval(HistoryPeriod.currentMonth(now: now), now: now)
+        let month = presentation.report(history, interval: monthInterval).netExpenseKopecks
+        let status: String? = reserve.map {
+            switch FinancialEngine.reserveStatus($0, bufferKopecks: Int64(reserveBufferRubles) * 100) {
+            case .fine: return "fine"
+            case .tight: return "tight"
+            case .short: return "short"
+            }
+        }
+        // The bar of «Бюджет месяца» and the largest groups of «Отчёты → Структура» for the month to date.
+        let budget = presentation.budgetStatuses(history, month: now).first { $0.group == nil }
+        let top = ReportEngine.slices(presentation.inputs(history), in: monthInterval, mode: .expenses, grouping: .categories,
+                                      taxonomy: history.expenseTaxonomy).prefix(3).map { WidgetCategory(name: $0.title, kopecks: $0.amountKopecks) }
+        WidgetShared.publish(WidgetShared.summary(reserve: reserve, spentToday: today, spentMonth: month, now: now, showSums: true,
+                                                  reserveStatus: status, budgetLimit: budget?.limitKopecks, budgetSpent: budget?.spentKopecks,
+                                                  topCategories: Array(top)))
     }
 
     private func closeAccounts() { animate { page = 1 } }
@@ -960,7 +977,7 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     NavigationLink("Обои", destination: WallpaperSettingsView())
                     Toggle("Суммы в виджете", isOn: $widgetShowsSums)
-                    Text("Виджет Horizon на экране «Домой»: запас до конца месяца, траты за сегодня и за месяц. Выключите — виджет покажет только название.")
+                    Text("Виджет Horizon на экране «Домой»: запас до конца месяца, траты за сегодня и за месяц, в большом — бюджет и главные категории. Выключите — виджет покажет только название.")
                         .font(.caption).foregroundStyle(.secondary)
                 } header: { Text("Отображение") }.glassRows()
                 Section {

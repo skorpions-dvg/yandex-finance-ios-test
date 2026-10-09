@@ -98,6 +98,39 @@ struct WidgetSummaryTests {
         let oldSummary = try? decoder.decode(WidgetSummary.self, from: Data(old.utf8))
         check(oldSummary?.reserveEndOfMonthKopecks == 123_456 && oldSummary?.sumsHidden == nil, "old file opens")
 
+        // 46.37: the words of the reserve, the month's budget and the largest groups; all gone with the sums switched off.
+        let groups = [WidgetCategory(name: "Еда", kopecks: 942_000), WidgetCategory(name: "Транспорт", kopecks: 418_000),
+                      WidgetCategory(name: "Кафе", kopecks: 296_000), WidgetCategory(name: "Дом", kopecks: 100_000),
+                      WidgetCategory(name: "Пусто", kopecks: 0)]
+        let full = WidgetShared.summary(reserve: -1_295_298, spentToday: 0, spentMonth: 2_331_328, now: date, showSums: true,
+                                        reserveStatus: "short", budgetLimit: 6_000_000, budgetSpent: 2_331_328, topCategories: groups)
+        check(full.reserveStatus == "short" && full.budgetLimitKopecks == 6_000_000 && full.budgetSpentKopecks == 2_331_328, "status and budget kept")
+        check(full.topCategories?.map(\.name) == ["Еда", "Транспорт", "Кафе"], "three largest groups only")
+        let off = WidgetShared.summary(reserve: -1_295_298, spentToday: 0, spentMonth: 2_331_328, now: date, showSums: false,
+                                       reserveStatus: "short", budgetLimit: 6_000_000, budgetSpent: 2_331_328, topCategories: groups)
+        check(off.reserveStatus == nil && off.budgetLimitKopecks == nil && off.budgetSpentKopecks == nil && off.topCategories == nil,
+              "switched off: no status, budget or groups")
+        let offJSON = (try? encoder.encode(off)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+        check(!offJSON.contains("Еда") && !offJSON.contains("6000000"), "no group names or budget in the file when off")
+        let noBudget = WidgetShared.summary(reserve: nil, spentToday: 0, spentMonth: 0, now: date, showSums: true,
+                                            reserveStatus: "fine", budgetLimit: 0, budgetSpent: 500, topCategories: [])
+        check(noBudget.budgetLimitKopecks == nil && noBudget.budgetSpentKopecks == nil && noBudget.topCategories == nil
+              && noBudget.reserveStatus == nil, "no budget, no groups, no status without a reserve")
+        check(!full.sameContent(as: shown), "a new group or budget is new content")
+        // A file of 46.35 still opens.
+        let file35 = #"{"schemaVersion":1,"currency":"RUB","reserveEndOfMonthKopecks":-1295298,"spentTodayKopecks":0,"spentMonthKopecks":2331328,"updatedAt":"2025-10-09T08:53:20Z","dayKey":"2025-10-09","monthKey":"2025-10","timeZoneIdentifier":"UTC"}"#
+        let old35 = try? decoder.decode(WidgetSummary.self, from: Data(file35.utf8))
+        check(old35?.spentMonthKopecks == 2_331_328 && old35?.topCategories == nil && old35?.reserveStatus == nil, "46.35 file opens")
+        // Whole rubles: half away from zero.
+        check(WidgetShared.wholeRubles(-1_295_298) == -12_953 && WidgetShared.wholeRubles(2_331_328) == 23_313
+              && WidgetShared.wholeRubles(49) == 0 && WidgetShared.wholeRubles(50) == 1 && WidgetShared.wholeRubles(-49) == 0
+              && WidgetShared.wholeRubles(-150) == -2 && WidgetShared.wholeRubles(Int64.min) < 0, "whole rubles")
+        // Budget levels as on the home screen: 90 % — warning, over — exceeded.
+        check(WidgetShared.budgetLevel(spent: 2_331_328, limit: 6_000_000) == .calm, "38 % calm")
+        check(WidgetShared.budgetLevel(spent: 5_400_000, limit: 6_000_000) == .warning, "90 % warning")
+        check(WidgetShared.budgetLevel(spent: 6_000_000, limit: 6_000_000) == .warning, "100 % warning, not exceeded")
+        check(WidgetShared.budgetLevel(spent: 6_000_001, limit: 6_000_000) == .exceeded, "over the limit")
+
         if failures > 0 {
             print("WidgetSummaryTests: \(failures) failed")
             exit(1)

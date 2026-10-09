@@ -798,3 +798,12 @@ assert.throws(()=>parse(noStamp35,purchase.replace('Сегодня, 06:11','Се
   for (const forbidden of ['Vault', 'SavedHistory', 'FinancialEngine']) assert.ok(!widget.includes(forbidden), `the widget must not touch ${forbidden}`);
   assert.ok(!/A\.HorizonWidget[^\n]*Vault\.swift/.test(fs.readFileSync(path.join(__dirname, '../YandexFinance.xcodeproj/project.pbxproj'), 'utf8')), 'no vault in the widget');
 }
+
+// (46.37) Three sizes of the widget; the large one takes the budget and the groups from the same code as the home screen and the reports.
+{
+  const widget = fs.readFileSync(path.join(__dirname, '../HorizonWidget/HorizonWidget.swift'), 'utf8');
+  assert.ok(widget.includes('.supportedFamilies([.systemSmall, .systemMedium, .systemLarge])'), 'the widget comes in three sizes');
+  const app = fs.readFileSync(path.join(__dirname, '../YandexFinance/YandexFinanceApp.swift'), 'utf8');
+  assert.ok(app.includes('presentation.budgetStatuses(history, month: now)') && app.includes('ReportEngine.slices(presentation.inputs(history), in: monthInterval, mode: .expenses'),
+            'the widget budget and groups come from the home screen and the reports');
+}
