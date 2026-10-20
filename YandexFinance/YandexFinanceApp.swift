@@ -240,7 +240,15 @@ struct ContentView: View {
             try? await Task.sleep(for: .seconds(1.5))
             guard !Task.isCancelled else { return }
             publishWidget()
+            rescheduleReminders()
         }
+    }
+
+    /// The reminders a day before the payments of subscriptions and loans follow every change and every new day.
+    private func rescheduleReminders() {
+        guard !browser.loadingHistory, browser.storageAvailable else { return }
+        let history = browser.history
+        Task { await CommitmentReminders.reschedule(subscriptions: history.subscriptions ?? [], loans: history.loans ?? []) }
     }
 
     /// The same numbers as the home screen: the reserve card and the spending of today and of the month to date.
@@ -1029,6 +1037,8 @@ struct SettingsView: View {
                 Section {
                     NavigationLink("Категории расходов") { ExpenseCategoriesView(browser: browser, presentation: presentation) }
                     NavigationLink("Бюджеты") { BudgetsView(browser: browser, presentation: presentation) }
+                    NavigationLink("Подписки") { SubscriptionsView(browser: browser) }
+                    NavigationLink("Кредиты") { LoansView(browser: browser) }
                     NavigationLink("Безопасность") { SecuritySettingsView(lock: lock) }
                 }.glassRows()
                 Section {

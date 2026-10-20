@@ -1601,6 +1601,20 @@ struct FinanceEngineTests {
         loan.balanceKopecks = nil
         require(loan.balance(now: at(8, 1), calendar: calendar) == nil, "no balance entered")
 
+        // saving a loan: the balance untouched in the same mode stays as it was; an edited one, or another mode, starts from now
+        let kept = Loan(name: "Кредит учебный", paymentKopecks: 10_000, day: 15, balanceKopecks: 25_000, balanceDate: at(1, 10), reducesBalance: true)
+        let today = at(2, 20)
+        let untouched = Loan.keptBalance(old: kept, entered: 5_000, reduces: true, now: today, calendar: calendar)
+        require(untouched.kopecks == 25_000 && untouched.date == at(1, 10), "the balance as shown, untouched, keeps its day")
+        let edited = Loan.keptBalance(old: kept, entered: 4_000, reduces: true, now: today, calendar: calendar)
+        require(edited.kopecks == 4_000 && edited.date == today, "an edited balance starts from now")
+        let switched = Loan.keptBalance(old: kept, entered: 5_000, reduces: false, now: today, calendar: calendar)
+        require(switched.kopecks == 5_000 && switched.date == today, "another mode fixes the balance as seen now")
+        let cleared = Loan.keptBalance(old: kept, entered: nil, reduces: true, now: today, calendar: calendar)
+        require(cleared.kopecks == nil && cleared.date == nil, "nothing entered, no balance")
+        let fresh = Loan.keptBalance(old: nil, entered: 30_000, reduces: true, now: today, calendar: calendar)
+        require(fresh.kopecks == 30_000 && fresh.date == today, "a new loan's balance starts from now")
+
         // the forecast: a payment of the month is expected; one already among the operations, or already a found regular one, is not counted twice
         let due = Subscription(name: "Подписка учебная", amountKopecks: 700_000, day: 20, since: at(4, 1))
         let expectedDue = FinancialEngine.monthForecast([], now: at(4, 10), calendar: calendar, subscriptions: [due])

@@ -1095,6 +1095,18 @@ extension Loan {
     }
 }
 
+extension Loan {
+    /// The balance and its day to keep when the owner saves the loan: untouched, in the same mode, it stays as it was (and goes
+    /// on going down from its own day); anything else is the balance as seen now, from now on. Nothing entered: none.
+    static func keptBalance(old: Loan?, entered: Int64?, reduces: Bool, now: Date, calendar: Calendar = .current) -> (kopecks: Int64?, date: Date?) {
+        guard let entered else { return (nil, nil) }
+        if let old, old.reducesBalance == reduces, old.balance(now: now, calendar: calendar) == entered {
+            return (old.balanceKopecks, old.balanceDate)
+        }
+        return (entered, now)
+    }
+}
+
 extension SavedHistory {
     /// What the forecast depends on in the subscriptions and loans (the key of its cache).
     var commitmentsKey: String {
