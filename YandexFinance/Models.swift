@@ -138,6 +138,10 @@ struct SavedHistory: Codable {
     var receiptScans: [String: ReceiptScan]?
     /// Operations whose receipts were already put into a collection for the check of the reading.
     var collectedReceiptIdentities: [String]?
+    /// What the owner changed in an operation of the bank (from the bank page or a statement): operation identity -> the edit.
+    var operationEdits: [String: OperationEdit]?
+    /// Operations of the bank the owner deleted: a new read of the bank or of a statement does not bring them back.
+    var deletedOperationIdentities: [String]?
     /// Subscriptions the owner entered (the forecast counts their payments; a day before one a reminder may come).
     var subscriptions: [Subscription]?
     /// Loans the owner entered: a monthly payment, and the balance he keeps by hand.
@@ -1048,6 +1052,104 @@ extension SavedHistory {
             incomeCategoryOverrides?[operation.identity] = nil
         }
         operationNatures = all.isEmpty ? nil : all
+        return true
+    }
+}
+
+// MARK: - Editing the operations of the bank
+
+/// The owner's change of an operation of the bank: the title, the signed amount and the moment. The operation as the bank gave it
+/// stays inside, so the change can be taken back and a new read of the bank keeps it.
+struct OperationEdit: Codable, Equatable {
+    var original: BankOperation
+    var amountKopecks: Int64
+    var occurredAt: String
+    var description: String
+
+    /// `base` with the owner's change put on it. A change of the sign makes it an income or an expense; a changed amount drops the
+    /// components of a group (their sum would no longer be the amount).
+    func applied(to base: BankOperation) -> BankOperation {
+        let sameSide = (amountKopecks > 0) == (base.amountKopecks > 0)
+        var result = BankOperation(identity: base.identity, occurredAt: occurredAt, timePrecision: base.timePrecision, description: description,
+                                   amountKopecks: amountKopecks, currency: base.currency, status: base.status, category: base.category,
+                                   mcc: base.mcc, purpose: base.purpose, paymentMethod: base.paymentMethod, providers: base.providers,
+                                   kind: sameSide ? base.kind : (amountKopecks > 0 ? "income" : "expense"))
+        result.components = amountKopecks == base.amountKopecks ? base.components : nil
+        result.verifiedAt = base.verifiedAt
+        return result
+    }
+}
+
+extension SavedHistory {
+    /// Puts the owner's changes on the operations and takes the deleted ones out. Called after every read of the bank and of a
+    /// statement: an operation the bank gave again is the new original, and the change goes on it.
+    mutating func applyOperationEdits() {
+        if let deleted = deletedOperationIdentities, !deleted.isEmpty {
+            let identities = Set(deleted)
+            operations.removeAll { identities.contains($0.identity) }
+        }
+        if var edits = operationEdits, !edits.isEmpty {
+            for index in operations.indices {
+                let identity = operations[index].identity
+                guard var edit = edits[identity] else { continue }
+                // What is stored is the changed copy unless the bank gave the operation again: then that one is the original.
+                if operations[index] != edit.applied(to: edit.original) {
+                    edit.original = operations[index]
+                    edits[identity] = edit
+                }
+                operations[index] = edit.applied(to: edit.original)
+            }
+            operationEdits = edits
+        }
+        operations.sort { lhs, rhs in
+            let lhsDate = BankDateParser.parse(lhs.occurredAt), rhsDate = BankDateParser.parse(rhs.occurredAt)
+            if let lhsDate, let rhsDate, lhsDate != rhsDate { return lhsDate > rhsDate }
+            if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
+            return lhs.identity < rhs.identity
+        }
+    }
+
+    /// Changes an operation of the bank; false when it is not here, is the owner's own, or the values make no sense.
+    @discardableResult
+    mutating func editBankOperation(identity: String, amountKopecks: Int64, occurredAt: String, description: String) -> Bool {
+        let title = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = operations.firstIndex(where: { $0.identity == identity }), !operations[index].isManual,
+              amountKopecks != 0, !title.isEmpty, BankDateParser.parse(occurredAt) != nil else { return false }
+        var edits = operationEdits ?? [:]
+        let original = edits[identity]?.original ?? operations[index]
+        let edit = OperationEdit(original: original, amountKopecks: amountKopecks, occurredAt: occurredAt, description: title)
+        // Values as the bank gave them are no change.
+        edits[identity] = edit.applied(to: original) == original ? nil : edit
+        operationEdits = edits.isEmpty ? nil : edits
+        operations[index] = original
+        applyOperationEdits()
+        return true
+    }
+
+    /// Takes the owner's change back: the operation is as the bank gave it.
+    @discardableResult
+    mutating func revertBankOperationEdit(identity: String) -> Bool {
+        guard var edits = operationEdits, edits[identity] != nil,
+              let index = operations.firstIndex(where: { $0.identity == identity }) else { return false }
+        operations[index] = edits[identity]!.original
+        edits[identity] = nil
+        operationEdits = edits.isEmpty ? nil : edits
+        applyOperationEdits()
+        return true
+    }
+
+    /// Deletes an operation of the bank for good: a new read of the bank or of a statement does not bring it back.
+    @discardableResult
+    mutating func deleteBankOperation(identity: String) -> Bool {
+        guard let index = operations.firstIndex(where: { $0.identity == identity }), !operations[index].isManual else { return false }
+        var deleted = deletedOperationIdentities ?? []
+        if !deleted.contains(identity) { deleted.append(identity) }
+        deletedOperationIdentities = deleted
+        if var edits = operationEdits {
+            edits[identity] = nil
+            operationEdits = edits.isEmpty ? nil : edits
+        }
+        operations.remove(at: index)
         return true
     }
 }

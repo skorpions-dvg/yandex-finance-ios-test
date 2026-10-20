@@ -550,10 +550,19 @@ private struct LensBubble: View {
 /// Full card of one saved operation: amounts, components, category, financial type and bank details.
 struct OperationDetailView: View {
     @ObservedObject var browser: BankBrowser
-    let operation: BankOperation
+    private let opened: BankOperation
+    @Environment(\.dismiss) private var dismiss
     @State private var noteDraft = ""
     @State private var noteLoaded = false
     @FocusState private var noteFocused: Bool
+
+    init(browser: BankBrowser, operation: BankOperation) {
+        self.browser = browser
+        opened = operation
+    }
+
+    /// The operation as it is now: a change made in the form shows at once, a deleted one closes the card.
+    private var operation: BankOperation { browser.history.operations.first { $0.identity == opened.identity } ?? opened }
     var body: some View {
         let look = browser.history.look(for: operation)
         Form {
@@ -593,6 +602,16 @@ struct OperationDetailView: View {
             } footer: {
                 Text("Своё название и иконка").font(.caption2)
             }
+            Section {
+                NavigationLink {
+                    BankOperationEditView(browser: browser, operation: operation)
+                } label: {
+                    Label(browser.history.operationEdits?[operation.identity] != nil ? "Изменено вами: править" : "Изменить операцию",
+                          systemImage: "pencil")
+                }
+            } footer: {
+                Text("Название, сумма, расход или доход, дата и время. Банк не меняется: правки остаются при каждом чтении.").font(.caption2)
+            }.glassRows()
             ReceiptSection(browser: browser, identity: operation.identity)
             ReceiptGoodsSection(browser: browser, identity: operation.identity)
             if let components = operation.components {
@@ -642,6 +661,9 @@ struct OperationDetailView: View {
         }
         .appSurface()
         .navigationTitle(look.title ?? operation.description)
+        .onChange(of: browser.history.operations.contains { $0.identity == opened.identity }) { _, exists in
+            if !exists { dismiss() }
+        }
         .onAppear {
             guard !noteLoaded else { return }
             noteLoaded = true

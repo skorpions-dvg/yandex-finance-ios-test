@@ -756,6 +756,8 @@ final class BankBrowser: NSObject, ObservableObject, WKNavigationDelegate, WKUID
             if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt > rhs.occurredAt }
             return lhs.identity < rhs.identity
         }
+        // The owner's changes and deletions hold over what the bank gave again.
+        next.applyOperationEdits()
         next.unresolvedIssues = (next.unresolvedIssues ?? []).filter { issue in
             guard let identity = issue.identity else { return true }
             return !resolved.contains(identity)

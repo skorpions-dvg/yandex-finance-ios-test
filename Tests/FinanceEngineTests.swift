@@ -1559,6 +1559,65 @@ struct FinanceEngineTests {
         require(explained.baselineMonths.contains { $0.otherRefundsKopecks == 500 }, "a refund of an older purchase is shown apart")
     }
 
+    /// The owner's changes and deletions of the operations of the bank hold over every new read.
+    static func testBankOperationEdits() {
+        var history = SavedHistory()
+        let shop = bankOp("e1", -150_000, description: "Магазин учебный", date: "2032-06-02T10:00:00Z")
+        let other = bankOp("e2", -20_000, description: "Кафе учебное", date: "2032-06-03T10:00:00Z")
+        history.operations = [other, shop]
+        require(!history.editBankOperation(identity: "nope", amountKopecks: -100, occurredAt: "2032-06-02T10:00:00Z", description: "Х"), "an operation that is not here")
+        require(!history.editBankOperation(identity: "e1", amountKopecks: 0, occurredAt: "2032-06-02T10:00:00Z", description: "Х"), "no zero amount")
+        require(!history.editBankOperation(identity: "e1", amountKopecks: -100, occurredAt: "not a date", description: "Х"), "a date that is not one")
+        require(!history.editBankOperation(identity: "e1", amountKopecks: -100, occurredAt: "2032-06-02T10:00:00Z", description: "  "), "no empty title")
+        require(history.operationEdits == nil && history.operations == [other, shop], "a refused change changes nothing")
+        // the same values as the bank's are no change
+        require(history.editBankOperation(identity: "e1", amountKopecks: -150_000, occurredAt: "2032-06-02T10:00:00Z", description: "Магазин учебный"), "same values")
+        require(history.operationEdits == nil, "the bank's own values leave no edit")
+        // a change: title, amount, day; the list stays in the order of the days
+        require(history.editBankOperation(identity: "e1", amountKopecks: -175_000, occurredAt: "2032-06-04T09:00:00Z", description: "Магазин (поправлено)"), "an edit")
+        let edited = history.operations.first { $0.identity == "e1" }!
+        require(edited.amountKopecks == -175_000 && edited.description == "Магазин (поправлено)" && edited.kind == "expense", "the edit is on the operation")
+        require(history.operations.map(\.identity) == ["e1", "e2"], "the new day is in its place in the list")
+        require(history.operationEdits?["e1"]?.original == shop, "the bank's operation is kept")
+        // a new read gives the operation again (maybe changed by the bank): the edit goes on the fresh one
+        var fresh = shop
+        fresh.verifiedAt = "2032-06-05T00:00:00Z"
+        history.operations = history.operations.filter { $0.identity != "e1" } + [fresh]
+        history.applyOperationEdits()
+        let again = history.operations.first { $0.identity == "e1" }!
+        require(again.amountKopecks == -175_000 && again.description == "Магазин (поправлено)" && history.operationEdits?["e1"]?.original == fresh,
+                "the edit holds over a new read")
+        // the sign flips: an income; the components of a group are dropped with the amount
+        let group = BankOperation(identity: "e3", occurredAt: "2032-06-05T10:00:00Z", timePrecision: "exact", description: "Группа учебная",
+                                  amountKopecks: -300_000, currency: "RUB", status: "Выполнено", category: "Тест", mcc: nil, purpose: nil,
+                                  paymentMethod: nil, providers: [], kind: "grouped_operation",
+                                  components: [OperationComponent(displayDate: "5 июня", amountKopecks: -100_000), OperationComponent(displayDate: "5 июня", amountKopecks: -200_000)])
+        history.operations.append(group)
+        require(history.editBankOperation(identity: "e3", amountKopecks: 300_000, occurredAt: "2032-06-05T10:00:00Z", description: "Группа учебная"), "a sign flip")
+        let flipped = history.operations.first { $0.identity == "e3" }!
+        require(flipped.amountKopecks == 300_000 && flipped.kind == "income" && flipped.components == nil, "an income without the components")
+        // taking it back
+        require(history.revertBankOperationEdit(identity: "e1") && history.operations.first { $0.identity == "e1" } == fresh && history.operationEdits?["e1"] == nil,
+                "taken back: as the bank gave it")
+        require(!history.revertBankOperationEdit(identity: "e1"), "nothing to take back")
+        // deleting: gone, and a new read does not bring it back
+        require(history.deleteBankOperation(identity: "e2"), "a deletion")
+        require(!history.operations.contains { $0.identity == "e2" } && history.deletedOperationIdentities == ["e2"], "the operation is gone")
+        history.operations.append(other)
+        history.applyOperationEdits()
+        require(!history.operations.contains { $0.identity == "e2" }, "a new read does not bring it back")
+        // the owner's own operations are not touched
+        let manual = ManualOperation(kind: .expense, amountKopecks: 1_000, date: Date()).bankOperation
+        history.operations.append(manual)
+        require(!history.editBankOperation(identity: manual.identity, amountKopecks: -2_000, occurredAt: "2032-06-05T10:00:00Z", description: "Х")
+                    && !history.deleteBankOperation(identity: manual.identity), "a manual operation has its own form")
+        // saved and opened again, and an old history without the fields
+        let data = try? JSONEncoder().encode(history)
+        let restored = data.flatMap { try? JSONDecoder().decode(SavedHistory.self, from: $0) }
+        require(restored?.deletedOperationIdentities == ["e2"] && restored?.operationEdits?["e3"] != nil, "the edits survive saving")
+        require((try? JSONDecoder().decode(SavedHistory.self, from: Data(#"{"operations":[]}"#.utf8)))?.operationEdits == nil, "an old history opens without them")
+    }
+
     /// Credit cards: the balance is the money still available; the debt, the limit exceeded, the overpayment, saving with another limit.
     static func testCreditCards() {
         require(CreditCards.debt(limit: 10_000_000, balance: 8_000_000) == 2_000_000, "limit 100 000, 80 000 available: the debt is 20 000")
@@ -3937,6 +3996,7 @@ struct FinanceEngineTests {
     }
 
     static func main() {
+        testBankOperationEdits()
         testCreditCards()
         testCommitments()
         testAudit53AngledReceipts()

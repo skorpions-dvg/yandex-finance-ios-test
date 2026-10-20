@@ -363,6 +363,8 @@ enum StatementImporter {
             next.bootstrapCompleted = true; next.bootstrapResumeMonth = nil
         }
         next.statementArchiveThrough = archiveCutoff.addingTimeInterval(-1)
+        // The owner's changes and deletions hold over what the statement gave again.
+        next.applyOperationEdits()
         next.statementImportedAt = Date()
         next.statementOperationCount = next.operations.filter { $0.identity.hasPrefix("statement:") || $0.identity.hasPrefix("statement-save:") }.count
         next.lastStopReason = "statement_archive_imported"; next.lastSync = Date()
