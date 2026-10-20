@@ -248,6 +248,26 @@ enum FinancialEngine {
         normalized(value).contains("не указан")
     }
 
+    /// What the owner said an incoming operation is («income», «refund», «own»); nil for any other word.
+    private static func confirmedAssessment(_ confirmed: String, amount: Int64) -> FinancialAssessment? {
+        switch confirmed {
+        case "income":
+            return FinancialAssessment(type: .income, reason: "Вы подтвердили, что это доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        case "refund":
+            return FinancialAssessment(type: .refund, reason: "Вы подтвердили, что это возврат покупки: он уменьшает расходы.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: amount)
+        case "own":
+            return FinancialAssessment(type: .internalTransfer, reason: "Вы подтвердили, что это перемещение между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        default:
+            return nil
+        }
+    }
+
+    /// Money a person sent to the owner: the bank titles it «Перевод от Имя Ф.». The owner's own moves come under other
+    /// titles (the Save account, «между своими счетами»), so this one is income unless the owner says otherwise.
+    static func isTransferFromPerson(_ operation: FinancialOperationInput) -> Bool {
+        operation.amountKopecks > 0 && normalized(operation.description).hasPrefix("перевод от ")
+    }
+
     static func classify(_ operation: FinancialOperationInput) -> FinancialAssessment {
         let status = normalized(operation.status)
         let category = normalized(operation.category)
@@ -352,6 +372,14 @@ enum FinancialEngine {
             return FinancialAssessment(type: .internalTransfer, reason: "Снятие наличных — перемещение денег, а не покупка.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
         }
 
+        // A transfer from a person is income by default; what the owner picked in the card wins over it.
+        if isTransferFromPerson(operation) {
+            if let confirmed = operation.confirmedNature, let named = confirmedAssessment(confirmed, amount: amount) {
+                return named
+            }
+            return FinancialAssessment(type: .income, reason: "Перевод от человека считается доходом; если это не так, выберите в карточке, что это за поступление.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+        }
+
         if transferHint {
             if amount < 0 {
                 return FinancialAssessment(type: .expense, reason: "Перевод не подтверждён как перевод между своими счетами; отрицательная сумма учитывается как расход.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
@@ -384,16 +412,8 @@ enum FinancialEngine {
         }
 
         // The owner has said what this incoming operation is: the one case where the unproven fallback is overridden.
-        if amount > 0, let confirmed = operation.confirmedNature {
-            if confirmed == "income" {
-                return FinancialAssessment(type: .income, reason: "Вы подтвердили, что это доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
-            }
-            if confirmed == "refund" {
-                return FinancialAssessment(type: .refund, reason: "Вы подтвердили, что это возврат покупки: он уменьшает расходы.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: amount)
-            }
-            if confirmed == "own" {
-                return FinancialAssessment(type: .internalTransfer, reason: "Вы подтвердили, что это перемещение между своими счетами.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
-            }
+        if amount > 0, let confirmed = operation.confirmedNature, let named = confirmedAssessment(confirmed, amount: amount) {
+            return named
         }
 
         // Collector uses “unclassified_income” for positive movements whose nature is not proven.

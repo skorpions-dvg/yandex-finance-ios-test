@@ -642,9 +642,10 @@ struct OperationDetailView: View {
         .onDisappear { saveNote() }
     }
 
-    /// «What is this incoming operation?»: shown only for a bank operation the engine could not name.
+    /// «What is this incoming operation?»: shown for a bank operation the engine could not name and for a transfer from a person.
     @ViewBuilder private var natureSection: some View {
-        if !operation.isManual, operation.amountKopecks > 0, FinancialEngine.classify(operation.financialInput).type == .unknown {
+        if !operation.isManual, operation.amountKopecks > 0,
+           FinancialEngine.classify(operation.financialInput).type == .unknown || FinancialEngine.isTransferFromPerson(operation.financialInput) {
             let current = browser.history.confirmedNature(for: operation)
             Section {
                 ForEach(ConfirmedNature.allCases, id: \.self) { nature in

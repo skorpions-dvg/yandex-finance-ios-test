@@ -212,6 +212,26 @@ struct FinanceEngineTests {
         purchase.confirmedNature = "income"
         require(FinancialEngine.classify(purchase).type == .expense, "an expense stays an expense")
 
+        // a transfer from a person is income by itself; the owner's choice in the card wins over it
+        let fromPerson = op(6_500_000, kind: "unclassified_income", category: "Не определено", description: "Перевод от Елизавета В.", date: "2032-06-02T10:00:00Z")
+        let personTransfer = FinancialEngine.classify(fromPerson)
+        require(personTransfer.type == .income && personTransfer.incomeContributionKopecks == 6_500_000, "a transfer from a person is income without any confirmation")
+        var personOwn = fromPerson
+        personOwn.confirmedNature = "own"
+        let personOwnResult = FinancialEngine.classify(personOwn)
+        require(personOwnResult.type == .internalTransfer && personOwnResult.incomeContributionKopecks == 0, "the owner can say a transfer from a person is his own move")
+        var personRefund = fromPerson
+        personRefund.confirmedNature = "refund"
+        require(FinancialEngine.classify(personRefund).type == .refund, "the owner can say a transfer from a person is a refund")
+        let personTagged = op(1_000, kind: "transfer", category: "Переводы", description: "Перевод от Анна К.", date: "2032-06-02T10:00:00Z")
+        var personTaggedOwn = personTagged
+        personTaggedOwn.confirmedNature = "own"
+        require(FinancialEngine.classify(personTagged).type == .income && FinancialEngine.classify(personTaggedOwn).type == .internalTransfer, "a tagged transfer from a person also takes the owner's choice")
+        require(FinancialEngine.classify(op(-7_004_626, kind: "expense", category: "Перевод", description: "Перевод Елизавета В", date: "2032-06-01T10:00:00Z")).type == .expense, "a transfer to a person stays an expense")
+        require(FinancialEngine.classify(op(2_000, kind: "internal_transfer", description: "Перевод от Анна К.", date: "2032-06-02T10:00:00Z")).type == .internalTransfer, "a move the bank named as between own accounts stays one")
+        require(FinancialEngine.classify(op(2_000, kind: "unclassified_income", description: "Поступление от Анна К.", date: "2032-06-02T10:00:00Z")).type == .unknown, "only the bank's «Перевод от» title makes it income")
+        require(FinancialEngine.classify(op(-2_000, kind: "expense", category: "Тест", description: "Перевод от Анна К.", date: "2032-06-02T10:00:00Z")).type == .expense, "an outgoing amount is never a transfer from a person")
+
         // the history: only an unknown incoming bank operation takes the confirmation
         var history = SavedHistory()
         let unknown = bankOp("nat1", 5_100, description: "Поступление Тест", kind: "unclassified_income", date: "2032-06-02T10:00:00Z")
@@ -220,6 +240,12 @@ struct FinanceEngineTests {
         require(!history.confirmNature(.income, for: bought), "an expense cannot be confirmed as income")
         require(history.operationNatures == nil, "a refused confirmation changes nothing")
         require(history.confirmNature(.income, for: unknown) && history.confirmedNature(for: unknown) == .income, "an unknown incoming operation takes it")
+        let personFrom = bankOp("nat3", 6_500_000, description: "Перевод от Елизавета В.", kind: "unclassified_income", date: "2032-06-04T10:00:00Z")
+        history.operations.append(personFrom)
+        require(history.confirmNature(.own, for: personFrom) && history.confirmedNature(for: personFrom) == .own, "a transfer from a person takes the owner's choice")
+        require(FinancialEngine.report(history.financialInputs, in: DateInterval(start: BankDateParser.parse("2032-06-04T00:00:00Z")!, end: BankDateParser.parse("2032-06-05T00:00:00Z")!), taxonomy: history.expenseTaxonomy).incomeKopecks == 0, "a transfer from a person taken as an own move is no income")
+        require(history.confirmNature(nil, for: personFrom), "the choice can be taken back")
+        history.operations.removeLast()
         let inputs = history.financialInputs
         let interval = DateInterval(start: BankDateParser.parse("2032-06-01T00:00:00Z")!, end: BankDateParser.parse("2032-07-01T00:00:00Z")!)
         require(FinancialEngine.report(inputs, in: interval, taxonomy: history.expenseTaxonomy).incomeKopecks == 5_100, "the confirmed income is in the report")

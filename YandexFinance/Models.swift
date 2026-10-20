@@ -1023,14 +1023,17 @@ extension SavedHistory {
         operationNatures?[operation.identity].flatMap(ConfirmedNature.init(rawValue:))
     }
 
-    /// The owner says what an incoming bank operation is. Only an operation the engine leaves «unknown» takes it;
+    /// The owner says what an incoming bank operation is. Only an operation the engine leaves «unknown» (or a transfer
+    /// from a person, which it counts as income by default) takes it;
     /// `nil` takes the confirmation back (and an income category chosen for it, which makes no sense without income).
     @discardableResult
     mutating func confirmNature(_ nature: ConfirmedNature?, for operation: BankOperation) -> Bool {
         guard !operation.isManual else { return false }
         var all = operationNatures ?? [:]
         if let nature {
-            guard operation.amountKopecks > 0, FinancialEngine.classify(operation.financialInput).type == .unknown else { return false }
+            let input = operation.financialInput
+            guard operation.amountKopecks > 0,
+                  FinancialEngine.classify(input).type == .unknown || FinancialEngine.isTransferFromPerson(input) else { return false }
             all[operation.identity] = nature.rawValue
         } else {
             all[operation.identity] = nil
