@@ -360,55 +360,50 @@ struct ReceiptGoodsSection: View {
 
     var body: some View {
         let goods = browser.history.receiptGoods(forIdentity: identity)
-        if !goods.isEmpty {
+        // The editor lives inside the section, not in a sheet over the form (a sheet in a sheet closed with the card).
+        if !goods.isEmpty || editing {
             Section("Товары") {
-                ForEach(Array(goods.enumerated()), id: \.offset) { _, good in
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(good.name).font(.subheadline).lineLimit(3)
-                        Spacer(minLength: 8)
-                        if let kopecks = good.kopecks { Text(ReceiptGood.rubles(kopecks)).font(.subheadline).monospacedDigit().foregroundStyle(.secondary) }
-                    }
-                }
-                let priced = goods.compactMap(\.kopecks)
-                if !priced.isEmpty {
+                if editing {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 180)
+                    Text("Одно название на строку, цена после « — ». Пустой список удаляет товары.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     HStack {
-                        Text("Сумма товаров").font(.footnote)
+                        Button("Отмена") { editing = false }
+                            .buttonStyle(.borderless)
                         Spacer()
-                        Text(ReceiptGood.rubles(priced.reduce(0, +))).font(.footnote).monospacedDigit()
+                        Button("Сохранить") {
+                            let edited = text.split(separator: "\n").map { ReceiptGood(line: String($0)) }.filter { !$0.name.isEmpty }
+                            if browser.updateUserData({ $0.setReceiptGoods(edited, forIdentity: identity) }) { editing = false }
+                        }
+                        .buttonStyle(.borderless)
+                        .bold()
                     }
-                    .foregroundStyle(.secondary)
-                }
-                Button("Править список") {
-                    text = goods.map(\.line).joined(separator: "\n")
-                    editing = true
-                }
-                .font(.footnote)
-            }
-            .glassRows()
-            .sheet(isPresented: $editing) {
-                NavigationStack {
-                    VStack(alignment: .leading, spacing: 8) {
-                        TextEditor(text: $text)
-                            .padding(8)
-                            .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 12))
-                        Text("Одно название на строку, цена после « — ». Пустой список удаляет товары.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    .padding(16)
-                    .navigationTitle("Товары")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) { Button("Отмена") { editing = false } }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Сохранить") {
-                                let edited = text.split(separator: "\n").map { ReceiptGood(line: String($0)) }.filter { !$0.name.isEmpty }
-                                if browser.updateUserData({ $0.setReceiptGoods(edited, forIdentity: identity) }) { editing = false }
-                            }
+                } else {
+                    ForEach(Array(goods.enumerated()), id: \.offset) { _, good in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(good.name).font(.subheadline).lineLimit(3)
+                            Spacer(minLength: 8)
+                            if let kopecks = good.kopecks { Text(ReceiptGood.rubles(kopecks)).font(.subheadline).monospacedDigit().foregroundStyle(.secondary) }
                         }
                     }
+                    let priced = goods.compactMap(\.kopecks)
+                    if !priced.isEmpty {
+                        HStack {
+                            Text("Сумма товаров").font(.footnote)
+                            Spacer()
+                            Text(ReceiptGood.rubles(priced.reduce(0, +))).font(.footnote).monospacedDigit()
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    Button("Править список") {
+                        text = goods.map(\.line).joined(separator: "\n")
+                        editing = true
+                    }
+                    .font(.footnote)
                 }
-                .presentationDetents([.medium, .large])
             }
+            .glassRows()
         }
     }
 }

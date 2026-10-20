@@ -34,6 +34,9 @@ public enum HistoryPeriod: Hashable {
     case allTime
     /// Whole calendar days from one date through another, both included.
     case custom(from: Date, through: Date)
+    /// The first day of the running month through today, whichever day it is: it moves on with the calendar
+    /// (a custom period would stay at the day it was chosen on and show «through yesterday» the next morning).
+    case monthToDate
 }
 
 extension HistoryPeriod {
@@ -43,6 +46,7 @@ extension HistoryPeriod {
         case .lastDays(let days): return "days:\(days)"
         case .allTime: return "all"
         case .custom(let from, let through): return "custom:\(Int(from.timeIntervalSince1970)):\(Int(through.timeIntervalSince1970))"
+        case .monthToDate: return "month"
         }
     }
 
@@ -52,6 +56,8 @@ extension HistoryPeriod {
         switch (parts[0], parts.count) {
         case ("all", 1):
             self = .allTime
+        case ("month", 1):
+            self = .monthToDate
         case ("days", 2):
             guard let days = Int(parts[1]), (1...3660).contains(days) else { return nil }
             self = .lastDays(days)
@@ -63,9 +69,21 @@ extension HistoryPeriod {
         }
     }
 
-    /// From the first day of the month of `now` through `now`.
+    /// From the first day of the month through today (the arguments stay for the callers: the period itself has no dates).
     public static func currentMonth(now: Date = Date(), calendar: Calendar = .current) -> HistoryPeriod {
-        .custom(from: monthStart(of: now, calendar: calendar), through: now)
+        .monthToDate
+    }
+
+    /// The period to show after an operation dated `date` was saved: the one in use when it already covers the day,
+    /// else the month of that day (the running month ends today, a past month is whole), never a lone day.
+    public static func showing(_ date: Date, current: HistoryPeriod, now: Date = Date(), calendar: Calendar = .current) -> HistoryPeriod {
+        let covered = historyInterval(current, now: now, calendar: calendar)
+        if date >= covered.start && date < covered.end { return current }
+        let start = monthStart(of: date, calendar: calendar)
+        let running = historyInterval(.monthToDate, now: now, calendar: calendar)
+        if start == running.start && date < running.end { return .monthToDate }
+        let next = calendar.date(byAdding: .month, value: 1, to: start)!
+        return .custom(from: start, through: calendar.date(byAdding: .day, value: -1, to: next)!)
     }
 }
 
@@ -77,6 +95,8 @@ public func historyInterval(_ period: HistoryPeriod, now: Date = Date(), calenda
         return DateInterval(start: calendar.date(byAdding: .day, value: -max(days, 1), to: endOfToday)!, end: endOfToday)
     case .allTime:
         return DateInterval(start: .distantPast, end: endOfToday)
+    case .monthToDate:
+        return DateInterval(start: monthStart(of: now, calendar: calendar), end: endOfToday)
     case .custom(let from, let through):
         let first = calendar.startOfDay(for: min(from, through))
         let last = calendar.startOfDay(for: max(from, through))

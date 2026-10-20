@@ -191,9 +191,13 @@ struct OperationsHomeView: View {
         guard let operation = pendingSavedOperation else { return }
         pendingSavedOperation = nil
         // Apply the selected day after the sheet closes so presentation updates cannot mask the saved entry.
-        customFrom = operation.date
-        customThrough = operation.date
-        period = .custom(from: operation.date, through: operation.date)
+        // The period in use stays when it already covers the day; otherwise its month is shown (never a lone day).
+        let shown = HistoryPeriod.showing(operation.date, current: period)
+        if let dates = datesOf(shown) {
+            customFrom = dates.from
+            customThrough = dates.through
+        }
+        period = shown
         historyExpanded = true
         lastSavedOperationID = operation.id
     }
@@ -225,8 +229,8 @@ struct OperationsHomeView: View {
                                       action: { period = .allTime })
                     }
                 }
-                if case .custom(let from, let through) = period {
-                    Text("\(from.formatted(.dateTime.day().month().year())) — \(through.formatted(.dateTime.day().month().year()))")
+                if let dates = datesOf(period) {
+                    Text("\(dates.from.formatted(.dateTime.day().month().year())) — \(dates.through.formatted(.dateTime.day().month().year()))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -237,9 +241,9 @@ struct OperationsHomeView: View {
     
     /// The sheet starts from the dates in use, or from today.
     private func openCustomDates() {
-        if case .custom(let from, let through) = period {
-            customFrom = from
-            customThrough = through
+        if let dates = datesOf(period) {
+            customFrom = dates.from
+            customThrough = dates.through
         } else {
             customFrom = Date()
             customThrough = Date()
@@ -247,9 +251,15 @@ struct OperationsHomeView: View {
         showCustomDates = true
     }
 
-    private var periodIsCustom: Bool {
-        if case .custom = period { return true }
-        return false
+    private var periodIsCustom: Bool { datesOf(period) != nil }
+
+    /// The days a dated period shows; the running month is read from today's date, so it never goes stale.
+    private func datesOf(_ period: HistoryPeriod, now: Date = Date()) -> (from: Date, through: Date)? {
+        switch period {
+        case .custom(let from, let through): return (from, through)
+        case .monthToDate: return (monthStart(of: now), now)
+        case .lastDays, .allTime: return nil
+        }
     }
     
     private func capsuleButton(title: String,
@@ -613,10 +623,8 @@ private struct CustomDatesSheet: View {
         NavigationStack {
             Form {
                 Button {
-                    if case .custom(let first, let last) = HistoryPeriod.currentMonth() {
-                        from = first
-                        through = last
-                    }
+                    from = monthStart(of: Date())
+                    through = Date()
                 } label: {
                     // Plain blue text sinks into the glass of the sheet: the words keep the main colour, the icon the accent.
                     Label {
@@ -647,7 +655,10 @@ private struct CustomDatesSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         // The sheet closes first; the screen behind it recounts the operations right after.
-                        let chosen = HistoryPeriod.custom(from: from, through: through)
+                        // «From the 1st through today» is remembered as the running month: it moves on with the calendar.
+                        let calendar = Calendar.current
+                        let runsToToday = calendar.isDateInToday(through) && calendar.isDate(from, inSameDayAs: monthStart(of: Date()))
+                        let chosen: HistoryPeriod = runsToToday ? .monthToDate : .custom(from: from, through: through)
                         dismiss()
                         Task { @MainActor in
                             try? await Task.sleep(nanoseconds: 350_000_000)

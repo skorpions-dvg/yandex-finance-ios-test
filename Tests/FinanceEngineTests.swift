@@ -583,18 +583,27 @@ struct FinanceEngineTests {
         func date(_ month: Int, _ day: Int, _ hour: Int = 0) -> Date {
             calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: hour))!
         }
-        for period in [HistoryPeriod.lastDays(1), .lastDays(30), .lastDays(365), .allTime, .custom(from: date(9, 1), through: date(9, 8, 15))] {
+        for period in [HistoryPeriod.lastDays(1), .lastDays(30), .lastDays(365), .allTime, .monthToDate, .custom(from: date(9, 1), through: date(9, 8, 15))] {
             require(HistoryPeriod(storageText: period.storageText) == period, "remembered and restored: \(period.storageText)")
         }
         require(HistoryPeriod(storageText: "") == nil && HistoryPeriod(storageText: "days:0") == nil && HistoryPeriod(storageText: "days:-5") == nil
                 && HistoryPeriod(storageText: "days:99999") == nil && HistoryPeriod(storageText: "custom:1") == nil
                 && HistoryPeriod(storageText: "custom:a:b") == nil && HistoryPeriod(storageText: "all:1") == nil
-                && HistoryPeriod(storageText: "month") == nil, "text that is not a period restores nothing")
+                && HistoryPeriod(storageText: "month:1") == nil && HistoryPeriod(storageText: "months") == nil, "text that is not a period restores nothing")
         let month = HistoryPeriod.currentMonth(now: date(9, 17, 13), calendar: calendar)
-        require(month == .custom(from: date(9, 1), through: date(9, 17, 13)), "the current month runs from the 1st through today")
+        require(month == .monthToDate && HistoryPeriod(storageText: "month") == .monthToDate, "the current month is remembered as the running month")
         require(historyInterval(month, now: date(9, 17, 13), calendar: calendar) == DateInterval(start: date(9, 1), end: date(9, 18)),
                 "the 1st and today are both inside")
-        require(HistoryPeriod.currentMonth(now: date(9, 1), calendar: calendar) == .custom(from: date(9, 1), through: date(9, 1)), "on the 1st it is one day")
+        require(historyInterval(month, now: date(10, 2, 8), calendar: calendar) == DateInterval(start: date(10, 1), end: date(10, 3)),
+                "the next day and the next month it moves on with the calendar")
+        require(historyInterval(.monthToDate, now: date(9, 1), calendar: calendar) == DateInterval(start: date(9, 1), end: date(9, 2)), "on the 1st it is one day")
+        // after a save: the period in use stays when it covers the day, else the month of the day (never a lone day)
+        let today = date(9, 17, 13)
+        require(HistoryPeriod.showing(date(9, 17, 9), current: .monthToDate, now: today, calendar: calendar) == .monthToDate, "the running month already covers today")
+        require(HistoryPeriod.showing(date(9, 5), current: .lastDays(7), now: today, calendar: calendar) == .monthToDate, "a day of the running month outside the period shows the running month")
+        require(HistoryPeriod.showing(date(8, 20), current: .monthToDate, now: today, calendar: calendar) == .custom(from: date(8, 1), through: date(8, 31)), "a past month is shown whole")
+        require(HistoryPeriod.showing(date(9, 25), current: .monthToDate, now: today, calendar: calendar) == .custom(from: date(9, 1), through: date(9, 30)), "a day after today shows the whole month")
+        require(HistoryPeriod.showing(date(9, 3), current: .allTime, now: today, calendar: calendar) == .allTime, "all time covers it")
     }
 
     /// The first real receipt (stage 46.10): «ИТОГ БЕЗ СКИДОК» was taken for the total.
