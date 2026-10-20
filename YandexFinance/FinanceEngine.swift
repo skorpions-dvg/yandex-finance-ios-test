@@ -960,6 +960,74 @@ enum FinancialEngine {
     /// Days a late regular payment is still waited for before the owner is asked.
     static let paymentGraceDays = 7
 
+    /// One payment of a subscription or a loan on its day.
+    struct CommitmentDue: Equatable {
+        let id: UUID
+        let title: String
+        let amountKopecks: Int64
+        let date: Date
+    }
+
+    /// The day `day` of a month; the 31st of a short month is its last day.
+    static func commitmentDay(year: Int, month: Int, day: Int, calendar: Calendar) -> Date? {
+        guard let first = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
+              let count = calendar.range(of: .day, in: .month, for: first)?.count else { return nil }
+        return calendar.date(from: DateComponents(year: year, month: month, day: min(max(1, day), count)))
+    }
+
+    /// What the owner's answer about a payment of a subscription or a loan is stored under.
+    static func commitmentKey(id: UUID, due: Date, calendar: Calendar) -> String {
+        let day = calendar.dateComponents([.year, .month, .day], from: due)
+        return "commit|\(id.uuidString)|" + String(format: "%04d-%02d-%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0)
+    }
+
+    /// The payments of subscriptions and loans dated from the day of `from` up to, not including, `to`; oldest first. A loan that
+    /// goes down by itself pays its payment on its day, the last one no more than what is left, and nothing once it is paid off.
+    static func commitmentDues(subscriptions: [Subscription], loans: [Loan], from: Date, to: Date, calendar: Calendar) -> [CommitmentDue] {
+        let fromDay = calendar.startOfDay(for: from)
+        func months(startingAt start: Date) -> [(year: Int, month: Int)] {
+            var result: [(year: Int, month: Int)] = []
+            var cursor = calendar.date(from: calendar.dateComponents([.year, .month], from: start))!
+            while cursor < to {
+                let parts = calendar.dateComponents([.year, .month], from: cursor)
+                result.append((parts.year ?? 0, parts.month ?? 1))
+                cursor = calendar.date(byAdding: .month, value: 1, to: cursor)!
+            }
+            return result
+        }
+        var dues: [CommitmentDue] = []
+        for subscription in subscriptions where subscription.amountKopecks > 0 {
+            let since = subscription.since.map { calendar.startOfDay(for: $0) }
+            for (year, month) in months(startingAt: fromDay) {
+                if let only = subscription.month, only != month { continue }
+                guard let date = commitmentDay(year: year, month: month, day: subscription.day, calendar: calendar),
+                      date >= fromDay, date < to, since.map({ date >= $0 }) ?? true else { continue }
+                dues.append(CommitmentDue(id: subscription.id, title: subscription.name, amountKopecks: subscription.amountKopecks, date: date))
+            }
+        }
+        for loan in loans where loan.paymentKopecks > 0 {
+            let since = loan.since.map { calendar.startOfDay(for: $0) }
+            var left: Int64? = loan.reducesBalance ? loan.balanceKopecks : nil
+            let enteredOn = loan.balanceDate.map { calendar.startOfDay(for: $0) }
+            // A balance that goes down by itself is followed from the day it was entered.
+            let start = left != nil ? min(enteredOn ?? fromDay, fromDay) : fromDay
+            for (year, month) in months(startingAt: start) {
+                guard let date = commitmentDay(year: year, month: month, day: loan.day, calendar: calendar), date < to else { continue }
+                var amount = loan.paymentKopecks
+                if let remaining = left {
+                    // The balance entered on the day of a payment, or after it, already counts that payment.
+                    if let enteredOn, date <= enteredOn { continue }
+                    if remaining <= 0 { continue }
+                    amount = min(amount, remaining)
+                    left = remaining - amount
+                }
+                guard date >= fromDay, since.map({ date >= $0 }) ?? true else { continue }
+                dues.append(CommitmentDue(id: loan.id, title: loan.name, amountKopecks: amount, date: date))
+            }
+        }
+        return dues.sorted { $0.date == $1.date ? $0.title < $1.title : $0.date < $1.date }
+    }
+
     /// One occurrence of a regular payment: income or expense, its payee and its usual day.
     static func paymentKey(title: String, isIncome: Bool, due: Date, calendar: Calendar) -> String {
         let day = calendar.dateComponents([.year, .month, .day], from: due)
@@ -1159,7 +1227,8 @@ enum FinancialEngine {
     /// the usual monthly variable spending. Months with fewer than three expenses are not used.
     /// Built on `report`, so the usual rules apply.
     static func monthForecast(_ operations: [FinancialOperationInput], now: Date = Date(), calendar: Calendar = .current,
-                              taxonomy: ExpenseTaxonomy = .builtin, answers: [String: PaymentAnswer] = [:]) -> MonthForecast {
+                              taxonomy: ExpenseTaxonomy = .builtin, answers: [String: PaymentAnswer] = [:],
+                              subscriptions: [Subscription] = [], loans: [Loan] = []) -> MonthForecast {
         // The engine is also compiled on its own (statement import tests), so month bounds are computed here.
         let monthStartDate = calendar.date(from: calendar.dateComponents([.year, .month], from: now))!
         let startOfToday = calendar.startOfDay(for: now)
@@ -1320,6 +1389,25 @@ enum FinancialEngine {
                 }
                 count += 1
                 next = step(pattern.lastDate, by: pattern.intervalDays, times: count, calendar: calendar)
+            }
+        }
+        // Subscriptions and loans the owner entered: each payment of last month and this one, unless an expense of about the same
+        // amount is already among the operations (within three days) or the same payment is among the regular ones found above.
+        func within(_ days: Double, _ left: Date, _ right: Date) -> Bool { abs(left.timeIntervalSince(right)) <= days * 86_400 }
+        func about(_ left: Int64, _ right: Int64, percent: Int64) -> Bool { abs(left - right) * 100 <= right * percent }
+        for due in commitmentDues(subscriptions: subscriptions, loans: loans, from: previousMonthStart, to: monthEnd, calendar: calendar) {
+            let key = commitmentKey(id: due.id, due: due.date, calendar: calendar)
+            let answer = answers[key]
+            let date = answer?.kind == .moved ? (answer?.movedTo ?? due.date) : due.date
+            guard answer?.kind != .arrived, answer?.kind != .skipped, date < monthEnd else { continue }
+            if allItems.contains(where: { !$0.isIncome && within(3, $0.date, due.date) && about($0.amount, due.amountKopecks, percent: 5) }) { continue }
+            if upcoming.contains(where: { !$0.isIncome && !$0.key.hasPrefix("commit|") && within(3, $0.date, due.date)
+                                           && about($0.amountKopecks, due.amountKopecks, percent: 15) }) { continue }
+            let waitUntil = calendar.date(byAdding: .day, value: paymentGraceDays, to: calendar.startOfDay(for: date))!
+            let status: UpcomingPayment.Status = date >= startOfToday ? .expected : (startOfToday <= waitUntil ? .waiting : .question)
+            if date >= monthStartDate || status != .expected {
+                upcoming.append(UpcomingPayment(title: due.title, amountKopecks: due.amountKopecks, date: date, isIncome: false,
+                                                overdue: date < startOfToday, status: status, key: key, waitUntil: waitUntil))
             }
         }
         upcoming.sort { $0.date < $1.date }

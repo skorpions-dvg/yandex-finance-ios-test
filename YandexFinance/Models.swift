@@ -138,6 +138,10 @@ struct SavedHistory: Codable {
     var receiptScans: [String: ReceiptScan]?
     /// Operations whose receipts were already put into a collection for the check of the reading.
     var collectedReceiptIdentities: [String]?
+    /// Subscriptions the owner entered (the forecast counts their payments; a day before one a reminder may come).
+    var subscriptions: [Subscription]?
+    /// Loans the owner entered: a monthly payment, and the balance he keeps by hand.
+    var loans: [Loan]?
 
     /// Bank operations together with the manual ones, for every list, report and forecast.
     var allOperations: [BankOperation] { operations + (manualOperations ?? []).map(\.bankOperation) }
@@ -1041,6 +1045,62 @@ extension SavedHistory {
         }
         operationNatures = all.isEmpty ? nil : all
         return true
+    }
+}
+
+// MARK: - Subscriptions and loans
+
+/// A subscription: one payment a month, or one a year, on the same day.
+struct Subscription: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var amountKopecks: Int64
+    /// The day of the month it is taken (1...31; the 31st of a short month is that month's last day).
+    var day: Int
+    /// nil: every month; 1...12: once a year, in that month.
+    var month: Int?
+    /// The account it is paid from, if the owner says (only shown: the forecast checks the payments among all operations).
+    var accountID: UUID?
+    var remind = false
+    /// The day it was entered: a payment dated before it was not meant to be waited for.
+    var since: Date?
+}
+
+/// A loan: a monthly payment on the same day, and the balance still to pay that the owner keeps by hand.
+struct Loan: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var paymentKopecks: Int64
+    var day: Int
+    var accountID: UUID?
+    var remind = false
+    /// What was left to pay on `balanceDate`, entered by hand (no interest is guessed).
+    var balanceKopecks: Int64?
+    var balanceDate: Date?
+    /// The balance goes down by a payment on its day; a paid-off loan has no payments in the forecast.
+    var reducesBalance = false
+    var since: Date?
+}
+
+extension Loan {
+    /// The balance now: the entered one less the payments that fell due after it was entered, when it goes down by itself.
+    /// nil without a balance.
+    func balance(now: Date, calendar: Calendar = .current) -> Int64? {
+        guard let entered = balanceKopecks else { return nil }
+        guard reducesBalance, let enteredOn = balanceDate else { return entered }
+        let paid = FinancialEngine.commitmentDues(subscriptions: [], loans: [self], from: enteredOn,
+                                                  to: calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!,
+                                                  calendar: calendar).reduce(Int64(0)) { $0 + $1.amountKopecks }
+        return max(0, entered - paid)
+    }
+}
+
+extension SavedHistory {
+    /// What the forecast depends on in the subscriptions and loans (the key of its cache).
+    var commitmentsKey: String {
+        let subs = (subscriptions ?? []).map { "\($0.id)|\($0.amountKopecks)|\($0.day)|\($0.month ?? 0)|\($0.since?.timeIntervalSince1970 ?? 0)" }
+        let loans = (loans ?? []).map { "\($0.id)|\($0.paymentKopecks)|\($0.day)|\($0.balanceKopecks ?? -1)|\($0.balanceDate?.timeIntervalSince1970 ?? 0)|\($0.reducesBalance)|\($0.since?.timeIntervalSince1970 ?? 0)" }
+        return (subs + loans).joined(separator: ";")
     }
 }
 

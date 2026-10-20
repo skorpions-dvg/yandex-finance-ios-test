@@ -108,7 +108,8 @@ final class FinancePresentationCache {
 
     func forecast(_ history: SavedHistory, now: Date = Date()) -> FinancialEngine.MonthForecast {
         value(forecastKey(history, now: now)) {
-            FinancialEngine.monthForecast(inputs(history), now: now, taxonomy: history.expenseTaxonomy, answers: history.paymentAnswers ?? [:])
+            FinancialEngine.monthForecast(inputs(history), now: now, taxonomy: history.expenseTaxonomy, answers: history.paymentAnswers ?? [:],
+                                          subscriptions: history.subscriptions ?? [], loans: history.loans ?? [])
         }
     }
 
@@ -116,7 +117,7 @@ final class FinancePresentationCache {
     func forecastKey(_ history: SavedHistory, now: Date = Date()) -> String {
         let answers = (history.paymentAnswers ?? [:]).sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value.kind.rawValue)\($0.value.movedTo.map { "@\($0.timeIntervalSince1970)" } ?? "")" }.joined(separator: ";")
-        return "forecast:\(Calendar.current.startOfDay(for: now)):\(answers)"
+        return "forecast:\(Calendar.current.startOfDay(for: now)):\(answers):\(history.commitmentsKey)"
     }
 
     /// The forecast if it is already computed, without computing it (the home screen computes it in the background: about a

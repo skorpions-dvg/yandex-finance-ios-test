@@ -1559,6 +1559,88 @@ struct FinanceEngineTests {
         require(explained.baselineMonths.contains { $0.otherRefundsKopecks == 500 }, "a refund of an older purchase is shown apart")
     }
 
+    /// Subscriptions and loans entered by the owner: their days, the balance of a loan, and their place in the forecast.
+    static func testCommitments() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ month: Int, _ day: Int, _ year: Int = 2032) -> Date { calendar.date(from: DateComponents(year: year, month: month, day: day, hour: 12))! }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2032-%02d-%02dT12:00:00Z", month, day) }
+        func days(_ dues: [FinancialEngine.CommitmentDue]) -> [Int] { dues.map { calendar.component(.day, from: $0.date) } }
+
+        // the days: the 31st of a short month is its last day (2032 is a leap year); a yearly one comes once; «since» skips older ones
+        let monthly = Subscription(name: "Подписка учебная", amountKopecks: 79_900, day: 31)
+        require(days(FinancialEngine.commitmentDues(subscriptions: [monthly], loans: [], from: at(1, 1), to: at(4, 1), calendar: calendar)) == [31, 29, 31],
+                "the 31st is the last day of a short month")
+        let yearly = Subscription(name: "Годовая учебная", amountKopecks: 120_000, day: 15, month: 3)
+        let yearlyDues = FinancialEngine.commitmentDues(subscriptions: [yearly], loans: [], from: at(1, 1), to: at(1, 1, 2033), calendar: calendar)
+        require(yearlyDues.count == 1 && calendar.component(.month, from: yearlyDues[0].date) == 3, "a yearly subscription comes once a year")
+        var later = monthly
+        later.since = at(2, 20)
+        require(days(FinancialEngine.commitmentDues(subscriptions: [later], loans: [], from: at(1, 1), to: at(4, 1), calendar: calendar)) == [29, 31],
+                "a payment dated before the subscription was entered is not waited for")
+        require(FinancialEngine.commitmentDues(subscriptions: [Subscription(name: "Нулевая", amountKopecks: 0, day: 5)], loans: [], from: at(1, 1), to: at(4, 1), calendar: calendar).isEmpty,
+                "no amount, no payment")
+
+        // a loan: the balance goes down by each payment, the last one is what is left, then nothing
+        var loan = Loan(name: "Кредит учебный", paymentKopecks: 10_000, day: 15, balanceKopecks: 25_000, balanceDate: at(1, 10), reducesBalance: true)
+        func amounts(_ loan: Loan, to: Date) -> [Int64] {
+            FinancialEngine.commitmentDues(subscriptions: [], loans: [loan], from: at(1, 1), to: to, calendar: calendar).map(\.amountKopecks)
+        }
+        require(amounts(loan, to: at(7, 1)) == [10_000, 10_000, 5_000], "the balance goes down; the last payment is what is left")
+        loan.balanceDate = at(1, 15)
+        require(amounts(loan, to: at(7, 1)) == [10_000, 10_000, 5_000] && FinancialEngine.commitmentDues(subscriptions: [], loans: [loan], from: at(1, 1), to: at(2, 1), calendar: calendar).isEmpty,
+                "a balance entered on the day of a payment already counts it")
+        loan.balanceDate = at(1, 10)
+        loan.reducesBalance = false
+        require(amounts(loan, to: at(4, 1)) == [10_000, 10_000, 10_000], "a balance that is not reduced leaves the payments as they are")
+        loan.reducesBalance = true
+        require(loan.balance(now: at(1, 12), calendar: calendar) == 25_000 && loan.balance(now: at(2, 20), calendar: calendar) == 5_000
+                    && loan.balance(now: at(8, 1), calendar: calendar) == 0, "the balance now")
+        loan.reducesBalance = false
+        require(loan.balance(now: at(8, 1), calendar: calendar) == 25_000, "a kept balance stays as entered")
+        loan.balanceKopecks = nil
+        require(loan.balance(now: at(8, 1), calendar: calendar) == nil, "no balance entered")
+
+        // the forecast: a payment of the month is expected; one already among the operations, or already a found regular one, is not counted twice
+        let due = Subscription(name: "Подписка учебная", amountKopecks: 700_000, day: 20, since: at(4, 1))
+        let expectedDue = FinancialEngine.monthForecast([], now: at(4, 10), calendar: calendar, subscriptions: [due])
+        require(expectedDue.upcoming.count == 1 && expectedDue.upcoming[0].amountKopecks == 700_000 && expectedDue.upcoming[0].status == .expected
+                    && expectedDue.futureExpenseKopecks == 700_000, "a subscription payment is expected spending")
+        let paidAlready = [op(-710_000, kind: "expense", category: "Тест", description: "Подписка учебная", date: iso(4, 19))]
+        require(FinancialEngine.monthForecast(paidAlready, now: at(4, 21), calendar: calendar, subscriptions: [due]).upcoming.isEmpty,
+                "an expense of about the same amount within three days is the payment")
+        let farOff = [op(-710_000, kind: "expense", category: "Тест", description: "Подписка учебная", date: iso(4, 9))]
+        require(FinancialEngine.monthForecast(farOff, now: at(4, 21), calendar: calendar, subscriptions: [due]).upcoming.count == 1,
+                "the same expense a week before is another one")
+        let service = (1...3).map { op(-50_000, kind: "expense", category: "Связь", description: "Услуга учебная регулярная", date: iso($0, 5)) }
+        let same = Subscription(name: "Услуга", amountKopecks: 50_000, day: 5, since: at(4, 1))
+        let counted = FinancialEngine.monthForecast(service, now: at(4, 2), calendar: calendar, subscriptions: [same])
+        require(counted.upcoming.count == 1 && counted.upcoming[0].key.hasPrefix("out|"), "a payment already among the regular ones is not counted twice")
+
+        // late: waited for a week, then asked about; the answer closes or moves it; one entered after its day is not asked about
+        let early = Subscription(name: "Подписка учебная", amountKopecks: 700_000, day: 5, since: at(4, 1))
+        let waiting = FinancialEngine.monthForecast([], now: at(4, 12), calendar: calendar, subscriptions: [early])
+        require(waiting.upcoming.count == 1 && waiting.upcoming[0].status == .waiting && waiting.futureExpenseKopecks == 700_000, "a week late it is still waited for")
+        let asked = FinancialEngine.monthForecast([], now: at(4, 13), calendar: calendar, subscriptions: [early])
+        require(asked.questions.count == 1 && asked.futureExpenseKopecks == 0, "more than a week late it is asked about, not counted")
+        let key = asked.questions[0].key
+        require(key == FinancialEngine.commitmentKey(id: early.id, due: at(4, 5), calendar: calendar) && key.hasPrefix("commit|"), "the key of the answer")
+        for kind in [FinancialEngine.PaymentAnswer.Kind.arrived, .skipped] {
+            require(FinancialEngine.monthForecast([], now: at(4, 13), calendar: calendar, answers: [key: .init(kind: kind)], subscriptions: [early]).upcoming.isEmpty,
+                    "the answer «\(kind.rawValue)» closes it")
+        }
+        let moved = FinancialEngine.monthForecast([], now: at(4, 13), calendar: calendar,
+                                                  answers: [key: .init(kind: .moved, movedTo: calendar.startOfDay(for: at(4, 20)))], subscriptions: [early])
+        require(moved.questions.isEmpty && moved.upcoming.count == 1 && moved.upcoming[0].status == .expected, "a moved payment is expected on its new day")
+        var added = early
+        added.since = at(4, 10)
+        require(FinancialEngine.monthForecast([], now: at(4, 13), calendar: calendar, subscriptions: [added]).upcoming.isEmpty,
+                "a payment of a subscription entered after its day is not asked about")
+        let loanForecast = FinancialEngine.monthForecast([], now: at(4, 10), calendar: calendar,
+                                                         loans: [Loan(name: "Кредит учебный", paymentKopecks: 1_500_000, day: 25, since: at(4, 1))])
+        require(loanForecast.upcoming.count == 1 && loanForecast.futureExpenseKopecks == 1_500_000, "a loan payment is expected spending")
+    }
+
     /// A late regular payment is waited for a week, then asked about and not counted (decision 2); the owner's answer closes
     /// or moves it; one of last month is not dropped on the 1st (decision 5); the cautious irregular income (decision C).
     static func testForecastLatePaymentsAndIrregularIncome() {
@@ -3815,6 +3897,7 @@ struct FinanceEngineTests {
     }
 
     static func main() {
+        testCommitments()
         testAudit53AngledReceipts()
         testAudit53AccountHistory()
         testAudit52ReceiptLayouts()

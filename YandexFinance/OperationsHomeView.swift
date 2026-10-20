@@ -431,8 +431,10 @@ struct OperationsHomeView: View {
         let inputs = presentation.inputs(history)
         let taxonomy = history.expenseTaxonomy
         let answers = history.paymentAnswers ?? [:]
+        let subscriptions = history.subscriptions ?? []
+        let loans = history.loans ?? []
         let result = await Task.detached(priority: .userInitiated) {
-            FinancialEngine.monthForecast(inputs, now: now, taxonomy: taxonomy, answers: answers)
+            FinancialEngine.monthForecast(inputs, now: now, taxonomy: taxonomy, answers: answers, subscriptions: subscriptions, loans: loans)
         }.value
         if presentation.storeForecast(result, history: history, now: now, generation: generation) { forecastLanded += 1 }
     }
