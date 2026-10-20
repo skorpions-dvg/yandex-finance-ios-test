@@ -1559,6 +1559,32 @@ struct FinanceEngineTests {
         require(explained.baselineMonths.contains { $0.otherRefundsKopecks == 500 }, "a refund of an older purchase is shown apart")
     }
 
+    /// Credit cards: the balance is the money still available; the debt, the limit exceeded, the overpayment, saving with another limit.
+    static func testCreditCards() {
+        require(CreditCards.debt(limit: 10_000_000, balance: 8_000_000) == 2_000_000, "limit 100 000, 80 000 available: the debt is 20 000")
+        require(CreditCards.debt(limit: 10_000_000, balance: 12_000_000) == 0 && CreditCards.overpaid(limit: 10_000_000, balance: 12_000_000) == 2_000_000,
+                "more than the limit is an overpayment, not a negative debt")
+        require(CreditCards.overLimit(balance: -300_000) == 300_000 && CreditCards.overLimit(balance: 5) == 0, "a balance below zero exceeds the limit")
+        var card = Account(name: "Карта учебная", icon: "creditcard", color: "blue", groupID: nil, startBalanceKopecks: 8_000_000, startDate: Date())
+        require(!card.isCreditCard, "no limit, not a credit card")
+        card.creditLimitKopecks = 0
+        require(!card.isCreditCard, "a zero limit is no limit")
+        card.creditLimitKopecks = 10_000_000
+        require(card.isCreditCard, "a limit makes a credit card")
+        // the same debt at creation with a larger limit: the start balance moves by the difference, the account goes on
+        let raised = CreditCards.resave(oldLimit: 10_000_000, oldStartBalance: 8_000_000, newLimit: 15_000_000, debt: 2_000_000)
+        require(raised.startBalanceKopecks == 13_000_000 && !raised.restarts, "another limit, the same debt: the account goes on")
+        let other = CreditCards.resave(oldLimit: 10_000_000, oldStartBalance: 8_000_000, newLimit: 10_000_000, debt: 1_000_000)
+        require(other.startBalanceKopecks == 9_000_000 && other.restarts, "another debt starts the account again")
+        let converted = CreditCards.resave(oldLimit: nil, oldStartBalance: 500_000, newLimit: 10_000_000, debt: 0)
+        require(converted.startBalanceKopecks == 10_000_000 && converted.restarts, "an account that was not a card starts again")
+        // the limit is kept in the saved history and old data without it open as before
+        let encoded = try? JSONEncoder().encode(card)
+        require(encoded.flatMap { try? JSONDecoder().decode(Account.self, from: $0) }?.creditLimitKopecks == 10_000_000, "the limit survives saving")
+        let old = #"{"id":"00000000-0000-0000-0000-000000000001","name":"Старый","icon":"banknote","color":"gray","startBalanceKopecks":100,"startDate":0,"showsBalance":true,"tracksBankCard":false}"#
+        require((try? JSONDecoder().decode(Account.self, from: Data(old.utf8)))?.creditLimitKopecks == nil, "an old account opens without a limit")
+    }
+
     /// Subscriptions and loans entered by the owner: their days, the balance of a loan, and their place in the forecast.
     static func testCommitments() {
         var calendar = Calendar(identifier: .gregorian)
@@ -3911,6 +3937,7 @@ struct FinanceEngineTests {
     }
 
     static func main() {
+        testCreditCards()
         testCommitments()
         testAudit53AngledReceipts()
         testAudit53AccountHistory()

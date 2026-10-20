@@ -291,6 +291,10 @@ struct Account: Codable, Equatable, Identifiable {
     /// The Save account of Yandex Bank: its interest, the transfers with the card and the payments from it come from the
     /// bank. Missing (old data): kept by hand.
     var tracksSave: Bool?
+    /// The limit of a credit card: its balance is what is still available (limit − debt). Missing (or zero): not a credit card.
+    var creditLimitKopecks: Int64?
+
+    var isCreditCard: Bool { (creditLimitKopecks ?? 0) > 0 }
 
     /// An account whose balance is moved by the bank, not by entries made by hand.
     var followsBank: Bool { tracksBankCard || tracksSave == true }
@@ -1045,6 +1049,28 @@ extension SavedHistory {
         }
         operationNatures = all.isEmpty ? nil : all
         return true
+    }
+}
+
+// MARK: - Credit cards
+
+/// A credit card is an account whose balance is the money still available: the limit less the debt. Purchases lower it, a payment
+/// (a transfer to the card) raises it. The minimum payment, the grace period and the interest are not counted.
+enum CreditCards {
+    static func debt(limit: Int64, balance: Int64) -> Int64 { max(0, limit - balance) }
+    /// A balance below zero: the limit is exceeded by that much.
+    static func overLimit(balance: Int64) -> Int64 { max(0, -balance) }
+    /// A balance above the limit: more was paid than was owed.
+    static func overpaid(limit: Int64, balance: Int64) -> Int64 { max(0, balance - limit) }
+
+    /// The start balance to keep when a card is saved. The same debt as at creation with another limit moves the start balance by
+    /// the difference of the limits and the account goes on (the operations after its start stay); another debt, or a card that
+    /// was not one, starts the account again from now.
+    static func resave(oldLimit: Int64?, oldStartBalance: Int64?, newLimit: Int64, debt: Int64) -> (startBalanceKopecks: Int64, restarts: Bool) {
+        if let oldLimit, let oldStartBalance, oldLimit - oldStartBalance == debt {
+            return (oldStartBalance + (newLimit - oldLimit), false)
+        }
+        return (newLimit - debt, true)
     }
 }
 

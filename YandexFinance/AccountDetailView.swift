@@ -49,7 +49,18 @@ struct AccountDetailView: View {
                             .font(.headline).foregroundStyle(accountColor(account.color))
                         Text(money(current)).font(.largeTitle.weight(.semibold)).monospacedDigit()
                             .lineLimit(1).minimumScaleFactor(0.6)
-                        Text("Текущий остаток").font(.caption).foregroundStyle(.secondary)
+                        Text(account.isCreditCard ? "Доступно" : "Текущий остаток").font(.caption).foregroundStyle(.secondary)
+                        if account.isCreditCard, let limit = account.creditLimitKopecks {
+                            Text("Лимит \(money(limit)) · Долг \(money(CreditCards.debt(limit: limit, balance: current)))")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                            if CreditCards.overLimit(balance: current) > 0 {
+                                Text("Лимит превышен на \(money(CreditCards.overLimit(balance: current)))").font(.caption).foregroundStyle(.orange)
+                            }
+                            if CreditCards.overpaid(limit: limit, balance: current) > 0 {
+                                Text("Переплата \(money(CreditCards.overpaid(limit: limit, balance: current)))").font(.caption).foregroundStyle(.orange)
+                            }
+                            Text("Считается по вашим операциям: сверяйте с банком.").font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 8)
                 }.glassRows()

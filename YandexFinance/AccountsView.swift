@@ -242,8 +242,15 @@ struct AccountsView: View {
         presentation.accountBalance(account, history: browser.history)
     }
 
+    /// The sum of the accounts; a credit card is the bank's money and is not added (a group of cards alone shows its debt).
     private func total(_ accounts: [Account]) -> String {
-        accountMoney(accounts.reduce(0) { $0 + cachedBalance($1) })
+        let cards = accounts.filter(\.isCreditCard)
+        let own = accounts.filter { !$0.isCreditCard }
+        if own.isEmpty && !cards.isEmpty {
+            let debt = cards.reduce(Int64(0)) { $0 + CreditCards.debt(limit: $1.creditLimitKopecks ?? 0, balance: cachedBalance($1)) }
+            return "долг " + accountMoney(debt)
+        }
+        return accountMoney(own.reduce(0) { $0 + cachedBalance($1) })
     }
 
     private func groupHeader(_ group: AccountGroup) -> some View {
@@ -355,6 +362,10 @@ struct AccountsView: View {
                         Text(account.name).foregroundStyle(.primary)
                             .lineLimit(1).truncationMode(.tail)
                         // The bank shows another balance: what it shows (the card of the account explains the difference).
+                        if !editMode.isEditing, account.isCreditCard {
+                            Text("Долг \(accountMoney(CreditCards.debt(limit: account.creditLimitKopecks ?? 0, balance: cachedBalance(account))))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                         if !editMode.isEditing, let bank = browser.history.bankBalance(for: account), bank != cachedBalance(account) {
                             Text("банк: \(accountMoney(bank))").font(.caption2).foregroundStyle(.orange)
                         }
@@ -423,6 +434,8 @@ struct AccountFormView: View {
     @State private var showsBalance: Bool
     @State private var tracksBankCard: Bool
     @State private var tracksSave: Bool
+    @State private var isCredit: Bool
+    @State private var limitText: String
     @State private var groupID: UUID?
     @State private var showsIcons = false
     @State private var confirmDeletion = false
@@ -438,7 +451,14 @@ struct AccountFormView: View {
         _name = State(initialValue: account?.name ?? "")
         _icon = State(initialValue: account?.icon ?? "banknote")
         _color = State(initialValue: account?.color ?? "orange")
-        _balanceText = State(initialValue: account.map { (Decimal($0.startBalanceKopecks) / 100).description } ?? "0")
+        // A credit card keeps its debt at creation in this field (the balance is the limit less the debt).
+        _balanceText = State(initialValue: account.map { saved in
+            saved.isCreditCard
+                ? (Decimal(CreditCards.debt(limit: saved.creditLimitKopecks ?? 0, balance: saved.startBalanceKopecks)) / 100).description
+                : (Decimal(saved.startBalanceKopecks) / 100).description
+        } ?? "0")
+        _isCredit = State(initialValue: account?.isCreditCard ?? false)
+        _limitText = State(initialValue: account?.creditLimitKopecks.map { (Decimal($0) / 100).description } ?? "")
         _showsBalance = State(initialValue: account?.showsBalance ?? true)
         _tracksBankCard = State(initialValue: account?.tracksBankCard ?? false)
         _tracksSave = State(initialValue: account?.tracksSave ?? false)
@@ -472,21 +492,45 @@ struct AccountFormView: View {
                     }
                 }.glassRows()
                 Section {
+                    Toggle("Кредитная карта", isOn: $isCredit)
+                        .onChange(of: isCredit) { _, on in if on && account == nil { showsBalance = false } }
+                    if isCredit {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Кредитный лимит")
+                            TextField("Лимит", text: $limitText).keyboardType(.decimalPad)
+                                .padding(.horizontal, 12).padding(.vertical, 10)
+                                .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.18)))
+                        }
+                        if (parsedLimit ?? 0) <= 0 {
+                            Text("Введите лимит с точностью до копеек.").font(.footnote).foregroundStyle(.red)
+                        }
+                    }
+                } footer: {
+                    if isCredit {
+                        Text("Остаток счёта — доступные деньги: лимит минус долг. Покупки уменьшают его, платёж (перевод на карту) увеличивает. Минимальный платёж, льготный период и проценты не считаются: сверяйте цифры с банком. Такой счёт по умолчанию не входит в общий остаток.")
+                    }
+                }.glassRows()
+                Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(account == nil ? "Начальный баланс" : "Остаток на момент создания")
+                        Text(isCredit ? (account == nil ? "Текущий долг" : "Долг на момент создания")
+                                      : (account == nil ? "Начальный баланс" : "Остаток на момент создания"))
                         TextField("Сумма", text: $balanceText).keyboardType(.decimalPad)
                             .padding(.horizontal, 12).padding(.vertical, 10)
                             .background(Color.primary.opacity(0.08), in: .rect(cornerRadius: 12))
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.18)))
                     }
                     if let account {
-                        Text("Текущий остаток: \(accountMoney(accountBalance(account, history: browser.history)))")
+                        Text((isCredit ? "Доступно сейчас: " : "Текущий остаток: ") + accountMoney(accountBalance(account, history: browser.history)))
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     if parsedBalance == nil {
                         Text("Введите сумму с точностью до копеек.").font(.footnote).foregroundStyle(.red)
                     }
-                } footer: { Text("Остаток на счёте сейчас. Дальше он меняется операциями.") }.glassRows()
+                } footer: {
+                    Text(isCredit ? "Сколько уже потрачено с карты (для новой карты — 0). Дальше остаток меняется операциями."
+                                  : "Остаток на счёте сейчас. Дальше он меняется операциями.")
+                }.glassRows()
                 Section {
                     Toggle("Учитывать счёт в текущем остатке", isOn: $showsBalance)
                 }.glassRows()
@@ -522,7 +566,7 @@ struct AccountFormView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Сохранить", systemImage: "checkmark", action: save)
-                        .tint(.accentColor).disabled(trimmedName.isEmpty || parsedBalance == nil)
+                        .tint(.accentColor).disabled(trimmedName.isEmpty || parsedBalance == nil || (isCredit && (parsedLimit ?? 0) <= 0))
                 }
             }
         }
@@ -591,8 +635,11 @@ struct AccountFormView: View {
         return names[value] ?? "Серый"
     }
 
-    private var parsedBalance: Int64? {
-        let text = balanceText.filter { !$0.isWhitespace }.replacingOccurrences(of: ",", with: ".")
+    private var parsedBalance: Int64? { Self.kopecks(from: balanceText) }
+    private var parsedLimit: Int64? { Self.kopecks(from: limitText) }
+
+    private static func kopecks(from value: String) -> Int64? {
+        let text = value.filter { !$0.isWhitespace }.replacingOccurrences(of: ",", with: ".")
         guard text.range(of: "^[+-]?[0-9]+(?:\\.[0-9]{1,2})?$", options: .regularExpression) != nil,
               let amount = Decimal(string: text, locale: Locale(identifier: "en_US_POSIX")) else { return nil }
         let kopecks = amount * 100
@@ -608,8 +655,17 @@ struct AccountFormView: View {
         saved.icon = icon
         saved.color = color
         saved.groupID = groupID
-        if account == nil || account?.startBalanceKopecks != balance { saved.startDate = Date() }
-        saved.startBalanceKopecks = balance
+        if isCredit, let limit = parsedLimit, limit > 0 {
+            let oldLimit = account?.isCreditCard == true ? account?.creditLimitKopecks : nil
+            let result = CreditCards.resave(oldLimit: oldLimit, oldStartBalance: account?.startBalanceKopecks, newLimit: limit, debt: balance)
+            saved.creditLimitKopecks = limit
+            saved.startBalanceKopecks = result.startBalanceKopecks
+            if account == nil || result.restarts { saved.startDate = Date() }
+        } else {
+            saved.creditLimitKopecks = nil
+            if account == nil || account?.startBalanceKopecks != balance { saved.startDate = Date() }
+            saved.startBalanceKopecks = balance
+        }
         saved.showsBalance = showsBalance
         saved.tracksBankCard = tracksBankCard
         saved.tracksSave = tracksSave ? true : nil
