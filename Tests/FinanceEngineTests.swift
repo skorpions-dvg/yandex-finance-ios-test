@@ -1748,7 +1748,7 @@ struct FinanceEngineTests {
         let kept = Loan(name: "Кредит учебный", paymentKopecks: 10_000, day: 15, balanceKopecks: 25_000, balanceDate: at(1, 10), reducesBalance: true)
         let today = at(2, 20)
         let untouched = Loan.keptBalance(old: kept, entered: 5_000, reduces: true, now: today, calendar: calendar)
-        require(untouched.kopecks == 25_000 && untouched.date == at(1, 10), "the balance as shown, untouched, keeps its day")
+        require(untouched.kopecks == 5_000 && untouched.date == today, "the balance as shown is anchored from now (a changed payment cannot rewrite the past)")
         let edited = Loan.keptBalance(old: kept, entered: 4_000, reduces: true, now: today, calendar: calendar)
         require(edited.kopecks == 4_000 && edited.date == today, "an edited balance starts from now")
         let switched = Loan.keptBalance(old: kept, entered: 5_000, reduces: false, now: today, calendar: calendar)
@@ -4053,7 +4053,212 @@ struct FinanceEngineTests {
         }
     }
 
+    /// Stage 65: independent contract checks. Collect all failures in one local run; never accept observed output as expected.
+    static func testAudit65() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ year: Int, _ month: Int, _ day: Int, _ hour: Int = 0) -> Date {
+            calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
+        }
+        var checked = 0
+        var failed = 0
+        func expect<T: Equatable>(_ actual: T, _ expected: T, _ name: String) {
+            checked += 1
+            if actual != expected {
+                failed += 1
+                fputs("FAIL STAGE65 \(name): expected=\(expected), actual=\(actual)\n", stderr)
+            }
+        }
+        let monthly = Subscription(name: "Подписка учебная", amountKopecks: 10_000, day: 31)
+        for (year, last) in [(2032, 29), (2033, 28)] {
+            let dues = FinancialEngine.commitmentDues(subscriptions: [monthly], loans: [], from: at(year, 2, 1), to: at(year, 3, 1), calendar: calendar)
+            expect(dues.map(\.date), [at(year, 2, last)], "February \(year)")
+        }
+        let annual = Subscription(name: "Годовая учебная", amountKopecks: 12_000, day: 31, month: 12)
+        expect(FinancialEngine.commitmentDues(subscriptions: [annual], loans: [], from: at(2032, 12, 1), to: at(2033, 2, 1), calendar: calendar).map(\.date),
+               [at(2032, 12, 31)], "annual December to January")
+        var january = annual
+        january.month = 1
+        expect(FinancialEngine.commitmentDues(subscriptions: [january], loans: [], from: at(2032, 12, 1), to: at(2033, 2, 1), calendar: calendar).map(\.date),
+               [at(2033, 1, 31)], "annual January after December")
+        var sameDay = monthly
+        sameDay.since = at(2032, 2, 29, 18)
+        expect(FinancialEngine.commitmentDues(subscriptions: [sameDay], loans: [], from: at(2032, 2, 1), to: at(2032, 3, 1), calendar: calendar).map(\.date),
+               [at(2032, 2, 29)], "since includes payment day")
+        var loan = Loan(name: "Кредит учебный", paymentKopecks: 10_000, day: 31, balanceKopecks: 10_000,
+                        balanceDate: at(2032, 1, 31, 18), reducesBalance: true, since: at(2032, 1, 31))
+        func amounts(_ loan: Loan) -> [Int64] {
+            FinancialEngine.commitmentDues(subscriptions: [], loans: [loan], from: at(2032, 1, 1), to: at(2032, 5, 1), calendar: calendar).map(\.amountKopecks)
+        }
+        expect(amounts(loan), [10_000], "equal balance: one final payment, entered day excluded")
+        expect(loan.balance(now: at(2032, 2, 29), calendar: calendar), Int64(0), "balance reaches zero on leap February due")
+        loan.balanceKopecks = 0
+        expect(amounts(loan), [], "zero balance has no dues")
+        loan.balanceKopecks = 15_000
+        expect(amounts(loan), [10_000, 5_000], "last loan payment capped at remaining balance")
+        var withoutBalance = Loan(name: "Без остатка учебный", paymentKopecks: 10_000, day: 29, since: at(2033, 2, 28, 18))
+        expect(FinancialEngine.commitmentDues(subscriptions: [], loans: [withoutBalance], from: at(2033, 2, 1), to: at(2033, 3, 1), calendar: calendar).map(\.date),
+               [at(2033, 2, 28)], "loan since on due day")
+        withoutBalance.since = at(2033, 3, 1)
+        expect(FinancialEngine.commitmentDues(subscriptions: [], loans: [withoutBalance], from: at(2033, 2, 1), to: at(2033, 3, 1), calendar: calendar).count,
+               0, "loan since excludes earlier due")
+
+        var history = SavedHistory()
+        let original = bankOp("audit65-edit", -10_000, description: "Магазин учебный", date: "2032-03-01T10:00:00Z")
+        history.operations = [original]
+        expect(history.editBankOperation(identity: original.identity, amountKopecks: -12_000, occurredAt: "2032-03-02T10:00:00Z", description: "Поправлено учебное"), true, "edit accepted")
+        let once = history.operations
+        history.applyOperationEdits()
+        history.applyOperationEdits()
+        expect(history.operations, once, "double apply idempotent")
+        let fresh = bankOp(original.identity, -11_000, description: "Магазин учебный", date: original.occurredAt)
+        history.operations = [fresh]
+        history.applyOperationEdits()
+        expect(history.operations.first?.amountKopecks, Int64(-12_000), "owner amount wins over changed bank amount")
+        expect(history.operationEdits?[original.identity]?.original, fresh, "fresh bank amount retained for revert")
+        expect(history.deleteBankOperation(identity: original.identity), true, "edited operation deleted")
+        expect(history.operationEdits == nil, true, "delete removes edit")
+        history.operations = [fresh]
+        history.operationEdits = [original.identity: OperationEdit(original: original, amountKopecks: -12_000, occurredAt: original.occurredAt, description: original.description)]
+        history.applyOperationEdits()
+        expect(history.operations.count, 0, "tombstone wins even when edit exists")
+        expect(history.editBankOperation(identity: original.identity, amountKopecks: -13_000, occurredAt: original.occurredAt, description: original.description), false, "deleted operation cannot be edited")
+
+        let taxonomy = ExpenseTaxonomy(groups: ["А", "Б", "В"].map { ExpenseTaxonomy.Group(name: $0, subcategories: ["Учебная"], isFixedCosts: false) })
+        func expense(_ group: String, _ raw: String, _ amount: Int64 = 100) -> FinancialOperationInput {
+            var input = op(-amount, kind: "expense", date: raw)
+            input.categoryPath = group + "/Учебная"
+            return input
+        }
+        let inputs = [expense("А", "2033-02-28T10:00:00Z", 400), expense("А", "2033-03-31T10:00:00Z"),
+                      expense("Б", "2033-03-01T10:00:00Z"), expense("В", "2033-03-01T10:00:00Z")]
+        let leaders = ReportEngine.spendingLeaders(inputs, month: at(2033, 3, 1), now: at(2033, 3, 31, 12), taxonomy: taxonomy, calendar: calendar)
+        expect(leaders.periods.previous.end, at(2033, 3, 1), "March 31 comparison clamps at February end")
+        expect(leaders.leaders.first?.previousKopecks, Int64(400), "February 28 comparison included")
+        expect(leaders.leaders.map(\.group), ["А", "Б", "В"], "equal groups follow taxonomy order")
+        expect(leaders.leaders.reduce(0) { $0 + $1.sharePercent }, 99, "three equal shares round down")
+        expect(leaders.leaders.reduce(0) { $0 + $1.sharePercent } <= 100, true, "shares never exceed 100")
+        let reversed = ReportEngine.spendingLeaders(Array(inputs.reversed()), month: at(2033, 3, 1), now: at(2033, 3, 31, 12), taxonomy: taxonomy, calendar: calendar)
+        expect(reversed.leaders, leaders.leaders, "input order does not break tie stability")
+        let first = monthComparisonPeriods(selectedStart: at(2033, 3, 1), currentDate: at(2033, 3, 1), calendar: calendar)
+        expect(first.current.end, at(2033, 3, 2), "first day current interval")
+        expect(first.previous.end, at(2033, 2, 2), "first day prior interval")
+        let future = monthComparisonPeriods(selectedStart: at(2033, 4, 1), currentDate: at(2033, 3, 1), calendar: calendar)
+        expect(future.current.end, at(2033, 5, 1), "future month whole")
+        expect(historyInterval(.monthToDate, now: at(2033, 1, 1), calendar: calendar).start, at(2033, 1, 1), "running month year boundary")
+        let custom = HistoryPeriod.custom(from: at(2032, 12, 1), through: at(2032, 12, 31))
+        expect(HistoryPeriod(storageText: custom.storageText), custom, "old custom period stays fixed")
+        var east = calendar
+        east.timeZone = TimeZone(secondsFromGMT: 14 * 3600)!
+        expect(historyInterval(.monthToDate, now: at(2032, 12, 31, 12), calendar: east).start,
+               at(2032, 12, 31, 10), "month boundary uses supplied timezone")
+        let oldJSON = Data(#"{"format":1,"exportedAt":"2032-01-01T00:00:00Z","history":{"operations":[]}}"#.utf8)
+        expect((try? HistoryBackup.decode(oldJSON))?.operations.count, 0, "old JSON backup opens")
+        let full = FullBackup.make(history: oldJSON, photos: [("audit.bin", Data([1, 2]))])
+        expect(FullBackup.read(full)?.history, oldJSON, "full backup retains history")
+        expect(FullBackup.read(Data(full.dropLast(22))) == nil, true, "truncated full backup refused")
+
+        // Contract regressions: expected behavior comes from the stage brief, not the current classifier.
+        var transfer = op(10_000, kind: "refund", category: "Возврат", description: "Перевод от Учебного магазина")
+        transfer.confirmedNature = "income"
+        expect(FinancialEngine.classify(transfer).type, .income, "W65-1 owner confirmation beats bank refund metadata")
+        let commission = BankOperation(identity: "audit65-fee", occurredAt: original.occurredAt, timePrecision: "exact", description: "Комиссия учебная",
+                                       amountKopecks: -100, currency: "RUB", status: "Выполнено", category: "Комиссии", mcc: nil, purpose: nil,
+                                       paymentMethod: nil, providers: [], kind: "commission")
+        let flipped = OperationEdit(original: commission, amountKopecks: 100, occurredAt: commission.occurredAt, description: commission.description).applied(to: commission)
+        expect(FinancialEngine.classify(flipped.financialInput).type, .income, "W65-2 changing bank operation to income changes financial type")
+        let overpaid = CreditCards.resave(oldLimit: 100_000, oldStartBalance: 120_000, newLimit: 100_000, debt: 0)
+        expect(overpaid.startBalanceKopecks, Int64(120_000), "W65-3 untouched overpaid card preserves start balance")
+        expect(overpaid.restarts, false, "W65-3 untouched overpaid card keeps anchor")
+        let moved = Subscription(name: "Годовая перенесённая учебная", amountKopecks: 30_000, day: 5, month: 4, since: at(2032, 4, 1))
+        let key = FinancialEngine.commitmentKey(id: moved.id, due: at(2032, 4, 5), calendar: calendar)
+        let forecast = FinancialEngine.monthForecast([], now: at(2032, 6, 10), calendar: calendar,
+            answers: [key: .init(kind: .moved, movedTo: at(2032, 6, 20))], subscriptions: [moved])
+        expect(forecast.upcoming.filter { $0.key == key }.map(\.amountKopecks), [30_000], "W65-4 moved annual due survives beyond previous month")
+        let oldLoan = Loan(name: "Кредит учебный", paymentKopecks: 10_000, day: 15, balanceKopecks: 50_000,
+                           balanceDate: at(2032, 1, 1), reducesBalance: true, since: at(2032, 1, 1))
+        let editedOn = at(2032, 3, 20)
+        let entered = oldLoan.balance(now: editedOn, calendar: calendar)
+        expect(entered, Int64(20_000), "loan balance before payment edit")
+        let kept = Loan.keptBalance(old: oldLoan, entered: entered, reduces: true, now: editedOn, calendar: calendar)
+        var changedLoan = oldLoan
+        changedLoan.paymentKopecks = 20_000
+        changedLoan.balanceKopecks = kept.kopecks
+        changedLoan.balanceDate = kept.date
+        expect(changedLoan.balance(now: editedOn, calendar: calendar), Int64(20_000), "W65-5 changing future payment preserves today's entered balance")
+        let aprilMoved = at(2032, 4, 20)
+        let paid = op(-30_000, kind: "expense", description: moved.name, date: "2032-04-20T12:00:00Z")
+        let paidForecast = FinancialEngine.monthForecast([paid], now: at(2032, 4, 21), calendar: calendar,
+            answers: [key: .init(kind: .moved, movedTo: aprilMoved)], subscriptions: [moved])
+        expect(paidForecast.upcoming.filter { $0.key == key }.count, 0, "W65-6 actual payment matched against moved due date")
+        print("STAGE65: \(checked - failed)/\(checked) passed; \(failed) failed")
+        require(failed == 0, "Stage 65 contract failures (all listed above)")
+    }
+
+    /// Fixes after the audit of stage 65 beyond the contract checks: the owner's side of an edited operation and the statuses, what
+    /// goes with a deleted operation, a payment moved from an old day, the names in the key of the forecast.
+    static func testAudit65Fixes() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: 12))! }
+        // an income changed to an expense and back: the owner's side is the type, the original stays
+        let income = bankOp("fx1", 50_000, description: "Поступление учебное", kind: "income", date: "2032-06-02T10:00:00Z")
+        var history = SavedHistory()
+        history.operations = [income]
+        require(history.editBankOperation(identity: "fx1", amountKopecks: -50_000, occurredAt: income.occurredAt, description: income.description), "to an expense")
+        let asExpense = history.operations[0]
+        require(asExpense.editedSide == "expense", "the side the owner chose is kept")
+        require(FinancialEngine.classify(asExpense.financialInput).type == .expense, "an income changed to an expense is an expense")
+        require(history.editBankOperation(identity: "fx1", amountKopecks: 50_000, occurredAt: income.occurredAt, description: income.description), "back")
+        require(history.operations[0] == income && history.operationEdits == nil, "back to the bank's own values: no edit, no side")
+        // a pending or cancelled status keeps its force over the owner's side
+        let pending = BankOperation(identity: "fx2", occurredAt: "2032-06-02T10:00:00Z", timePrecision: "exact", description: "Комиссия учебная",
+                                    amountKopecks: -100, currency: "RUB", status: "В обработке", category: "Комиссии", mcc: nil, purpose: nil,
+                                    paymentMethod: nil, providers: [], kind: "commission")
+        let flipped = OperationEdit(original: pending, amountKopecks: 100, occurredAt: pending.occurredAt, description: pending.description).applied(to: pending)
+        require(FinancialEngine.classify(flipped.financialInput).type == .pending, "a pending operation stays pending")
+        // a confirmation does not lift a cancelled operation either
+        var cancelled = op(10_000, kind: "unclassified_income", status: "Отменено", description: "Перевод от Учебного человека")
+        cancelled.confirmedNature = "income"
+        require(FinancialEngine.classify(cancelled).type == .cancelled, "a cancelled operation stays cancelled")
+
+        // deleting takes what belonged to the operation with it
+        var kept = SavedHistory()
+        let doomed = bankOp("fx3", -10_000, description: "Магазин учебный", date: "2032-06-03T10:00:00Z")
+        kept.operations = [doomed]
+        kept.operationLooks = ["fx3": OperationLook(title: "Моё название", icon: nil, note: nil), "other": OperationLook(title: "Чужое", icon: nil, note: nil)]
+        kept.operationNatures = ["fx3": "income"]
+        kept.receipts = ["fx3": ["a.jpg"], "other": ["b.jpg"]]
+        kept.receiptGoods = ["fx3": [ReceiptGood(name: "Товар")]]
+        require(kept.deleteBankOperation(identity: "fx3"), "deleted")
+        require(kept.operationLooks?["fx3"] == nil && kept.operationLooks?["other"] != nil, "the title goes, another stays")
+        require(kept.operationNatures?["fx3"] == nil, "the confirmation goes")
+        require(kept.receipts?["fx3"] == nil && kept.receipts?["other"] == ["b.jpg"], "the link to the photos goes, another stays")
+        require(kept.receiptGoods?["fx3"] == nil, "the goods go")
+
+        // a payment moved from an old day is still waited for; one not moved is not asked about a year later
+        let yearly = Subscription(name: "Годовая учебная", amountKopecks: 30_000, day: 5, month: 2, since: at(1, 1))
+        let oldKey = FinancialEngine.commitmentKey(id: yearly.id, due: at(2, 5), calendar: calendar)
+        let notMoved = FinancialEngine.monthForecast([], now: at(6, 10), calendar: calendar, subscriptions: [yearly])
+        require(notMoved.upcoming.isEmpty, "an old unanswered payment is not asked about months later")
+        let movedLater = FinancialEngine.monthForecast([], now: at(6, 10), calendar: calendar,
+                                                       answers: [oldKey: .init(kind: .moved, movedTo: at(6, 25))], subscriptions: [yearly])
+        require(movedLater.upcoming.count == 1, "a payment moved to this month is waited for")
+        let movedToOld = FinancialEngine.monthForecast([], now: at(6, 10), calendar: calendar,
+                                                       answers: [oldKey: .init(kind: .moved, movedTo: at(3, 1))], subscriptions: [yearly])
+        require(movedToOld.upcoming.isEmpty, "a payment moved to an old day is not waited for")
+
+        // the name is in the key of the forecast: a renamed subscription draws the forecast again
+        var named = SavedHistory()
+        named.subscriptions = [Subscription(name: "Старое", amountKopecks: 100, day: 5)]
+        let before = named.commitmentsKey
+        named.subscriptions?[0].name = "Новое"
+        require(named.commitmentsKey != before, "the name is in the key")
+    }
+
     static func main() {
+        testAudit65Fixes()
+        testAudit65()
         testSpendingLeaders()
         testBankOperationEdits()
         testCreditCards()

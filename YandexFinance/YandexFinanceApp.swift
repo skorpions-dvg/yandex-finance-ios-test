@@ -248,7 +248,10 @@ struct ContentView: View {
     private func rescheduleReminders() {
         guard !browser.loadingHistory, browser.storageAvailable else { return }
         let history = browser.history
-        Task { await CommitmentReminders.reschedule(subscriptions: history.subscriptions ?? [], loans: history.loans ?? []) }
+        Task {
+            await CommitmentReminders.reschedule(subscriptions: history.subscriptions ?? [], loans: history.loans ?? [],
+                                                 answers: history.paymentAnswers ?? [:])
+        }
     }
 
     /// The same numbers as the home screen: the reserve card and the spending of today and of the month to date.
@@ -965,16 +968,23 @@ struct SettingsView: View {
         exportedNotice = nil
         do {
             let history = try browser.backupData()
+            // The list of the photos is read with its errors (a folder that cannot be read stops the copy); every photo the history
+            // links to is accounted for: put into the copy, or counted as missing.
             let attached = Set((browser.history.receipts ?? [:]).values.flatMap { $0 })
+            let present = Set(try ReceiptStore.photoFiles())
             var photos: [(name: String, data: Data)] = []
             var skipped = 0
-            for name in (try? ReceiptStore.photoFiles()) ?? [] where attached.contains(name) {
-                if let data = try? Data(contentsOf: ReceiptStore.folder.appendingPathComponent(name)) { photos.append((name, data)) } else { skipped += 1 }
+            for name in attached.sorted() {
+                if present.contains(name), let data = try? Data(contentsOf: ReceiptStore.folder.appendingPathComponent(name)) {
+                    photos.append((name, data))
+                } else {
+                    skipped += 1
+                }
             }
             exportedType = .zip
             exportedName = "Horizon-copy-\(Date().formatted(.iso8601.year().month().day()))"
             exportedNotice = "Копия сохранена: \(browser.history.operations.count) операций, фото чеков: \(photos.count)"
-                + (skipped > 0 ? ", не удалось прочитать фото: \(skipped)" : "") + "."
+                + (skipped > 0 ? ", нет на телефоне или не читаются фото: \(skipped)" : "") + "."
             exportedBackup = BackupDocument(data: FullBackup.make(history: history, photos: photos.sorted { $0.name < $1.name }))
         } catch {
             browser.message = "Не удалось подготовить копию: \(error.localizedDescription)"

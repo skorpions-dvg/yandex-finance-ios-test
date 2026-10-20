@@ -34,7 +34,8 @@ enum CommitmentReminders {
     }
 
     /// Replaces the reminders by the ones that are due now: only for the entries with the reminder on.
-    static func reschedule(subscriptions: [Subscription], loans: [Loan], now: Date = Date(), calendar: Calendar = .current) async {
+    static func reschedule(subscriptions: [Subscription], loans: [Loan], answers: [String: FinancialEngine.PaymentAnswer] = [:],
+                           now: Date = Date(), calendar: Calendar = .current) async {
         let center = UNUserNotificationCenter.current()
         let pending = await center.pendingNotificationRequests().map(\.identifier).filter { $0.hasPrefix(idPrefix) }
         center.removePendingNotificationRequests(withIdentifiers: pending)
@@ -44,9 +45,19 @@ enum CommitmentReminders {
         let status = await center.notificationSettings().authorizationStatus
         guard status == .authorized || status == .provisional else { return }
         let until = calendar.date(byAdding: .day, value: 40, to: now) ?? now
-        let dues = FinancialEngine.commitmentDues(subscriptions: subscriptions, loans: loans, from: now, to: until, calendar: calendar)
-        for due in dues.prefix(50) {
-            guard let eve = calendar.date(byAdding: .day, value: -1, to: due.date),
+        // A payment the owner moved comes on its new day; one he answered «came» or «not this month» gets no reminder. The days are
+        // looked at from two months back: a moved payment may have been due earlier.
+        let from = calendar.date(byAdding: .day, value: -60, to: now) ?? now
+        var coming: [(due: FinancialEngine.CommitmentDue, day: Date)] = []
+        for due in FinancialEngine.commitmentDues(subscriptions: subscriptions, loans: loans, from: from, to: until, calendar: calendar) {
+            let answer = answers[FinancialEngine.commitmentKey(id: due.id, due: due.date, calendar: calendar)]
+            if answer?.kind == .arrived || answer?.kind == .skipped { continue }
+            let day = answer?.kind == .moved ? (answer?.movedTo ?? due.date) : due.date
+            if day >= now { coming.append((due, day)) }
+        }
+        coming.sort { $0.day < $1.day }
+        for (due, day) in coming.prefix(50) {
+            guard let eve = calendar.date(byAdding: .day, value: -1, to: day),
                   let moment = calendar.date(bySettingHour: 10, minute: 0, second: 0, of: eve), moment > now else { continue }
             let content = UNMutableNotificationContent()
             content.title = "Завтра списание"

@@ -27,6 +27,8 @@ struct OperationsHomeView: View {
     @State private var lastSavedOperationID: UUID?
     @State private var editedOperation: ManualOperation?
     @State private var showCustomDates = false
+    /// The day the screen was drawn for: it moves on when the phone's day changes (the running month and «today» follow it).
+    @State private var shownDay = Calendar.current.startOfDay(for: Date())
     @State private var customFrom = Date()
     @State private var customThrough = Date()
     @AppStorage("historyAlwaysExpanded") private var historyAlwaysExpanded = false
@@ -56,6 +58,7 @@ struct OperationsHomeView: View {
     // MARK: - Body
     var body: some View {
         let _ = presentation.prepare(browser.history)
+        let _ = shownDay
         NavigationStack {
             ScrollViewReader { proxy in
                 List {
@@ -178,6 +181,8 @@ struct OperationsHomeView: View {
                 .sheet(item: $editedOperation) { operation in
                     ManualOperationFormView(browser: browser, operation: operation)
                 }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in refreshDay() }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in refreshDay() }
                 .sheet(isPresented: $showCustomDates) {
                     CustomDatesSheet(period: Binding(get: { period }, set: { period = $0 }),
                                      from: $customFrom,
@@ -185,6 +190,12 @@ struct OperationsHomeView: View {
                 }
             }
         }
+    }
+
+    /// A new day (or a changed clock or time zone) draws the screen again: the periods are worked out from today.
+    private func refreshDay() {
+        let today = Calendar.current.startOfDay(for: Date())
+        if today != shownDay { shownDay = today }
     }
 
     private func revealSavedOperation() {

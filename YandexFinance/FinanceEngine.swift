@@ -52,6 +52,9 @@ struct FinancialOperationInput {
     /// What the owner confirmed about an incoming operation the engine could not name: "income", "refund" (the return
     /// of a purchase) or "own" (a move between own accounts). It decides only operations that would otherwise stay unknown.
     var confirmedNature: String? = nil
+    /// «income» or «expense»: the owner changed a bank operation to this side (the sign of its amount). It decides the financial
+    /// type whatever the labels of the bank say; a cancelled or pending status keeps its force.
+    var ownerSide: String? = nil
     /// The account a manual entry belongs to (`ReportAccountScope.noAccount` when it has none); nil for bank rows,
     /// which belong to the scanned card. Only the account selection of the reports reads it.
     var accountID: UUID? = nil
@@ -268,7 +271,18 @@ enum FinancialEngine {
         operation.amountKopecks > 0 && normalized(operation.description).hasPrefix("перевод от ")
     }
 
+    /// What an operation is. The owner's confirmation of an incoming operation decides the ones the engine could not name and the
+    /// transfers from a person, whatever the labels of the bank say; a cancelled or pending operation keeps its status.
     static func classify(_ operation: FinancialOperationInput) -> FinancialAssessment {
+        let base = classifyByBank(operation)
+        guard operation.amountKopecks > 0, let confirmed = operation.confirmedNature,
+              base.type != .pending, base.type != .cancelled,
+              base.type == .unknown || isTransferFromPerson(operation),
+              let named = confirmedAssessment(confirmed, amount: operation.amountKopecks) else { return base }
+        return named
+    }
+
+    private static func classifyByBank(_ operation: FinancialOperationInput) -> FinancialAssessment {
         let status = normalized(operation.status)
         let category = normalized(operation.category)
         let description = normalized(operation.description)
@@ -288,6 +302,16 @@ enum FinancialEngine {
 
         if isPendingStatus(operation.status) {
             return FinancialAssessment(type: .pending, reason: "Операция ещё не завершена и пока не входит в окончательные итоги.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+        }
+
+        // The owner changed the side of a bank operation (an expense to an income or back): his word is the type.
+        if let side = operation.ownerSide {
+            if side == "income" && amount > 0 {
+                return FinancialAssessment(type: .income, reason: "Вы изменили операцию: это доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
+            }
+            if side == "expense" && amount < 0 {
+                return FinancialAssessment(type: .expense, reason: "Вы изменили операцию: это расход.", originalAmountKopecks: amount, expenseContributionKopecks: -amount, incomeContributionKopecks: 0, refundContributionKopecks: 0)
+            }
         }
 
         let split = kind == "installment_payment" || operation.providers.contains(where: { normalized($0) == "bnpl" }) || category.contains("сплит")
@@ -374,9 +398,6 @@ enum FinancialEngine {
 
         // A transfer from a person is income by default; what the owner picked in the card wins over it.
         if isTransferFromPerson(operation) {
-            if let confirmed = operation.confirmedNature, let named = confirmedAssessment(confirmed, amount: amount) {
-                return named
-            }
             return FinancialAssessment(type: .income, reason: "Перевод от человека считается доходом; если это не так, выберите в карточке, что это за поступление.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
         }
 
@@ -409,11 +430,6 @@ enum FinancialEngine {
 
         if amount > 0 && kind == "income" {
             return FinancialAssessment(type: .income, reason: "Банк явно сохранил операцию как доход.", originalAmountKopecks: amount, expenseContributionKopecks: 0, incomeContributionKopecks: amount, refundContributionKopecks: 0)
-        }
-
-        // The owner has said what this incoming operation is: the one case where the unproven fallback is overridden.
-        if amount > 0, let confirmed = operation.confirmedNature, let named = confirmedAssessment(confirmed, amount: amount) {
-            return named
         }
 
         // Collector uses “unclassified_income” for positive movements whose nature is not proven.
@@ -1395,13 +1411,19 @@ enum FinancialEngine {
         // amount is already among the operations (within three days) or the same payment is among the regular ones found above.
         func within(_ days: Double, _ left: Date, _ right: Date) -> Bool { abs(left.timeIntervalSince(right)) <= days * 86_400 }
         func about(_ left: Int64, _ right: Int64, percent: Int64) -> Bool { abs(left - right) * 100 <= right * percent }
-        for due in commitmentDues(subscriptions: subscriptions, loans: loans, from: previousMonthStart, to: monthEnd, calendar: calendar) {
+        // The payments are looked at from a year back: one the owner moved from an old day into the last month or later is still
+        // waited for; an old one that was not moved is not.
+        let commitmentsFrom = calendar.date(byAdding: .month, value: -13, to: monthStartDate) ?? previousMonthStart
+        for due in commitmentDues(subscriptions: subscriptions, loans: loans, from: commitmentsFrom, to: monthEnd, calendar: calendar) {
             let key = commitmentKey(id: due.id, due: due.date, calendar: calendar)
             let answer = answers[key]
             let date = answer?.kind == .moved ? (answer?.movedTo ?? due.date) : due.date
             guard answer?.kind != .arrived, answer?.kind != .skipped, date < monthEnd else { continue }
-            if allItems.contains(where: { !$0.isIncome && within(3, $0.date, due.date) && about($0.amount, due.amountKopecks, percent: 5) }) { continue }
-            if upcoming.contains(where: { !$0.isIncome && !$0.key.hasPrefix("commit|") && within(3, $0.date, due.date)
+            if due.date < previousMonthStart && date < previousMonthStart { continue }
+            // An expense near the day it was due, or near the day it was moved to, is the payment.
+            func covers(_ day: Date) -> Bool { within(3, day, due.date) || within(3, day, date) }
+            if allItems.contains(where: { !$0.isIncome && covers($0.date) && about($0.amount, due.amountKopecks, percent: 5) }) { continue }
+            if upcoming.contains(where: { !$0.isIncome && !$0.key.hasPrefix("commit|") && covers($0.date)
                                            && about($0.amountKopecks, due.amountKopecks, percent: 15) }) { continue }
             let waitUntil = calendar.date(byAdding: .day, value: paymentGraceDays, to: calendar.startOfDay(for: date))!
             let status: UpcomingPayment.Status = date >= startOfToday ? .expected : (startOfToday <= waitUntil ? .waiting : .question)

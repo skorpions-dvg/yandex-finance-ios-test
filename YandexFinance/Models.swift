@@ -22,6 +22,8 @@ struct BankOperation: Codable, Equatable, Identifiable {
     let kind: String
     var components: [OperationComponent]?
     var verifiedAt: String?
+    /// «income» or «expense»: the owner changed the sign of the amount (`OperationEdit`); it decides the financial type.
+    var editedSide: String?
     func sameFinancialContent(as other: BankOperation) -> Bool {
         var lhs = self, rhs = other
         lhs.verifiedAt = nil; rhs.verifiedAt = nil
@@ -40,7 +42,8 @@ extension BankOperation {
     var financialInput: FinancialOperationInput {
         FinancialOperationInput(occurredAt: occurredAt, description: description, amountKopecks: amountKopecks,
                                 status: status, category: category, mcc: mcc, purpose: purpose, providers: providers, kind: kind,
-                                componentAmountsKopecks: components?.map(\.amountKopecks) ?? [], paymentMethod: paymentMethod)
+                                componentAmountsKopecks: components?.map(\.amountKopecks) ?? [], paymentMethod: paymentMethod,
+                                ownerSide: editedSide)
     }
 
     var financialAssessment: FinancialAssessment { FinancialEngine.classify(financialInput) }
@@ -1078,6 +1081,7 @@ struct OperationEdit: Codable, Equatable {
                                    kind: sameSide ? base.kind : (amountKopecks > 0 ? "income" : "expense"))
         result.components = amountKopecks == base.amountKopecks ? base.components : nil
         result.verifiedAt = base.verifiedAt
+        result.editedSide = sameSide ? nil : (amountKopecks > 0 ? "income" : "expense")
         return result
     }
 }
@@ -1152,6 +1156,14 @@ extension SavedHistory {
             operationEdits = edits.isEmpty ? nil : edits
         }
         operations.remove(at: index)
+        // What belonged to the operation goes with it; the photos of its receipts stay in the folder and show as photos without an operation.
+        operationLooks?[identity] = nil
+        categoryOverrides?[identity] = nil
+        incomeCategoryOverrides?[identity] = nil
+        operationNatures?[identity] = nil
+        receipts?[identity] = nil
+        receiptGoods?[identity] = nil
+        receiptScans?[identity] = nil
         return true
     }
 }
@@ -1171,8 +1183,13 @@ enum CreditCards {
     /// the difference of the limits and the account goes on (the operations after its start stay); another debt, or a card that
     /// was not one, starts the account again from now.
     static func resave(oldLimit: Int64?, oldStartBalance: Int64?, newLimit: Int64, debt: Int64) -> (startBalanceKopecks: Int64, restarts: Bool) {
-        if let oldLimit, let oldStartBalance, oldLimit - oldStartBalance == debt {
-            return (oldStartBalance + (newLimit - oldLimit), false)
+        // The form shows no negative debt: an overpaid card (more available than the limit) is shown with a debt of zero, and saving it
+        // untouched must not turn the overpayment into the limit.
+        if let oldLimit, let oldStartBalance {
+            let oldDebt = oldLimit - oldStartBalance
+            if oldDebt == debt || (oldDebt < 0 && debt == 0) {
+                return (oldStartBalance + (newLimit - oldLimit), false)
+            }
         }
         return (newLimit - debt, true)
     }
@@ -1226,13 +1243,11 @@ extension Loan {
 }
 
 extension Loan {
-    /// The balance and its day to keep when the owner saves the loan: untouched, in the same mode, it stays as it was (and goes
-    /// on going down from its own day); anything else is the balance as seen now, from now on. Nothing entered: none.
+    /// The balance and its day to keep when the owner saves the loan: the balance as seen now, from now on, whatever else of the
+    /// loan changed with it (a new payment or day must not rewrite the months that are past). Nothing entered: none. The old loan
+    /// and the mode are not needed: the shown balance already follows both.
     static func keptBalance(old: Loan?, entered: Int64?, reduces: Bool, now: Date, calendar: Calendar = .current) -> (kopecks: Int64?, date: Date?) {
         guard let entered else { return (nil, nil) }
-        if let old, old.reducesBalance == reduces, old.balance(now: now, calendar: calendar) == entered {
-            return (old.balanceKopecks, old.balanceDate)
-        }
         return (entered, now)
     }
 }
@@ -1240,8 +1255,8 @@ extension Loan {
 extension SavedHistory {
     /// What the forecast depends on in the subscriptions and loans (the key of its cache).
     var commitmentsKey: String {
-        let subs = (subscriptions ?? []).map { "\($0.id)|\($0.amountKopecks)|\($0.day)|\($0.month ?? 0)|\($0.since?.timeIntervalSince1970 ?? 0)" }
-        let loans = (loans ?? []).map { "\($0.id)|\($0.paymentKopecks)|\($0.day)|\($0.balanceKopecks ?? -1)|\($0.balanceDate?.timeIntervalSince1970 ?? 0)|\($0.reducesBalance)|\($0.since?.timeIntervalSince1970 ?? 0)" }
+        let subs = (subscriptions ?? []).map { "\($0.id)|\($0.name)|\($0.day)|\($0.month ?? 0)|\($0.since?.timeIntervalSince1970 ?? 0)" }
+        let loans = (loans ?? []).map { "\($0.id)|\($0.name)|\($0.day)|\($0.balanceKopecks ?? -1)|\($0.balanceDate?.timeIntervalSince1970 ?? 0)|\($0.reducesBalance)|\($0.since?.timeIntervalSince1970 ?? 0)" }
         return (subs + loans).joined(separator: ";")
     }
 }
