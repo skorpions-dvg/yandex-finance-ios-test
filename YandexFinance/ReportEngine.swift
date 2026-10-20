@@ -366,16 +366,26 @@ enum ReportEngine {
         }
         let total = current.values.reduce(Int64(0)) { $0 + $1.amount }
         let order = taxonomy.groupNames
-        let leaders = current.map { name, value -> SpendingLeader in
-            let shops = value.shops.map { ReportSlice(id: $0.key, title: $0.value.title, amountKopecks: $0.value.amount, count: $0.value.count, children: []) }
-                .sorted { $0.amountKopecks == $1.amountKopecks ? $0.title < $1.title : $0.amountKopecks > $1.amountKopecks }
-            return SpendingLeader(group: name, amountKopecks: value.amount,
-                                  sharePercent: total > 0 ? Int(value.amount * 100 / total) : 0,
-                                  previousKopecks: previous[name] ?? 0, shops: Array(shops.prefix(shopCount)))
-        }.sorted { lhs, rhs in
+        var leaders: [SpendingLeader] = []
+        for (name, value) in current {
+            var shops: [ReportSlice] = []
+            for (key, shop) in value.shops {
+                shops.append(ReportSlice(id: key, title: shop.title, amountKopecks: shop.amount, count: shop.count, children: []))
+            }
+            shops.sort { lhs, rhs in
+                if lhs.amountKopecks != rhs.amountKopecks { return lhs.amountKopecks > rhs.amountKopecks }
+                return lhs.title < rhs.title
+            }
+            let percent: Int = total > 0 ? Int(value.amount * 100 / total) : 0
+            leaders.append(SpendingLeader(group: name, amountKopecks: value.amount, sharePercent: percent,
+                                          previousKopecks: previous[name] ?? 0, shops: Array(shops.prefix(shopCount))))
+        }
+        leaders.sort { lhs, rhs in
             if lhs.amountKopecks != rhs.amountKopecks { return lhs.amountKopecks > rhs.amountKopecks }
-            let left = order.firstIndex(of: lhs.group) ?? Int.max, right = order.firstIndex(of: rhs.group) ?? Int.max
-            return left == right ? lhs.group < rhs.group : left < right
+            let left: Int = order.firstIndex(of: lhs.group) ?? Int.max
+            let right: Int = order.firstIndex(of: rhs.group) ?? Int.max
+            if left != right { return left < right }
+            return lhs.group < rhs.group
         }
         return SpendingLeaders(leaders: Array(leaders.prefix(count)), totalKopecks: total, periods: periods)
     }

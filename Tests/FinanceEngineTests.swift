@@ -1583,17 +1583,28 @@ struct FinanceEngineTests {
         ]
         // the running month (June 1-20) against May 1-20: the 25th of May is not among the same days
         let june = ReportEngine.spendingLeaders(inputs, month: at(6, 20), now: at(6, 20), taxonomy: .builtin, calendar: calendar)
-        require(june.periods.isPartial && june.totalKopecks == 1_400_000, "the total of the days so far")
-        require(june.leaders.map(\.group) == [foodGroup, techGroup], "the biggest group first")
+        require(june.periods.isPartial, "the month is running")
+        require(june.totalKopecks == 1_400_000, "the total of the days so far")
+        let juneGroups: [String] = june.leaders.map { $0.group }
+        require(juneGroups == [foodGroup, techGroup], "the biggest group first")
         let first = june.leaders[0], second = june.leaders[1]
-        require(first.amountKopecks == 1_000_000 && first.previousKopecks == 600_000 && first.changeKopecks == 400_000, "the first against the same days of May")
-        require(first.sharePercent == 71 && second.sharePercent == 28, "the shares of the period, rounded down")
-        require(second.amountKopecks == 400_000 && second.previousKopecks == 0, "May 25 is outside the same days: nothing before")
-        require(first.shops.map(\.title) == ["Магазин Альфа", "Магазин Бета"] && first.shops.map(\.amountKopecks) == [800_000, 200_000], "the shops inside, the largest first")
+        require(first.amountKopecks == 1_000_000, "the first group so far")
+        require(first.previousKopecks == 600_000, "the same days of May")
+        require(first.changeKopecks == 400_000, "the change against them")
+        require(first.sharePercent == 71, "the share of the period, rounded down")
+        require(second.sharePercent == 28, "the share of the second")
+        require(second.amountKopecks == 400_000, "the second group so far")
+        require(second.previousKopecks == 0, "May 25 is outside the same days: nothing before")
+        let shopTitles: [String] = first.shops.map { $0.title }
+        let shopAmounts: [Int64] = first.shops.map { $0.amountKopecks }
+        require(shopTitles == ["Магазин Альфа", "Магазин Бета"], "the shops inside, the largest first")
+        require(shopAmounts == [800_000, 200_000], "their amounts")
         // a finished month against the whole month before
         let may = ReportEngine.spendingLeaders(inputs, month: at(5, 1), now: at(6, 20), taxonomy: .builtin, calendar: calendar)
-        require(!may.periods.isPartial && may.totalKopecks == 1_300_000 && may.leaders.first?.group == techGroup && may.leaders.first?.amountKopecks == 700_000,
-                "a finished month is whole")
+        require(!may.periods.isPartial, "a finished month is whole")
+        require(may.totalKopecks == 1_300_000, "the whole of May")
+        require(may.leaders.first?.group == techGroup, "the biggest group of May")
+        require(may.leaders.first?.amountKopecks == 700_000, "its amount")
         require(may.leaders.allSatisfy { $0.previousKopecks == 0 }, "no April spending")
         // the number of groups, a month without spending
         require(ReportEngine.spendingLeaders(inputs, month: at(6, 20), now: at(6, 20), taxonomy: .builtin, count: 1, calendar: calendar).leaders.count == 1, "the count of groups")
