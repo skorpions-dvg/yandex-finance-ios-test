@@ -165,6 +165,26 @@ enum ReportPeriod: Equatable {
     }
 }
 
+/// A group of expenses among the biggest of the month, against the same days of the month before.
+struct SpendingLeader: Identifiable, Equatable {
+    let group: String
+    let amountKopecks: Int64
+    /// Whole percent of the spending of the period (rounded down).
+    let sharePercent: Int
+    /// The same group over the same days of the previous month (the whole previous month for a finished month).
+    let previousKopecks: Int64
+    /// The payees of the group, the largest first.
+    let shops: [ReportSlice]
+    var id: String { group }
+    var changeKopecks: Int64 { amountKopecks - previousKopecks }
+}
+
+struct SpendingLeaders: Equatable {
+    let leaders: [SpendingLeader]
+    let totalKopecks: Int64
+    let periods: MonthComparisonPeriods
+}
+
 /// The share of one group of operations (a category, a payee) in the shown total.
 struct ReportSlice: Identifiable, Equatable {
     let id: String
@@ -318,6 +338,46 @@ enum ReportEngine {
             let left = order.firstIndex(of: lhs.title) ?? Int.max, right = order.firstIndex(of: rhs.title) ?? Int.max
             return left == right ? lhs.title < rhs.title : left < right
         }
+    }
+
+    /// «Куда уходят деньги»: the biggest groups of the month's expenses, each against the same days of the previous month (a finished
+    /// month against the whole one before), with the payees inside. One pass over the operations of the two periods.
+    static func spendingLeaders(_ inputs: [FinancialOperationInput], month: Date, now: Date = Date(), taxonomy: ExpenseTaxonomy,
+                                count: Int = 3, shopCount: Int = 5, calendar: Calendar = .current) -> SpendingLeaders {
+        let periods = monthComparisonPeriods(selectedStart: month, currentDate: now, calendar: calendar)
+        var current: [String: (amount: Int64, shops: [String: (title: String, amount: Int64, count: Int)])] = [:]
+        var previous: [String: Int64] = [:]
+        for input in inputs {
+            guard let when = date(input) else { continue }
+            let inCurrent = when >= periods.current.start && when < periods.current.end
+            let inPrevious = when >= periods.previous.start && when < periods.previous.end
+            guard inCurrent || inPrevious, let item = entry(input, mode: .expenses) else { continue }
+            if inPrevious { previous[item.group, default: 0] += item.amount }
+            if inCurrent {
+                var group = current[item.group] ?? (0, [:])
+                group.amount += item.amount
+                let key = item.payee.isEmpty ? "—" : item.payee
+                var shop = group.shops[key] ?? (item.payee.isEmpty ? "Без названия" : item.title, 0, 0)
+                shop.amount += item.amount
+                shop.count += 1
+                group.shops[key] = shop
+                current[item.group] = group
+            }
+        }
+        let total = current.values.reduce(Int64(0)) { $0 + $1.amount }
+        let order = taxonomy.groupNames
+        let leaders = current.map { name, value -> SpendingLeader in
+            let shops = value.shops.map { ReportSlice(id: $0.key, title: $0.value.title, amountKopecks: $0.value.amount, count: $0.value.count, children: []) }
+                .sorted { $0.amountKopecks == $1.amountKopecks ? $0.title < $1.title : $0.amountKopecks > $1.amountKopecks }
+            return SpendingLeader(group: name, amountKopecks: value.amount,
+                                  sharePercent: total > 0 ? Int(value.amount * 100 / total) : 0,
+                                  previousKopecks: previous[name] ?? 0, shops: Array(shops.prefix(shopCount)))
+        }.sorted { lhs, rhs in
+            if lhs.amountKopecks != rhs.amountKopecks { return lhs.amountKopecks > rhs.amountKopecks }
+            let left = order.firstIndex(of: lhs.group) ?? Int.max, right = order.firstIndex(of: rhs.group) ?? Int.max
+            return left == right ? lhs.group < rhs.group : left < right
+        }
+        return SpendingLeaders(leaders: Array(leaders.prefix(count)), totalKopecks: total, periods: periods)
     }
 
     // MARK: Dynamics

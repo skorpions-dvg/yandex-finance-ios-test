@@ -1559,6 +1559,53 @@ struct FinanceEngineTests {
         require(explained.baselineMonths.contains { $0.otherRefundsKopecks == 500 }, "a refund of an older purchase is shown apart")
     }
 
+    /// «Куда уходят деньги»: the biggest groups of the month against the same days of the month before, the shops inside.
+    static func testSpendingLeaders() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        func at(_ month: Int, _ day: Int) -> Date { calendar.date(from: DateComponents(year: 2032, month: month, day: day, hour: 12))! }
+        func iso(_ month: Int, _ day: Int) -> String { String(format: "2032-%02d-%02dT12:00:00Z", month, day) }
+        func food(_ amount: Int64, _ shop: String, _ month: Int, _ day: Int) -> FinancialOperationInput {
+            op(-amount, kind: "expense", category: "Супермаркеты", description: shop, mcc: "5411", date: iso(month, day))
+        }
+        func tech(_ amount: Int64, _ month: Int, _ day: Int) -> FinancialOperationInput {
+            op(-amount, kind: "expense", category: "Электроника", description: "Техника учебная", mcc: "5732", date: iso(month, day))
+        }
+        let foodGroup = FinancialEngine.expenseCategory(for: food(1, "Магазин Альфа", 6, 1)).group
+        let techGroup = FinancialEngine.expenseCategory(for: tech(1, 6, 1)).group
+        require(foodGroup != techGroup, "the test needs two groups")
+        let inputs = [
+            food(500_000, "Магазин Альфа", 6, 3), food(300_000, "Магазин Альфа", 6, 10), food(200_000, "Магазин Бета", 6, 15),
+            tech(400_000, 6, 5),
+            food(600_000, "Магазин Альфа", 5, 5), tech(700_000, 5, 25),
+            // not expenses of the report: income, a refund
+            op(5_000_000, kind: "income", category: "Зарплата", description: "Зарплата учебная", date: iso(6, 2)),
+        ]
+        // the running month (June 1-20) against May 1-20: the 25th of May is not among the same days
+        let june = ReportEngine.spendingLeaders(inputs, month: at(6, 20), now: at(6, 20), taxonomy: .builtin, calendar: calendar)
+        require(june.periods.isPartial && june.totalKopecks == 1_400_000, "the total of the days so far")
+        require(june.leaders.map(\.group) == [foodGroup, techGroup], "the biggest group first")
+        let first = june.leaders[0], second = june.leaders[1]
+        require(first.amountKopecks == 1_000_000 && first.previousKopecks == 600_000 && first.changeKopecks == 400_000, "the first against the same days of May")
+        require(first.sharePercent == 71 && second.sharePercent == 28, "the shares of the period, rounded down")
+        require(second.amountKopecks == 400_000 && second.previousKopecks == 0, "May 25 is outside the same days: nothing before")
+        require(first.shops.map(\.title) == ["Магазин Альфа", "Магазин Бета"] && first.shops.map(\.amountKopecks) == [800_000, 200_000], "the shops inside, the largest first")
+        // a finished month against the whole month before
+        let may = ReportEngine.spendingLeaders(inputs, month: at(5, 1), now: at(6, 20), taxonomy: .builtin, calendar: calendar)
+        require(!may.periods.isPartial && may.totalKopecks == 1_300_000 && may.leaders.first?.group == techGroup && may.leaders.first?.amountKopecks == 700_000,
+                "a finished month is whole")
+        require(may.leaders.allSatisfy { $0.previousKopecks == 0 }, "no April spending")
+        // the number of groups, a month without spending
+        require(ReportEngine.spendingLeaders(inputs, month: at(6, 20), now: at(6, 20), taxonomy: .builtin, count: 1, calendar: calendar).leaders.count == 1, "the count of groups")
+        let empty = ReportEngine.spendingLeaders([], month: at(6, 20), now: at(6, 20), taxonomy: .builtin, calendar: calendar)
+        require(empty.leaders.isEmpty && empty.totalKopecks == 0, "no spending, no leaders")
+        // the keys of the payments the owner said are no subscriptions survive saving
+        var history = SavedHistory()
+        history.notSubscriptionKeys = ["магазин альфа"]
+        let data = try? JSONEncoder().encode(history)
+        require(data.flatMap { try? JSONDecoder().decode(SavedHistory.self, from: $0) }?.notSubscriptionKeys == ["магазин альфа"], "the hidden payees survive saving")
+    }
+
     /// The owner's changes and deletions of the operations of the bank hold over every new read.
     static func testBankOperationEdits() {
         var history = SavedHistory()
@@ -3996,6 +4043,7 @@ struct FinanceEngineTests {
     }
 
     static func main() {
+        testSpendingLeaders()
         testBankOperationEdits()
         testCreditCards()
         testCommitments()

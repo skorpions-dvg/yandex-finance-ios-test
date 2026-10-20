@@ -142,6 +142,8 @@ struct SavedHistory: Codable {
     var operationEdits: [String: OperationEdit]?
     /// Operations of the bank the owner deleted: a new read of the bank or of a statement does not bring them back.
     var deletedOperationIdentities: [String]?
+    /// Regular payments the owner said are not subscriptions («Куда уходят деньги»): the payee keys (`FinancialEngine.counterpartyKey`).
+    var notSubscriptionKeys: [String]?
     /// Subscriptions the owner entered (the forecast counts their payments; a day before one a reminder may come).
     var subscriptions: [Subscription]?
     /// Loans the owner entered: a monthly payment, and the balance he keeps by hand.

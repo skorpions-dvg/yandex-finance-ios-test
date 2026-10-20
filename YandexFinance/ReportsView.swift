@@ -74,6 +74,12 @@ struct ReportsView: View {
 
     private var calendar: Calendar { .current }
 
+    /// The month «Куда уходят деньги» is about: the month chosen in the period, otherwise the running one.
+    private var leadersMonth: Date {
+        if case .month(let chosen) = period { return chosen }
+        return Date()
+    }
+
     var body: some View {
         let _ = presentation.prepare(browser.history)
         let resolved = accountChoice.resolve(accounts: browser.history.accounts ?? [], groups: browser.history.accountGroups ?? [])
@@ -100,6 +106,13 @@ struct ReportsView: View {
                 List {
                     switch tab {
                     case .structure:
+                        Section {
+                            NavigationLink {
+                                SpendingLeadersView(browser: browser, presentation: presentation, month: leadersMonth)
+                            } label: {
+                                Label("Куда уходят деньги", systemImage: "arrow.up.right.circle")
+                            }
+                        }.glassRows()
                         StructureContent(browser: browser, presentation: presentation, interval: interval, mode: mode,
                                          grouping: grouping, showsChart: true, buckets: buckets, filter: scopedFilter)
                     case .dynamics:
